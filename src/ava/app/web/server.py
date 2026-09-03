@@ -64,6 +64,9 @@ def web_asset() -> str:
         "@AVA_KATEX_CSS@", (_ASSETS / "vendor" / "katex.css").read_text(encoding="utf-8")
     )
     page = page.replace(
+        "@AVA_REACT_CSS@", (_ASSETS / "app.min.css").read_text(encoding="utf-8")
+    )
+    page = page.replace(
         "@AVA_KATEX_JS@", (_ASSETS / "vendor" / "katex.min.js").read_text(encoding="utf-8")
     )
     return page.replace(

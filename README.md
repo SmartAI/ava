@@ -114,7 +114,7 @@ Typing `/` opens the command menu:
 | `/theme`, `/copy [code]`, `/new`, `/clear`, `/help` | Presentation and chat housekeeping |
 | `/pause`, `/abort`, `/resume` | The turn controls, as commands |
 
-The Web UI source is native React in `src/ava/app/web/frontend/app.jsx`, with no component framework or runtime CDN dependency.
+The Web UI source is native React with isolated components in `src/ava/app/web/frontend/` and Tailwind CSS as its design system.
 The checked-in browser bundle is rebuilt with `npm ci && npm run build` when that source changes.
 
 ## Tests
