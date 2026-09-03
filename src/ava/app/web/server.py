@@ -27,6 +27,7 @@ from ava.app.attach import TEXT_LIMIT, decode_base64, sniff_image, valid_utf8_pr
 from ava.app.web.events import event_json
 from ava.base import AvaError, ErrorKind
 from ava.llm import (
+    AuthRequirement,
     ContentBlock,
     Item,
     Role,
@@ -36,6 +37,7 @@ from ava.llm import (
     make_text_block,
     provider_from_environment,
 )
+from ava.llm.credentials import delete_api_key, save_api_key
 from ava.session import Event
 
 DEFAULT_PORT = 8777
@@ -542,6 +544,50 @@ def create_app(
                 ]
             }
         )
+
+    def _reload_provider(provider: str, auth_requirement: AuthRequirement) -> dict[str, Any]:
+        """Rebuild every idle chat on ``provider`` so a stored key change takes effect now."""
+        reloaded: list[str] = []
+        failed: dict[str, str] = {}
+        for project in registry.projects:
+            for chat in project.chats:
+                if chat.agent.provider_id != provider:
+                    continue
+                try:
+                    chat.agent.reload_credentials(auth_requirement)
+                    reloaded.append(chat.id)
+                except AvaError as error:
+                    failed[chat.id] = error.message
+        return {"provider": provider, "reloaded": reloaded, "failed": failed}
+
+    @app.post("/api/credentials")
+    async def login(request: Request) -> Response:
+        body = await _json_body(request)
+        provider = body.get("provider") if isinstance(body, dict) else None
+        key = body.get("key") if isinstance(body, dict) else None
+        if not isinstance(provider, str) or not provider or not isinstance(key, str) or not key:
+            return _error(400, "provider and key must be non-empty JSON strings")
+        if provider == "codex":
+            return _error(
+                400, "the codex provider reuses the Codex CLI login; run 'codex login' instead"
+            )
+        try:
+            save_api_key(provider, key)
+        except AvaError as error:
+            return _error(503, error.message)
+        return JSONResponse(_reload_provider(provider, AuthRequirement.required))
+
+    @app.delete("/api/credentials/{provider}")
+    async def logout(provider: str) -> Response:
+        if provider == "codex":
+            return _error(
+                400, "the codex provider reuses the Codex CLI login; run 'codex logout' instead"
+            )
+        try:
+            delete_api_key(provider)
+        except AvaError as error:
+            return _error(503, error.message)
+        return JSONResponse(_reload_provider(provider, AuthRequirement.allow_missing))
 
     @app.get("/api/chats/{chat_id}/events")
     async def events(chat_id: str, request: Request) -> Response:

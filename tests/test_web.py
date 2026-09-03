@@ -437,3 +437,29 @@ async def test_skills_route_lists_the_project_catalog(client: httpx.AsyncClient,
         }
     ]
     assert (await client.get("/api/chats/nope/skills")).status_code == 404
+
+
+async def test_credentials_are_stored_and_idle_chats_reloaded(
+    client: httpx.AsyncClient, home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    reloaded: list[str] = []
+    monkeypatch.setattr(
+        "ava.agent.agent.provider_from_environment",
+        lambda cli, resumed, requirement: (
+            reloaded.append(requirement.value) or client_agent(client, "c1").state.provider
+        ),
+    )
+    bad = await client.post("/api/credentials", json={"provider": "scripted"})
+    assert bad.status_code == 400
+    codex = await client.post("/api/credentials", json={"provider": "codex", "key": "x"})
+    assert codex.status_code == 400 and "codex login" in codex.json()["error"]
+    saved = await client.post("/api/credentials", json={"provider": "scripted", "key": "sk-test"})
+    assert saved.json() == {"provider": "scripted", "reloaded": ["c1"], "failed": {}}
+    assert json.loads((home / "auth.json").read_text()) == {
+        "scripted": {"type": "api_key", "key": "sk-test"}
+    }
+    assert (home / "auth.json").stat().st_mode & 0o777 == 0o600
+    removed = await client.delete("/api/credentials/scripted")
+    assert removed.json()["reloaded"] == ["c1"] and reloaded == ["required", "allow_missing"]
+    assert json.loads((home / "auth.json").read_text()) == {}
