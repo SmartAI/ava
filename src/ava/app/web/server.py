@@ -13,7 +13,7 @@ import json
 import os
 import socket
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,7 @@ from ava.llm import (
 )
 from ava.llm.credentials import delete_api_key, save_api_key
 from ava.session import Event
+from ava.session.context_report import context_report
 
 DEFAULT_PORT = 8777
 ATTACHMENT_COUNT_LIMIT = 10
@@ -594,6 +595,20 @@ def create_app(
         except AvaError as error:
             return _error(503, error.message)
         return JSONResponse(_reload_provider(provider, AuthRequirement.allow_missing))
+
+    @app.get("/api/chats/{chat_id}/context")
+    async def context(chat_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        agent = found[1].agent
+        agent.prepare()  # a fresh chat logs its prompt and tools now, so the report matches the first request
+        report = context_report(
+            agent.state.session,
+            agent.state.provider.context_window,
+            agent.state.compaction_options.threshold_percent,
+        )
+        return JSONResponse(asdict(report))
 
     @app.get("/api/chats/{chat_id}/events")
     async def events(chat_id: str, request: Request) -> Response:

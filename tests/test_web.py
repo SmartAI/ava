@@ -477,3 +477,18 @@ async def test_credentials_are_stored_and_idle_chats_reloaded(
     removed = await client.delete("/api/credentials/scripted")
     assert removed.json()["reloaded"] == ["c1"] and reloaded == ["required", "allow_missing"]
     assert json.loads((home / "auth.json").read_text()) == {}
+
+
+async def test_context_route_reports_the_model_window(client: httpx.AsyncClient, scripted):
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    empty = (await client.get("/api/chats/c1/context")).json()
+    assert [section["kind"] for section in empty["sections"]] == ["system", "environment", "tools"]
+    await client.post("/api/chats/c1/messages", json={"text": "hello there"})
+    await _events_until(client, "c1", "turn/end")
+    report = (await client.get("/api/chats/c1/context")).json()
+    kinds = [section["kind"] for section in report["sections"]]
+    assert "user_text" in kinds and "assistant_text" in kinds and "framing" in kinds
+    assert report["estimated_tokens"] == sum(section["tokens"] for section in report["sections"])
+    assert report["context_window"] == 10_000 and report["threshold_percent"] == 85
+    assert report["compacted"] is False
+    assert (await client.get("/api/chats/nope/context")).status_code == 404
