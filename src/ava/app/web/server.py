@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from ava.agent import Agent, CancelCause, CompactionOptions, Status
+from ava.agent import Agent, CancelCause, CompactionOptions, CompactNowOutcome, Status
 from ava.app.attach import TEXT_LIMIT, decode_base64, sniff_image, valid_utf8_prefix
 from ava.app.web.events import event_json
 from ava.base import AvaError, ErrorKind
@@ -42,6 +42,12 @@ ATTACHMENT_COUNT_LIMIT = 10
 ATTACHMENT_BYTE_LIMIT = 8 * 1024 * 1024
 ATTACHMENT_IMAGE_LIMIT = 10
 TITLE_LIMIT = 40
+COMPACTION_MESSAGES = {
+    CompactNowOutcome.compacted: "compacted the conversation; the model now sees a summary plus the recent tail",
+    CompactNowOutcome.nothing_to_compact: "nothing to compact yet",
+    CompactNowOutcome.failed: "compaction failed; the conversation is unchanged",
+    CompactNowOutcome.disabled: "compaction is disabled for this run",
+}
 
 _ASSETS = Path(__file__).parent / "assets"
 
@@ -504,6 +510,17 @@ def create_app(
         return JSONResponse(
             {"provider": selection.provider, "model": selection.model, "effort": selection.effort}
         )
+
+    @app.post("/api/chats/{chat_id}/compact")
+    async def compact(chat_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        try:
+            outcome = await found[1].agent.compact_now()
+        except AvaError as error:
+            return _error(409 if error.recoverable else 503, error.message)
+        return JSONResponse({"outcome": outcome.value, "message": COMPACTION_MESSAGES[outcome]})
 
     @app.get("/api/chats/{chat_id}/events")
     async def events(chat_id: str, request: Request) -> Response:

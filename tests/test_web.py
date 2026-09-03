@@ -392,3 +392,31 @@ async def test_model_and_effort_selection_apply_at_the_next_step(
     selection = next(e for e in events if e["kind"] == "selection")
     assert selection["model"] == "other-model" and selection["effort"] == "max"
     assert provider.selection.model == "other-model"
+
+
+async def test_compact_now_appends_a_seed_and_refuses_while_busy(
+    client: httpx.AsyncClient, scripted
+):
+    from ava.llm import Usage
+
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    provider = scripted[0]
+    provider.scripts = [
+        text_response("h" * 4000, usage=Usage(input=9000, output=10)),
+        text_response("## Goal\n- keep going\n\n## Next Steps\n- more\n"),
+        text_response("after"),
+    ]
+    provider.gate = asyncio.Event()
+    await client.post("/api/chats/c1/messages", json={"text": "first " + "x" * 3000})
+    await asyncio.wait_for(provider.started.wait(), 5)
+    busy = await client.post("/api/chats/c1/compact")
+    assert busy.status_code == 409 and "busy" in busy.json()["error"]
+    provider.gate.set()
+    await _events_until(client, "c1", "turn/end")
+    compacted = await client.post("/api/chats/c1/compact")
+    assert compacted.json()["outcome"] == "compacted"
+    events = await _events_until(client, "c1", "compaction/seed")
+    seed = events[-1]
+    assert "## Files" in seed["blocks"][0]["text"] and seed["covered_end"] > 0
+    again = await client.post("/api/chats/c1/compact")
+    assert again.json()["outcome"] == "nothing_to_compact"
