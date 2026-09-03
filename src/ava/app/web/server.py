@@ -38,7 +38,7 @@ from ava.llm import (
     provider_from_environment,
 )
 from ava.llm.credentials import delete_api_key, save_api_key
-from ava.session import Event
+from ava.session import AttemptTiming, Event, Usage
 from ava.session.compaction import estimate_context_tokens
 from ava.session.context_report import context_report
 
@@ -694,6 +694,30 @@ def status_payload(chat: Chat) -> dict[str, Any]:
     if context_window:
         remaining = round(max(0, context_window - used_tokens) * 100 / context_window)
 
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_read = 0
+    cache_reported = False
+    ttft_ms: int | None = None
+    for event in agent.state.session.events:
+        payload = event.payload
+        if isinstance(payload, Usage):
+            input_parts = (payload.input, payload.cached_read, payload.cache_write)
+            if any(value is not None for value in input_parts):
+                input_tokens = (input_tokens or 0) + sum(value or 0 for value in input_parts)
+            if payload.output is not None:
+                output_tokens = (output_tokens or 0) + payload.output
+            if payload.cached_read is not None:
+                cached_read += payload.cached_read
+                cache_reported = True
+        elif isinstance(payload, AttemptTiming):
+            # The newest provider attempt describes the latency a user most recently felt.
+            ttft_ms = payload.ttft_ms
+
+    cache_hit_percent = None
+    if cache_reported and input_tokens:
+        cache_hit_percent = cached_read * 100 // input_tokens
+
     return {
         "status": chat.status,
         "turn_open": agent.turn_open,
@@ -704,6 +728,10 @@ def status_payload(chat: Chat) -> dict[str, Any]:
         "context_used_tokens": used_tokens,
         "context_window_tokens": context_window,
         "context_remaining_percent": remaining,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_hit_percent": cache_hit_percent,
+        "ttft_ms": ttft_ms,
     }
 
 
