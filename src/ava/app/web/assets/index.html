@@ -1129,6 +1129,7 @@
     models: id => call('GET', `/api/chats/${id}/models`),
     selectModel: (id, body) => call('POST', `/api/chats/${id}/model`, body),
     compact: id => call('POST', `/api/chats/${id}/compact`),
+    context: id => call('GET', `/api/chats/${id}/context`),
     skills: id => call('GET', `/api/chats/${id}/skills`).then(payload => payload.skills),
     login: (provider, key) => call('POST', '/api/credentials', { provider, key }),
     logout: provider => call('DELETE', `/api/credentials/${encodeURIComponent(provider)}`),
@@ -1953,6 +1954,37 @@
         if (!state.current) return
         const outcome = await api.compact(state.current)
         addNotice(outcome.message)
+      },
+    },
+    context: {
+      hint: '/context  what the model sees now, by kind and size',
+      async run() {
+        if (!state.current) return
+        const report = await api.context(state.current)
+        const total = report.estimated_tokens || 1
+        const tokens = value => value.toLocaleString()
+        const share = value => {
+          const percent = Math.round((value / total) * 100)
+          return percent === 0 && value > 0 ? '<1%' : `${percent}%`
+        }
+        const budget = report.context_window
+          ? ` · window ${tokens(report.context_window)} (compacts at ${report.threshold_percent}%)`
+          : ' · window unknown (compaction off)'
+        const measured = report.measured_input_tokens === null
+          ? 'no provider measurement yet'
+          : `last request measured ${tokens(report.measured_input_tokens)} input tokens`
+        const rows = [...report.sections].sort((a, b) => b.tokens - a.tokens).map(section => ({
+          label: `${section.label} — ${tokens(section.tokens)} tokens · ${share(section.tokens)}`,
+          detail: `${section.count} item${section.count === 1 ? '' : 's'} · ${formatBytes(section.bytes)}` +
+            (section.kind === 'attachment_images' ? ' · images are priced at a fixed 1,200 tokens each' : ''),
+          run: () => {},
+        }))
+        showModal({
+          title: `Context · ~${tokens(report.estimated_tokens)} tokens`,
+          note: `Estimated from bytes; ${measured}${budget}` +
+            (report.compacted ? ' · the window starts at the newest compaction summary' : ''),
+          rows,
+        })
       },
     },
     skills: {
