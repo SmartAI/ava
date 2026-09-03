@@ -106,6 +106,7 @@ events. Typing `/` opens the command menu:
 | `/model [ID]` | Pick a model from the provider catalog; applies at the next step |
 | `/effort [LEVEL]` | Set reasoning effort (`none` clears it) |
 | `/compact` | Summarize older history now |
+| `/context` | Show what the model sees right now, by kind and size: prompt sections (system, environment, AGENTS.md, skills), tool schemas, the compaction summary, your messages, attachments, assistant text, reasoning, tool calls, tool results. Estimated tokens beside the newest provider-measured input. |
 | `/skills` | List the skills the model can load |
 | `/login [PROVIDER]`, `/logout [PROVIDER]` | Store or remove an API key in `$AVA_HOME/auth.json` |
 | `/theme`, `/copy [code]`, `/new`, `/clear`, `/help` | Presentation and chat housekeeping |
