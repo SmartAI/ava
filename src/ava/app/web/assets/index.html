@@ -288,6 +288,9 @@
 
   .dot[data-state='error'] { background: var(--error); }
   .dot[data-state='idle'] { background: var(--label-caption); }
+  .dot[data-state='pausing'], .dot[data-state='paused'] { background: var(--warn); }
+  .dot[data-state='pausing'], .dot[data-state='aborting'] { animation: pulse 1.4s ease-in-out infinite; }
+  .dot[data-state='aborting'] { background: var(--error); }
 
   @keyframes pulse {
     50% { opacity: 0.35; }
@@ -792,10 +795,33 @@
     cursor: default;
   }
 
-  .send[data-stop] { background: var(--label-secondary); }
-  .send .square { display: none; }
-  .send[data-stop] .arrow { display: none; }
-  .send[data-stop] .square { display: inline; }
+  /* One button, four meanings, driven by the agent's control state: send,
+     pause after the current step, abort now, resume. */
+  .send .square, .send .play { display: none; }
+  .send[data-mode='pause'] { background: var(--label-secondary); }
+  .send[data-mode='abort'] { background: var(--error); }
+  .send[data-mode='resume'] { background: var(--success); }
+  .send[data-mode='pause'] .arrow, .send[data-mode='abort'] .arrow, .send[data-mode='resume'] .arrow { display: none; }
+  .send[data-mode='pause'] .square, .send[data-mode='abort'] .square { display: inline; }
+  .send[data-mode='resume'] .play { display: inline; }
+
+  /* Pending input is derived from durable inbox events, never from a keypress. */
+  .pending {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    padding: 0 18px;
+    color: var(--label-caption);
+    font-size: 12px;
+  }
+
+  .pending .chip { cursor: default; }
+
+  .notice {
+    align-self: center;
+    color: var(--label-caption);
+    font-size: 12px;
+  }
+
+  .status[data-state='pausing'] .clock, .status[data-state='aborting'] .clock { display: none; }
 
   /* ---- Picker ---------------------------------------------------------- */
 
@@ -988,6 +1014,7 @@
           <span>Archived — unarchive to continue</span>
           <button class="button" id="unarchive">Unarchive</button>
         </div>
+        <div class="pending" id="pending" hidden></div>
         <div class="actions">
           <button class="iconBtn" id="attach" title="Attach files" aria-label="Attach files">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3v10M3 8h10" /></svg>
@@ -1005,6 +1032,9 @@
             </svg>
             <svg class="square" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <rect x="5" y="5" width="6" height="6" rx="1.2" />
+            </svg>
+            <svg class="play" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M5 3.5v9l7-4.5z" />
             </svg>
           </button>
         </div>
@@ -1054,6 +1084,8 @@
     message: (id, text, attachments, delivery) =>
       call('POST', `/api/chats/${id}/messages`, { text, attachments, delivery }),
     archive: (id, archived) => call('POST', `/api/chats/${id}/archive`, { archived }),
+    cancel: (id, cause) => call('POST', `/api/chats/${id}/cancel`, { cause }),
+    resume: id => call('POST', `/api/chats/${id}/resume`),
   }
 
   async function call(method, path, body) {
@@ -1079,13 +1111,14 @@
     archiveOpen: new Set(),
     stream: null,
     selection: 0,
-    status: 'idle',
+    status: 'idle',   // idle · running · pausing · paused · aborting, from the status channel
     submitting: false,
+    controlling: false,
+    pending: new Map(), // message id → 'next_turn' | 'next_step', from durable inbox events
     startedAt: 0,
     tail: null,       // live assistant block: { node, raw, pending }
     calls: new Map(), // call_id → tool row element
     displayedInputs: new Set(),
-    terminalEvents: 0, // turn/end and drive/error seen; a stale acknowledgement must not revive 'running'
   }
 
   const $ = id => document.getElementById(id)
@@ -1259,6 +1292,12 @@
     row.querySelector('.errorText').textContent = message
   }
 
+  function addNotice(text) {
+    closeTail()
+    const row = add(element('<div class="notice"></div>'))
+    row.textContent = text
+  }
+
   // One live assistant block per run of text deltas. Re-rendering markdown per
   // delta is wasteful on a long answer, so the repaint is batched to a frame.
   function appendDelta(text) {
@@ -1337,44 +1376,86 @@
   let statusRow = null
   let clockTimer = 0
 
+  // Labels keyed by the agent's control state. The state itself comes from the
+  // server's status channel, never from a keypress or an acknowledgement.
+  const HINTS = {
+    idle: 'Enter to send · Shift+Enter for a newline',
+    running: 'Enter steers · Alt+Enter queues · Esc pauses',
+    pausing: 'Enter steers on resume · Alt+Enter queues · Esc aborts',
+    paused: 'Enter resumes (text steers) · Alt+Enter queues',
+    aborting: 'Aborting…',
+  }
+  const PLACEHOLDERS = {
+    idle: 'Ask ava to do something…',
+    running: 'Steer the current turn…',
+    pausing: 'Steer the resumed turn…',
+    paused: 'Continue, or steer the resumed turn…',
+    aborting: 'Aborting…',
+  }
+  const BUTTON_MODES = { running: 'pause', pausing: 'abort', paused: 'resume' }
+  const BUTTON_TITLES = {
+    send: 'Send', pause: 'Pause after the current step', abort: 'Abort now', resume: 'Resume',
+  }
+  const STATUS_LABELS = {
+    running: 'Working',
+    pausing: 'Pausing · finishing the current step',
+    aborting: 'Aborting',
+  }
+
   function syncComposer() {
     const archived = Boolean(chatOf(state.current)?.archived)
-    const unavailable = archived || state.submitting
-    const running = state.status === 'running'
+    const status = state.status
+    const unavailable = archived || state.submitting || status === 'aborting'
     $('draft').disabled = unavailable
-    $('draft').placeholder = running ? 'Steer the current turn…' : 'Ask ava to do something…'
+    $('draft').placeholder = PLACEHOLDERS[status] || PLACEHOLDERS.idle
     $('attach').disabled = unavailable
     $('archiveNotice').hidden = !archived
-    $('send').disabled = unavailable
-    $('send').title = archived ? 'Archived'
-      : state.submitting ? 'Sending'
-      : running ? 'Steer current turn' : 'Send'
-    $('send').setAttribute('aria-label', $('send').title)
-    $('composerHint').textContent = state.submitting ? 'Sending…'
-      : running ? 'Enter steers · Alt+Enter queues · Shift+Enter newline'
-      : 'Enter to send · Shift+Enter for a newline'
-    $('composerHint').toggleAttribute('data-running', running && !state.submitting)
+    const send = $('send')
+    const mode = BUTTON_MODES[status] || 'send'
+    send.dataset.mode = mode
+    send.disabled = archived || state.submitting || state.controlling || status === 'aborting'
+    send.title = archived ? 'Archived' : state.submitting ? 'Sending' : BUTTON_TITLES[mode]
+    send.setAttribute('aria-label', send.title)
+    $('composerHint').textContent = state.submitting ? 'Sending…' : (HINTS[status] || HINTS.idle)
+    $('composerHint').toggleAttribute('data-running', status !== 'idle' && !state.submitting)
+    renderPending()
+  }
+
+  function renderPending() {
+    const counts = { next_turn: 0, next_step: 0 }
+    for (const target of state.pending.values()) counts[target]++
+    const host = $('pending')
+    host.replaceChildren()
+    const chip = text => host.append(element(`<span class="chip">${escapeHtml(text)}</span>`))
+    if (counts.next_step) chip(`${counts.next_step} steering for the next step`)
+    if (counts.next_turn) chip(`${counts.next_turn} queued follow-up${counts.next_turn === 1 ? '' : 's'}`)
+    host.hidden = counts.next_turn + counts.next_step === 0
   }
 
   function setStatus(status) {
     state.status = status
-    $('headDot').dataset.state = status === 'running' ? 'running' : 'idle'
+    $('headDot').dataset.state = status
     syncComposer()
     renderRail()
 
-    if (status === 'running' && !statusRow) {
+    const active = status in STATUS_LABELS
+    if (active && !statusRow) {
       state.startedAt = Date.now()
-      statusRow = element('<div class="status">Working<span class="clock">0s</span></div>')
+      statusRow = element('<div class="status"><span class="statusLabel"></span><span class="clock">0s</span></div>')
       column.append(statusRow)
       scrollToBottom()
       clockTimer = setInterval(() => {
         const seconds = Math.floor((Date.now() - state.startedAt) / 1000)
         if (statusRow) statusRow.querySelector('.clock').textContent = `${seconds}s`
       }, 1000)
-    } else if (status !== 'running' && statusRow) {
+    } else if (!active && statusRow) {
       clearInterval(clockTimer)
       statusRow.remove()
       statusRow = null
+    }
+    if (statusRow) {
+      statusRow.querySelector('.statusLabel').textContent = STATUS_LABELS[status]
+      statusRow.dataset.state = status
     }
   }
 
@@ -1388,16 +1469,21 @@
 
   // ---- Events ------------------------------------------------------------
 
+  // Durable events build the transcript and the pending chips. Control state is
+  // not inferred from them: the status channel is authoritative for that.
   function apply(event) {
-    if (event.kind === 'step/claimed') {
+    if (event.kind === 'inbox/spliced') {
+      for (const message of event.inserted || []) state.pending.set(message.id, event.target)
+      renderPending()
+    } else if (event.kind === 'step/claimed') {
       const messages = event.messages || []
       for (const message of messages) {
         if (!message.id || !state.displayedInputs.has(message.id)) addUser(message.blocks)
-        if (message.id) state.displayedInputs.add(message.id)
+        if (message.id) { state.displayedInputs.add(message.id); state.pending.delete(message.id) }
       }
+      renderPending()
     } else if (event.kind === 'user/message') addUser(event.blocks)
     else if (event.kind === 'selection' && event.warning) addError(event.warning)
-    else if (event.kind === 'turn/start') setStatus('running')
     else if (event.kind === 'assistant/chunk') appendDelta(event.delta)
     else if (event.kind === 'assistant/message') {
       const blocks = event.blocks || []
@@ -1423,14 +1509,15 @@
       closeTail()
     } else if (event.kind === 'turn/end') {
       closeTail()
-      state.terminalEvents++
-      setStatus('idle')
+      if (event.reason === 'user_pause') addNotice('Paused after a completed step')
+      else if (event.reason === 'user_abort') { state.pending.clear(); renderPending(); addNotice('Aborted; history repaired') }
+      else if (event.reason === 'interrupted') addNotice('The previous run was interrupted; the session was repaired')
+    } else if (event.kind === 'compaction/seed') {
+      addNotice('Context compacted')
     } else if (event.kind === 'compaction/failed') {
       addError(event.message)
     } else if (event.kind === 'drive/error') {
       addError(event.message)
-      state.terminalEvents++
-      setStatus('idle')
     }
   }
 
@@ -1443,6 +1530,11 @@
       if (state.current !== id || state.selection !== selection) return
       apply(JSON.parse(message.data))
     }
+    // The unkeyed status channel mirrors Agent.status: idle, running, pausing, paused, aborting.
+    stream.addEventListener('status', message => {
+      if (state.current !== id || state.selection !== selection) return
+      setStatus(JSON.parse(message.data).status)
+    })
     state.stream = stream
   }
 
@@ -1457,7 +1549,7 @@
     const archive = group.querySelector('.archiveChat')
     select.querySelector('.rowName').textContent = chat.title || 'New chat'
     select.querySelector('.dot').dataset.state =
-      chat.id === state.current && state.status === 'running' ? 'running' : ''
+      chat.id === state.current && state.status !== 'idle' ? state.status : ''
     if (chat.id === state.current) group.setAttribute('data-selected', '')
     select.addEventListener('click', () => selectChat(chat.id))
     archive.setAttribute('aria-label', chat.archived ? 'Unarchive chat' : 'Archive chat')
@@ -1533,6 +1625,7 @@
     state.stream = null
     state.calls.clear()
     state.displayedInputs.clear()
+    state.pending.clear()
     closeTail()
     column.textContent = ''
     if (statusRow) { clearInterval(clockTimer); statusRow = null }
@@ -1552,7 +1645,7 @@
 
     for (const event of chat.events || []) apply(event)
     if (!(chat.events || []).length) showEmpty(project)
-    setStatus(chat.status === 'running' ? 'running' : 'idle')
+    setStatus(chat.status)
     openStream(id, selection)
     if (!chat.archived) $('draft').focus()
   }
@@ -1673,7 +1766,11 @@
     if (event.target === $('overlay')) closePicker()
   })
   addEventListener('keydown', event => {
-    if (event.key === 'Escape') closePicker()
+    if (event.key !== 'Escape') return
+    if ($('overlay').hasAttribute('data-open')) { closePicker(); return }
+    // First Esc pauses at the next step seam; a second Esc while pausing aborts now.
+    if (state.status === 'running') control('pause')
+    else if (state.status === 'pausing') control('abort')
   })
 
   // ---- Composer ----------------------------------------------------------
@@ -1742,9 +1839,37 @@
     draft.style.height = `${Math.min(draft.scrollHeight, 336)}px`
   }
 
-  const deliveryFor = altKey => altKey ? 'followup' : 'steer'
+  // Pause, abort, and resume are requests to core; the status channel confirms them.
+  async function control(action) {
+    if (!state.current || state.controlling) return
+    state.controlling = true
+    syncComposer()
+    try {
+      if (action === 'resume') await api.resume(state.current)
+      else await api.cancel(state.current, action)
+    } catch (error) {
+      addError(String(error.message || error))
+    } finally {
+      state.controlling = false
+      syncComposer()
+    }
+  }
 
-  async function submit(delivery) {
+  // The TUI's table, verbatim: Enter acts on the current turn, Alt+Enter schedules
+  // a later one, and while paused an empty Enter resumes.
+  function onEnter(altKey) {
+    const empty = draft.value.trim() === '' && staged.length === 0
+    if (state.status === 'paused') {
+      if (altKey) { if (!empty) submit('followup'); return }
+      if (empty) control('resume')
+      else submit('steer', { resume: true })
+      return
+    }
+    if (empty) return
+    submit(altKey || state.status === 'idle' ? 'followup' : 'steer')
+  }
+
+  async function submit(delivery, { resume = false } = {}) {
     if (state.submitting || chatOf(state.current)?.archived) return
     const text = draft.value.trim()
     if (text === '' && staged.length === 0) return
@@ -1760,19 +1885,14 @@
         name: entry.file.name,
         data_base64: await readBase64(entry.file),
       })))
-      const terminalBefore = state.terminalEvents
       const accepted = await api.message(chatId, text, attachments, delivery)
       clearStaged()
       draft.value = ''
       autoGrow()
       const chat = chatOf(accepted.chat.id)
       if (chat) Object.assign(chat, accepted.chat)
-      if (state.current === accepted.chat.id) {
-        $('title').textContent = accepted.chat.title
-        // The stream is authoritative: a turn that already ended must not be shown as running
-        // because its acknowledgement arrived late.
-        if (state.terminalEvents === terminalBefore) setStatus(accepted.chat.status)
-      }
+      if (state.current === accepted.chat.id) $('title').textContent = accepted.chat.title
+      if (resume) await api.resume(chatId)
       renderRail()
     } catch (error) {
       addError(String(error.message || error))
@@ -1815,10 +1935,14 @@
   draft.addEventListener('keydown', keyEvent => {
     if (keyEvent.key === 'Enter' && !keyEvent.shiftKey) {
       keyEvent.preventDefault()
-      submit(deliveryFor(keyEvent.altKey))
+      onEnter(keyEvent.altKey)
     }
   })
-  $('send').addEventListener('click', () => submit(deliveryFor(false)))
+  $('send').addEventListener('click', () => {
+    const mode = $('send').dataset.mode
+    if (mode === 'pause' || mode === 'abort') control(mode)
+    else onEnter(false)
+  })
   $('unarchive').addEventListener('click', () => {
     const chat = chatOf(state.current)
     if (chat) setArchived(chat, false)
