@@ -196,6 +196,40 @@ def test_recovery_rejects_overlapping_turns_loudly():
         plan_lifecycle_repair(events)
 
 
+def test_reopen_repairs_legacy_error_closed_tool_call_after_later_turns(tmp_path: Path):
+    assistant = Item(role=Role.assistant, blocks=[make_tool_call_block("legacy-c1", "bash", "{}")])
+    payloads = [
+        AssistantMessage(attempt_id="a1", item=assistant),
+        StepEnd(turn=1, step=1, reason=StepEndReason.tool_error),
+        TurnEnd(turn=1, reason=TurnEndReason.tool_error),
+        TurnStart(turn=2),
+        StepStart(turn=2, step=1),
+        StepEnd(turn=2, step=1, reason=StepEndReason.provider_error),
+        TurnEnd(turn=2, reason=TurnEndReason.provider_error),
+    ]
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    path = tmp_path / "legacy.jsonl.zst"
+    log = Log.create_at(path, cwd, "mock", "m")
+    log.append_batch([TurnStart(turn=1), StepStart(turn=1, step=1), *payloads])
+    log.close()
+
+    repaired = Log.open(path, OpenMode.repair, cwd)
+    repair = repaired.loaded_events[-1].payload
+    assert isinstance(repair, ToolResult)
+    assert repair.item.blocks[0].call_id == "legacy-c1"
+    assert repair.item.blocks[0].origin == Origin.interrupted
+    context = Session(repaired.loaded_events).model_context()
+    assert [item.role for item in context.items] == [Role.assistant, Role.tool]
+    assert context.items[1].blocks[0].call_id == "legacy-c1"
+    event_count = len(repaired.loaded_events)
+    repaired.close()
+
+    reopened = Log.open(path, OpenMode.repair, cwd)
+    assert len(reopened.loaded_events) == event_count
+    reopened.close()
+
+
 # ---- physical storage -----------------------------------------------------------------------
 
 

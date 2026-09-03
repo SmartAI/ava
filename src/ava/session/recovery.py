@@ -27,7 +27,7 @@ from ava.session.event import (
 )
 
 INTERRUPTED_TOOL_TEXT = (
-    "[Tool call interrupted because the previous Ava process exited before recording a result.]"
+    "[Tool call ended without a recorded result; Ava repaired it while loading the session.]"
 )
 
 
@@ -43,6 +43,7 @@ class _LifecycleScan:
         self.last_step: int | None = None
         self.required_turn_reason: TurnEndReason | None = None
         self.unanswered_calls: list[str] = []
+        self.deferred_repairs: list[str] = []
 
     def consume(self, event: Event) -> None:
         payload = event.payload
@@ -68,9 +69,10 @@ class _LifecycleScan:
 
     def finish(self) -> list[EventPayload]:
         repair: list[EventPayload] = []
-        if self.unanswered_calls:
+        missing_results = self.deferred_repairs + self.unanswered_calls
+        if missing_results:
             item = Item(role=Role.tool)
-            for call_id in self.unanswered_calls:
+            for call_id in missing_results:
                 block = make_tool_result_block(call_id, INTERRUPTED_TOOL_TEXT, True)
                 block.origin = Origin.interrupted
                 item.blocks.append(block)
@@ -123,8 +125,13 @@ class _LifecycleScan:
                 f"turn {ended.turn} end reason does not match its preceding error step"
             )
         self.turn = None
-        if not self.unanswered_calls:
-            self.required_turn_reason = None
+        if self.unanswered_calls:
+            # Ava versions before lifecycle recovery could close a failed tool turn without
+            # recording results. Preserve that history and append a durable repair at the tail;
+            # Session.model_context() projects it beside the original assistant call.
+            self.deferred_repairs.extend(self.unanswered_calls)
+            self.unanswered_calls.clear()
+        self.required_turn_reason = None
 
     def _start_step(self, started: StepStart) -> None:
         if self.turn is None:
@@ -205,7 +212,11 @@ class _LifecycleScan:
         for block in assistant.item.blocks:
             if block.kind != ContentBlockKind.tool_call:
                 continue
-            if not block.call_id or block.call_id in self.unanswered_calls:
+            if (
+                not block.call_id
+                or block.call_id in self.unanswered_calls
+                or block.call_id in self.deferred_repairs
+            ):
                 raise _lifecycle_error(
                     "assistant/message contains an empty or duplicate tool call id"
                 )
@@ -215,9 +226,12 @@ class _LifecycleScan:
         for block in result.item.blocks:
             if block.kind != ContentBlockKind.tool_result:
                 continue
-            if block.call_id not in self.unanswered_calls:
+            if block.call_id in self.unanswered_calls:
+                self.unanswered_calls.remove(block.call_id)
+            elif block.call_id in self.deferred_repairs:
+                self.deferred_repairs.remove(block.call_id)
+            else:
                 raise _lifecycle_error(f"tool/result answers unknown call '{block.call_id}'")
-            self.unanswered_calls.remove(block.call_id)
         if not self.unanswered_calls:
             if (
                 self.required_turn_reason is not None

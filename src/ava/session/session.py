@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ava.base import AvaError, ErrorKind
-from ava.llm.types import Context
+from ava.llm.types import ContentBlockKind, Context, Item, Origin, Role
 from ava.session.event import (
     AssistantChunk,
     AssistantMessage,
@@ -30,6 +30,7 @@ from ava.session.event import (
     UserMessage,
     now_ms,
 )
+from ava.session.recovery import INTERRUPTED_TOOL_TEXT
 
 EventSink = Callable[[Event], None]
 
@@ -183,6 +184,18 @@ class Session:
 
     def model_context(self) -> Context:
         context = Context()
+        # Recovery repairs old error-closed turns by appending interrupted tool results. Providers
+        # require each result beside its original assistant call, so project those repair blocks at
+        # that semantic position rather than their later append-only storage position.
+        relocated_results = {
+            block.call_id: block
+            for event in self._events
+            if isinstance(event.payload, ToolResult)
+            for block in event.payload.item.blocks
+            if block.kind == ContentBlockKind.tool_result
+            and block.origin == Origin.interrupted
+            and block.text == INTERRUPTED_TOOL_TEXT
+        }
         covered_end: int | None = None
         seed_seq = 0
         for event in reversed(self._events):
@@ -206,7 +219,39 @@ class Session:
                 if visible(event.seq):
                     context.items.extend(message.item for message in payload.claimed)
             elif isinstance(payload, UserMessage | AssistantMessage | ToolResult):
-                if visible(event.seq):
+                if not visible(event.seq):
+                    continue
+                if isinstance(payload, AssistantMessage):
+                    context.items.append(payload.item)
+                    repaired = [
+                        relocated_results.pop(block.call_id)
+                        for block in payload.item.blocks
+                        if block.kind == ContentBlockKind.tool_call
+                        and block.call_id in relocated_results
+                    ]
+                    if repaired:
+                        context.items.append(Item(role=Role.tool, blocks=repaired))
+                elif isinstance(payload, ToolResult):
+                    ordinary = [
+                        block
+                        for block in payload.item.blocks
+                        if not (
+                            block.kind == ContentBlockKind.tool_result
+                            and block.origin == Origin.interrupted
+                            and block.text == INTERRUPTED_TOOL_TEXT
+                        )
+                    ]
+                    if len(ordinary) == len(payload.item.blocks):
+                        context.items.append(payload.item)
+                    elif ordinary:
+                        context.items.append(
+                            Item(
+                                role=payload.item.role,
+                                blocks=ordinary,
+                                provenance=payload.item.provenance,
+                            )
+                        )
+                else:
                     context.items.append(payload.item)
         return context
 
