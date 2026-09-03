@@ -22,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from ava.agent import Agent, CancelCause, CompactionOptions, CompactNowOutcome, Status
+from ava.agent.prompt import discover_skills
 from ava.app.attach import TEXT_LIMIT, decode_base64, sniff_image, valid_utf8_prefix
 from ava.app.web.events import event_json
 from ava.base import AvaError, ErrorKind
@@ -521,6 +522,26 @@ def create_app(
         except AvaError as error:
             return _error(409 if error.recoverable else 503, error.message)
         return JSONResponse({"outcome": outcome.value, "message": COMPACTION_MESSAGES[outcome]})
+
+    @app.get("/api/chats/{chat_id}/skills")
+    async def skills(chat_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        catalog = discover_skills(found[0].path)
+        return JSONResponse(
+            {
+                "skills": [
+                    {
+                        "name": skill.name,
+                        "description": skill.description,
+                        "scope": skill.scope,
+                        "path": str(skill.path),
+                    }
+                    for skill in catalog
+                ]
+            }
+        )
 
     @app.get("/api/chats/{chat_id}/events")
     async def events(chat_id: str, request: Request) -> Response:

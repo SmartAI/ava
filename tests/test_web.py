@@ -420,3 +420,20 @@ async def test_compact_now_appends_a_seed_and_refuses_while_busy(
     assert "## Files" in seed["blocks"][0]["text"] and seed["covered_end"] > 0
     again = await client.post("/api/chats/c1/compact")
     assert again.json()["outcome"] == "nothing_to_compact"
+
+
+async def test_skills_route_lists_the_project_catalog(client: httpx.AsyncClient, project: Path):
+    skill = project / ".agents/skills/deploy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\ndescription: Ship the thing\n---\n")
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    listed = (await client.get("/api/chats/c1/skills")).json()["skills"]
+    assert listed == [
+        {
+            "name": "deploy",
+            "description": "Ship the thing",
+            "scope": "project",
+            "path": str(skill / "SKILL.md"),
+        }
+    ]
+    assert (await client.get("/api/chats/nope/skills")).status_code == 404
