@@ -13,7 +13,7 @@ from functools import cache
 from pathlib import Path
 
 from ava.base import AvaError, ErrorKind
-from ava.llm.types import ContentBlockKind, Context, Item, Role, make_text_block
+from ava.llm.types import ContentBlock, ContentBlockKind, Context, Item, Role, make_text_block
 from ava.session.event import (
     AssistantMessage,
     CompactionSeed,
@@ -181,22 +181,25 @@ def assemble_seed(
     )
 
 
-def _estimate_text_tokens(text: str) -> int:
+def estimate_text_tokens(text: str) -> int:
     return (len(text.encode("utf-8")) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
 
 
-def estimate_item_tokens(item: Item) -> int:
-    tokens = ITEM_OVERHEAD_TOKENS
-    for block in item.blocks:
-        tokens += BLOCK_OVERHEAD_TOKENS
-        tokens += _estimate_text_tokens(block.text)
-        tokens += _estimate_text_tokens(block.arguments_json)
-        tokens += _estimate_text_tokens(block.display_path)
-        tokens += _estimate_text_tokens(block.call_id)
-        tokens += _estimate_text_tokens(block.tool_name)
-        if block.kind == ContentBlockKind.image:
-            tokens += IMAGE_BLOCK_TOKENS
+def estimate_block_tokens(block: ContentBlock) -> int:
+    """One block's price including its framing; images cost a fixed amount."""
+    tokens = BLOCK_OVERHEAD_TOKENS
+    tokens += estimate_text_tokens(block.text)
+    tokens += estimate_text_tokens(block.arguments_json)
+    tokens += estimate_text_tokens(block.display_path)
+    tokens += estimate_text_tokens(block.call_id)
+    tokens += estimate_text_tokens(block.tool_name)
+    if block.kind == ContentBlockKind.image:
+        tokens += IMAGE_BLOCK_TOKENS
     return tokens
+
+
+def estimate_item_tokens(item: Item) -> int:
+    return ITEM_OVERHEAD_TOKENS + sum(estimate_block_tokens(block) for block in item.blocks)
 
 
 def estimate_event_tokens(event: Event) -> int:
