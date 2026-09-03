@@ -6,6 +6,7 @@ import asyncio
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -75,14 +76,55 @@ class ModelChoices:
     provider_catalog_available: bool = False
 
 
+StatusListener = Callable[[Status, bool], None]
+
+
 class DriveState:
-    """The phase machine. Public status tracks user-driven work only."""
+    """The phase machine. Public status tracks user-driven work only.
+
+    Listeners observe every change of ``status`` or ``turn_open`` so a frontend can render the
+    transient control state without polling; durable events remain the authority for history.
+    """
 
     def __init__(self) -> None:
-        self.status = Status.idle
-        self.turn_open = False
+        self._status = Status.idle
+        self._turn_open = False
         self.tool_results_owed = False
         self.resume_requested = False
+        self._listeners: list[StatusListener] = []
+
+    @property
+    def status(self) -> Status:
+        return self._status
+
+    @status.setter
+    def status(self, value: Status) -> None:
+        if value != self._status:
+            self._status = value
+            self._notify()
+
+    @property
+    def turn_open(self) -> bool:
+        return self._turn_open
+
+    @turn_open.setter
+    def turn_open(self, value: bool) -> None:
+        if value != self._turn_open:
+            self._turn_open = value
+            self._notify()
+
+    def watch(self, listener: StatusListener) -> Callable[[], None]:
+        self._listeners.append(listener)
+
+        def remove() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return remove
+
+    def _notify(self) -> None:
+        for listener in list(self._listeners):
+            listener(self._status, self._turn_open)
 
     def begin(self, has_pending: bool) -> bool:
         if self.status != Status.idle or (not has_pending and not self.resume_requested):

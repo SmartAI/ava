@@ -7,6 +7,7 @@ Frontends submit input with ``followup`` and ``steer``, control activity with ``
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from ava.agent.compaction import CompactionOutcome, compact, select_compaction_end
@@ -205,6 +206,10 @@ class Agent:
     def resume(self) -> None:
         self._state.drive_state.request_resume()
 
+    def watch_status(self, listener: Callable[[Status, bool], None]) -> Callable[[], None]:
+        """Observe transient control state (status, turn_open); returns an unsubscribe function."""
+        return self._state.drive_state.watch(listener)
+
     # ---- model selection -----------------------------------------------------------------
 
     async def model_choices(self) -> ModelChoices:
@@ -277,6 +282,20 @@ class Agent:
         next_effort = efforts[0] if index < 0 or index + 1 >= len(efforts) else efforts[index + 1]
         state.pending_effort = next_effort
         return next_effort
+
+    def select_effort(self, effort: str | None) -> None:
+        """Set (or clear) the reasoning effort applied at the next step boundary."""
+        if effort is not None:
+            if not effort:
+                raise AvaError(ErrorKind.invalid_argument, "effort must not be empty")
+            capabilities = self._state.provider.capabilities(self.current_selection().model)
+            if capabilities.effort_values is not None and effort not in capabilities.effort_values:
+                raise AvaError(
+                    ErrorKind.invalid_argument,
+                    f"the current model does not advertise reasoning effort '{effort}'; "
+                    f"choose one of {', '.join(capabilities.effort_values) or 'none'}",
+                )
+        self._state.pending_effort = effort
 
     def reload_credentials(
         self, auth_requirement: AuthRequirement = AuthRequirement.required

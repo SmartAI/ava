@@ -10,7 +10,7 @@ import pytest
 
 from ava.agent import Agent, CancelCause, CompactionOptions, Status
 from ava.base import AvaError
-from ava.llm import Origin, StopReason, StreamEvent, StreamEventKind, Usage
+from ava.llm import ModelCapabilities, Origin, StopReason, StreamEvent, StreamEventKind, Usage
 from ava.llm.types import ContentBlockKind
 from ava.session import (
     AssistantMessage,
@@ -352,4 +352,42 @@ async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, projec
         isinstance(e.payload, AssistantMessage) and e.payload.item is context.items[0]
         for e in agent.state.session.events
     )
+    agent.close()
+
+
+async def test_status_watchers_and_effort_selection(home: Path, project: Path):
+    provider = ScriptedProvider([text_response("x")])
+    provider.gate = asyncio.Event()
+    agent = Agent.create(provider, project)
+    seen: list[tuple[str, bool]] = []
+    unsubscribe = agent.watch_status(
+        lambda status, turn_open: seen.append((status.value, turn_open))
+    )
+    await agent.followup(message("go"))
+    drive = asyncio.create_task(agent.drive())
+    await provider.started.wait()
+    agent.cancel(CancelCause.user_pause)
+    provider.gate.set()
+    await drive
+    agent.resume()
+    assert seen == [
+        ("running", False),
+        ("running", True),
+        ("pausing", True),
+        ("pausing", False),
+        ("paused", False),
+        ("idle", False),
+    ]
+    unsubscribe()
+    await agent.drive()
+    assert seen[-1] == ("idle", False)  # nothing observed after unsubscribing
+    provider.model_overrides[provider.selection.model] = ModelCapabilities(
+        effort_values=["low", "high"]
+    )
+    agent.select_effort("high")
+    assert agent.current_selection().effort == "high"
+    with pytest.raises(AvaError):
+        agent.select_effort("max")
+    agent.select_effort(None)
+    assert agent.current_selection().effort is None
     agent.close()
