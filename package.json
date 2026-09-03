@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tailwindcss -i src/ava/app/web/frontend/styles.css -o src/ava/app/web/assets/app.min.css --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --minify --format=iife --target=es2022 --outfile=src/ava/app/web/assets/app.min.js",
     "check": "tailwindcss -i src/ava/app/web/frontend/styles.css -o /dev/null --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --format=iife --target=es2022 --outfile=/dev/null",
-    "test": "node --test src/ava/app/web/frontend/activity.test.js"
+    "test": "node --test src/ava/app/web/frontend/*.test.js"
   },
   "dependencies": {
     "react": "19.2.8",
