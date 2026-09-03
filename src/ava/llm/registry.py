@@ -11,6 +11,7 @@ from pathlib import Path
 from ava.base import AvaError, CancelToken, ErrorKind
 from ava.base.cancel import NEVER
 from ava.llm.anthropic import AnthropicProvider, AnthropicSettings
+from ava.llm.codex import CodexProvider, load_codex_credential
 from ava.llm.configuration import (
     CODEX_BASE_URL,
     ProviderSettings,
@@ -117,9 +118,8 @@ def _provider_from_settings(
             )
         return finish(MockProvider(settings.selection, Path(script)))
     if settings.family == "codex":
-        raise AvaError(
-            ErrorKind.provider, "the 'codex' provider family is not available in this build"
-        )
+        # Read-only reuse of the Codex CLI's ChatGPT credential; Ava never logs in or refreshes.
+        return finish(CodexProvider(settings.selection, settings.base_url, load_codex_credential()))
     api_key = explicit_api_key or ""
     if not api_key and settings.api_key_env:
         if not _ENV_NAME.match(settings.api_key_env):

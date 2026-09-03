@@ -283,15 +283,21 @@ def _default_settings(selection: Selection, flags: _Flags, family: str) -> Provi
         elif selection.provider == "deepseek":
             settings.api_key_env = "DEEPSEEK_API_KEY"
     elif family == "codex":
-        raise AvaError(
-            ErrorKind.provider,
-            "the 'codex' provider family is not available in this build; use anthropic, openai, or mock",
-        )
+        if selection.provider != "codex":
+            raise AvaError(
+                ErrorKind.invalid_argument,
+                "Codex credentials are available only through the built-in 'codex' provider",
+            )
+        if not selection.model:
+            selection.model = "default"
+            settings.model_may_be_alias = True
+            flags.configured_aliases_allowed = False
+        settings.base_url = CODEX_BASE_URL
     else:
         raise AvaError(
             ErrorKind.provider,
             f"provider '{selection.provider}' uses unsupported family '{family}'; this build supports "
-            "anthropic, openai, and mock",
+            "anthropic, openai, codex, and mock",
         )
     return settings
 
