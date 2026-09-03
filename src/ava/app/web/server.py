@@ -459,6 +459,52 @@ def create_app(
             _begin_drive(chat)
         return JSONResponse(chat.summary(), status_code=202)
 
+    @app.get("/api/chats/{chat_id}/models")
+    async def models(chat_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        agent = found[1].agent
+        choices = await agent.model_choices()
+        selection = agent.current_selection()
+        capabilities = agent.state.provider.capabilities(selection.model)
+        return JSONResponse(
+            {
+                "provider": selection.provider,
+                "model": selection.model,
+                "effort": selection.effort,
+                "effort_values": capabilities.effort_values,
+                "models": choices.models,
+                "catalog_available": choices.provider_catalog_available,
+            }
+        )
+
+    @app.post("/api/chats/{chat_id}/model")
+    async def select_model(chat_id: str, request: Request) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        body = await _json_body(request)
+        if not isinstance(body, dict):
+            return _error(400, "body must be a JSON object")
+        agent = found[1].agent
+        try:
+            if "model" in body:
+                if not isinstance(body["model"], str):
+                    return _error(400, "model must be a JSON string")
+                agent.select_model(body["model"])
+            if "effort" in body:
+                effort = body["effort"]
+                if effort is not None and not isinstance(effort, str):
+                    return _error(400, "effort must be a JSON string or null")
+                agent.select_effort(effort)
+        except AvaError as error:
+            return _error(400, error.message)
+        selection = agent.current_selection()
+        return JSONResponse(
+            {"provider": selection.provider, "model": selection.model, "effort": selection.effort}
+        )
+
     @app.get("/api/chats/{chat_id}/events")
     async def events(chat_id: str, request: Request) -> Response:
         found = registry.find_chat(chat_id)

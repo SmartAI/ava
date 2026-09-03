@@ -366,3 +366,29 @@ async def test_pause_resume_and_abort_controls(client: httpx.AsyncClient, script
         client, "c1", lambda e: e["kind"] == "status" and e["status"] == "idle"
     )
     assert (await client.get("/api/chats/c1")).json()["status"] == "idle"
+
+
+async def test_model_and_effort_selection_apply_at_the_next_step(
+    client: httpx.AsyncClient, scripted
+):
+    from ava.llm import ModelCapabilities
+
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    provider = scripted[0]
+    provider.model_overrides["scripted-model"] = ModelCapabilities(effort_values=["low", "high"])
+    provider.model_overrides["other-model"] = ModelCapabilities(effort_values=["max"])
+    listed = (await client.get("/api/chats/c1/models")).json()
+    assert listed["model"] == "scripted-model" and listed["effort"] is None
+    assert listed["effort_values"] == ["low", "high"] and listed["catalog_available"] is False
+    assert "scripted-model" in listed["models"]
+    assert (await client.post("/api/chats/c1/model", json={"effort": "max"})).status_code == 400
+    chosen = await client.post(
+        "/api/chats/c1/model", json={"model": "other-model", "effort": "max"}
+    )
+    assert chosen.json() == {"provider": "scripted", "model": "other-model", "effort": "max"}
+    assert (await client.post("/api/chats/c1/model", json={"model": ""})).status_code == 400
+    await client.post("/api/chats/c1/messages", json={"text": "go"})
+    events = await _events_until(client, "c1", "turn/end")
+    selection = next(e for e in events if e["kind"] == "selection")
+    assert selection["model"] == "other-model" and selection["effort"] == "max"
+    assert provider.selection.model == "other-model"
