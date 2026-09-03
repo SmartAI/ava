@@ -98,8 +98,10 @@ aborting) the moment core accepts a request.
 | pausing | steer the resumed turn | queue a follow-up turn | abort now | abort |
 | paused | resume (text steers first) | queue without resuming | | resume |
 
-Chips above the composer count queued follow-ups and steering, derived from the durable inbox
-events. Typing `/` opens the command menu:
+Chips above the composer count queued follow-ups and steering, derived from the durable inbox events.
+The status bar below the composer shows the selected model and effort, working directory, and estimated context remaining.
+Its context value comes from the provider-neutral model context and the selected model's context window.
+Typing `/` opens the command menu:
 
 | Command | Effect |
 | --- | --- |

@@ -1,3 +1,4 @@
+<!doctype html>
 <!-- SPDX-License-Identifier: MIT -->
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -316,17 +317,11 @@
   }
 
   #title {
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  #cwd {
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    color: var(--label-caption);
-    font-family: var(--font-code);
-    font-size: 12px;
+    font-size: 14px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -666,6 +661,60 @@
     box-shadow: 0 0 0 1px var(--accent), var(--shadow-lv2);
   }
 
+  .statusBar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: var(--composer-width);
+    min-height: 26px;
+    padding: 5px 12px 0;
+    color: var(--label-caption);
+    font-family: var(--font-code);
+    font-size: 11px;
+  }
+
+  .statusContext {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .statusAction {
+    flex: none;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .statusAction:hover, .statusAction:focus-visible {
+    color: var(--label-secondary);
+  }
+
+  .statusAction:focus-visible {
+    border-radius: 3px;
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .statusSeparator { flex: none; color: var(--border-l3); }
+
+  #cwd {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #modelChip { max-width: 45%; }
+  #contextStatus { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
   .attachments {
     display: flex; gap: 8px; min-width: 0; overflow-x: auto;
   }
@@ -836,7 +885,6 @@
   .slashMenu .pickName { font-family: var(--font-code); font-size: 13px; }
   .slashMenu .pickPath { font-family: var(--font-ui); font-size: 12px; }
 
-  #modelChip { max-width: 260px; }
   #modelChip .chipName { font-family: var(--font-code); }
 
   .pick[data-selected] .pickName::after { content: ' ✓'; color: var(--accent); }
@@ -990,6 +1038,10 @@
 
   .button[data-primary]:hover { background: var(--accent-dim); }
 
+  @media (max-width: 700px) {
+    .hint { display: none; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .status { background: none; color: var(--label-tertiary); animation: none; }
     .dot[data-state='running'] { animation: none; }
@@ -1029,10 +1081,6 @@
   <header>
     <span class="dot" id="headDot"></span>
     <span id="title">No chat</span>
-    <span id="cwd"></span>
-    <button class="chip" id="modelChip" title="Model and reasoning effort (/model)" hidden>
-      <span class="chipName" id="modelName"></span>
-    </button>
     <button class="iconBtn" id="theme" title="Toggle theme" aria-label="Toggle theme">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
         <circle cx="8" cy="8" r="3.25" />
@@ -1078,6 +1126,16 @@
             </svg>
           </button>
         </div>
+      </div>
+      <div class="statusBar" id="statusBar" aria-label="Chat status" hidden>
+        <div class="statusContext">
+          <button class="statusAction" id="modelChip" title="Model and reasoning effort (/model)" hidden>
+            <span class="chipName" id="modelName"></span>
+          </button>
+          <span class="statusSeparator" aria-hidden="true">·</span>
+          <span id="cwd"></span>
+        </div>
+        <button class="statusAction" id="contextStatus" title="Show context details (/context)" hidden></button>
       </div>
     </div>
   </div>
@@ -1516,6 +1574,33 @@
     }
   }
 
+  const formatTokenCount = value => {
+    if (value < 1000) return String(value)
+    if (value < 100000) return `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k`
+    return `${Math.round(value / 1000)}k`
+  }
+
+  function setStatusInfo(info) {
+    if (!info) {
+      $('statusBar').hidden = true
+      $('contextStatus').hidden = true
+      return
+    }
+    setSelection({ provider: info.provider, model: info.model, effort: info.effort ?? null })
+    $('cwd').textContent = info.cwd || ''
+    $('cwd').title = info.cwd || ''
+    $('statusBar').hidden = false
+
+    const context = $('contextStatus')
+    const remaining = info.context_remaining_percent
+    const windowTokens = info.context_window_tokens
+    context.hidden = !Number.isFinite(remaining) || !windowTokens
+    if (!context.hidden) {
+      context.textContent = `Context ${remaining}% left`
+      context.title = `About ${formatTokenCount(info.context_used_tokens)} of ${formatTokenCount(windowTokens)} tokens used. Show context details (/context)`
+    }
+  }
+
   function scrollToBottom() {
     const scroll = $('scroll')
     // Only follow the tail when the reader is already there; yanking the
@@ -1594,7 +1679,9 @@
     // The unkeyed status channel mirrors Agent.status: idle, running, pausing, paused, aborting.
     stream.addEventListener('status', message => {
       if (state.current !== id || state.selection !== selection) return
-      setStatus(JSON.parse(message.data).status)
+      const info = JSON.parse(message.data)
+      setStatus(info.status)
+      setStatusInfo(info)
     })
     state.stream = stream
   }
@@ -1690,6 +1777,7 @@
     state.modelSelection = null
     state.lastAssistant = ''
     setSelection(null)
+    setStatusInfo(null)
     closeTail()
     column.textContent = ''
     if (statusRow) { clearInterval(clockTimer); statusRow = null }
@@ -1860,6 +1948,7 @@
   }
 
   $('modelChip').addEventListener('click', () => commands.model.run(''))
+  $('contextStatus').addEventListener('click', () => commands.context.run(''))
 
   // ---- Generic modal -----------------------------------------------------
   // The project picker owns the overlay's default contents; a generic list

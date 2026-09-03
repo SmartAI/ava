@@ -101,7 +101,9 @@ async def test_fence_rejects_foreign_host_and_origin(client: httpx.AsyncClient):
     same = await client.get("/api/projects", headers={"origin": f"http://127.0.0.1:{client.port}"})
     assert same.status_code == 200
     index = await client.get("/")
-    assert index.status_code == 200 and "<title>ava</title>" in index.text and "katex" in index.text
+    assert index.status_code == 200
+    assert index.text.startswith("<!doctype html>")
+    assert "<title>ava</title>" in index.text and "katex" in index.text
     assert (await client.get("/favicon.ico")).status_code == 204
 
 
@@ -189,10 +191,9 @@ async def test_message_runs_a_turn_and_events_replay(client: httpx.AsyncClient, 
         "chat": {"id": "c1", "title": "photo.png", "status": "running", "archived": False},
     }
     events = await _events_until(client, "c1", "turn/end")
-    assert (
-        events[0] == {"kind": "status", "status": "running", "turn_open": True}
-        or events[0]["kind"] == "status"
-    )
+    assert events[0]["kind"] == "status"
+    assert events[0]["status"] in ("running", "idle")
+    assert events[0]["model"] == "scripted-model" and events[0]["cwd"]
     events = [event for event in events if event["kind"] != "status"]
     kinds = [event["kind"] for event in events]
     assert kinds == [
@@ -222,9 +223,42 @@ async def test_message_runs_a_turn_and_events_replay(client: httpx.AsyncClient, 
     # Last-Event-ID suppresses already received sequence numbers on reconnect.
     replay = await _events_until(client, "c1", "turn/end", last="10")
     assert [event["seq"] for event in replay if event["kind"] != "status"] == [11, 12]
-    assert replay[0] == {"kind": "status", "status": "idle", "turn_open": False}
+    assert replay[0]["kind"] == "status"
+    assert replay[0]["status"] == "idle" and replay[0]["turn_open"] is False
     chat = (await client.get("/api/chats/c1")).json()
     assert chat["status"] == "idle" and chat["title"] == "photo.png"
+
+
+async def test_status_channel_reports_provider_neutral_context_usage(
+    client: httpx.AsyncClient, scripted, project: Path
+):
+    from ava.llm import Usage
+
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    initial = await _events_until(client, "c1", "status")
+    assert initial == [
+        {
+            "kind": "status",
+            "status": "idle",
+            "turn_open": False,
+            "cwd": str(project),
+            "provider": "scripted",
+            "model": "scripted-model",
+            "effort": None,
+            "context_used_tokens": 0,
+            "context_window_tokens": 10_000,
+            "context_remaining_percent": 100,
+        }
+    ]
+
+    scripted[0].scripts = [
+        text_response("answer", usage=Usage(input=3000, cached_read=1000, output=500))
+    ]
+    await client.post("/api/chats/c1/messages", json={"text": "hello"})
+    await _events_until(client, "c1", "turn/end")
+    settled = await _events_until(client, "c1", "status")
+    assert settled[0]["context_used_tokens"] == 4500
+    assert settled[0]["context_remaining_percent"] == 55
 
 
 async def test_running_enter_steers_and_alt_enter_queues(client: httpx.AsyncClient, scripted):
@@ -406,6 +440,21 @@ async def test_model_and_effort_selection_apply_at_the_next_step(
     selection = next(e for e in events if e["kind"] == "selection")
     assert selection["model"] == "other-model" and selection["effort"] == "max"
     assert provider.selection.model == "other-model"
+
+    await client.post("/api/chats/c1/model", json={"model": "scripted-model"})
+    status_count = 0
+
+    def after_replay(event: dict) -> bool:
+        nonlocal status_count
+        if event["kind"] == "status":
+            status_count += 1
+        return status_count == 2
+
+    replay = await _events_until(client, "c1", after_replay)
+    assert any(
+        event["kind"] == "selection" and event["model"] == "other-model" for event in replay
+    )
+    assert replay[-1]["kind"] == "status" and replay[-1]["model"] == "scripted-model"
 
 
 async def test_compact_now_appends_a_seed_and_refuses_while_busy(
