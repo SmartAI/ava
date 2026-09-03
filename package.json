@@ -1,0 +1,17 @@
+{
+  "name": "ava-webui",
+  "private": true,
+  "scripts": {
+    "build": "tailwindcss -i src/ava/app/web/frontend/styles.css -o src/ava/app/web/assets/app.min.css --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --minify --format=iife --target=es2022 --outfile=src/ava/app/web/assets/app.min.js",
+    "check": "tailwindcss -i src/ava/app/web/frontend/styles.css -o /dev/null --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --format=iife --target=es2022 --outfile=/dev/null"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.3"
+  }
+}
