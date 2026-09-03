@@ -56,32 +56,34 @@ async def client(home: Path, project: Path, scripted):
     await task
 
 
+async def _sse_events(response: httpx.Response):
+    """Session events as their JSON payload; unkeyed ``status`` messages as ``{"kind": "status"}``."""
+    name = ""
+    async for line in response.aiter_lines():
+        if line.startswith("event: "):
+            name = line[7:]
+        elif line.startswith("data: "):
+            event = json.loads(line[6:])
+            if name == "status":
+                event = {"kind": "status", **event}
+            name = ""
+            yield event
+
+
 async def _events_until(
     client: httpx.AsyncClient, chat_id: str, stop, last: str | None = None
 ) -> list[dict]:
-    """Read the stream until ``stop`` (an event kind or a predicate) matches.
-
-    Session events come back as their JSON payload; unkeyed ``status`` messages come back as
-    ``{"kind": "status", ...}`` so a test can watch control state on the same channel.
-    """
+    """Read the stream until ``stop`` (an event kind or a predicate) matches."""
     done = stop if callable(stop) else (lambda event: event["kind"] == stop)
     headers = {"last-event-id": last} if last is not None else {}
     events: list[dict] = []
-    name = ""
     async with client.stream("GET", f"/api/chats/{chat_id}/events", headers=headers) as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
-        async for line in response.aiter_lines():
-            if line.startswith("event: "):
-                name = line[7:]
-            elif line.startswith("data: "):
-                event = json.loads(line[6:])
-                if name == "status":
-                    event = {"kind": "status", **event}
-                name = ""
-                events.append(event)
-                if done(event):
-                    break
+        async for event in _sse_events(response):
+            events.append(event)
+            if done(event):
+                break
     return events
 
 
@@ -331,10 +333,22 @@ async def test_pause_resume_and_abort_controls(client: httpx.AsyncClient, script
         await client.post("/api/chats/c1/messages", json={"text": "queued", "delivery": "followup"})
     ).status_code == 202
     assert (await client.get("/api/chats/c1")).json()["status"] == "paused"
-    resumed = await client.post("/api/chats/c1/resume")
-    assert resumed.status_code == 202
-    assert (await client.post("/api/chats/c1/resume")).status_code == 409
-    events = await _events_until(client, "c1", lambda e: e["kind"] == "turn/end" and e["turn"] == 3)
+    # Hold one live connection across the resume: the status channel must settle to idle after
+    # the last turn ends. A snapshot taken on reconnect would hide a missing final notification.
+    events = []
+    async with client.stream("GET", "/api/chats/c1/events") as response:
+        stream = _sse_events(response)
+        assert (await anext(stream))["status"] == "paused"
+        resumed = await client.post("/api/chats/c1/resume")
+        assert resumed.status_code == 202
+        assert (await client.post("/api/chats/c1/resume")).status_code == 409
+        seen_turn_three = False
+        async for event in stream:
+            events.append(event)
+            if event["kind"] == "turn/end" and event["turn"] == 3:
+                seen_turn_three = True
+            elif seen_turn_three and event["kind"] == "status" and event["status"] == "idle":
+                break
     claims = [
         (e["turn"], e["step"], e["target"], e["messages"][0]["blocks"][-1]["text"])
         for e in events

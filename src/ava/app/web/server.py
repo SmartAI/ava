@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -106,6 +106,12 @@ class Chat:
     image_attachments: int = 0
     drive: DriveHandoff = field(default_factory=DriveHandoff)
     task: asyncio.Task | None = None
+    status_watchers: list[Callable[[], None]] = field(default_factory=list)
+
+    def notify_status(self) -> None:
+        """Wake status subscribers after a change the agent itself does not signal."""
+        for watcher in list(self.status_watchers):
+            watcher()
 
     @property
     def status(self) -> str:
@@ -624,16 +630,21 @@ def _begin_drive(chat: Chat) -> None:
     agent = chat.agent
 
     async def run_drives() -> None:
-        while True:
-            chat.drive.started = True
-            try:
-                await agent.drive()
-                succeeded = True
-            except AvaError:
-                succeeded = False
-            if not chat.drive.finish(succeeded):
-                return
-            chat.drive.running = True
+        chat.notify_status()
+        try:
+            while True:
+                chat.drive.started = True
+                try:
+                    await agent.drive()
+                    succeeded = True
+                except AvaError:
+                    succeeded = False
+                if not chat.drive.finish(succeeded):
+                    return
+                chat.drive.running = True
+        finally:
+            # The drive flag folds into the reported status, so its end is a status change too.
+            chat.notify_status()
 
     chat.task = asyncio.create_task(run_drives())
 
@@ -657,12 +668,13 @@ async def _event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
             return
         queue.put_nowait(("event", event))
 
-    def on_status(status: Status, turn_open: bool) -> None:
+    def on_status(*_: object) -> None:
         queue.put_nowait(("status", status_payload(chat)))
 
     queue.put_nowait(("status", status_payload(chat)))
     subscription = agent.subscribe(emit)
     unwatch = agent.watch_status(on_status)
+    chat.status_watchers.append(on_status)
     try:
         while True:
             channel, payload = await queue.get()
@@ -676,6 +688,7 @@ async def _event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
             yield f"id: {payload.seq}\ndata: {encoded}\n\n".encode()
     finally:
         unwatch()
+        chat.status_watchers.remove(on_status)
         subscription.close()
 
 
