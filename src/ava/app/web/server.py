@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from ava.agent import Agent, CompactionOptions, Status
+from ava.agent import Agent, CancelCause, CompactionOptions, Status
 from ava.app.attach import TEXT_LIMIT, decode_base64, sniff_image, valid_utf8_prefix
 from ava.app.web.events import event_json
 from ava.base import AvaError, ErrorKind
@@ -411,7 +411,12 @@ def create_app(
         chat.attachment_bytes += decoded.decoded_bytes
         chat.image_attachments += decoded.images
         agent = chat.agent
-        steering = delivery == "steer" and agent.turn_open
+        # Enter steers while a turn is open; while paused, steering is retained for resume.
+        steering = delivery == "steer" and agent.status in (
+            Status.running,
+            Status.pausing,
+            Status.paused,
+        )
         followed_running_drive = chat.drive.running
         try:
             if steering:
@@ -427,6 +432,32 @@ def create_app(
         if chat.drive.acknowledge(followed_running_drive, agent.status):
             _begin_drive(chat)
         return JSONResponse({"accepted": True, "chat": chat.summary()}, status_code=202)
+
+    @app.post("/api/chats/{chat_id}/cancel")
+    async def cancel(chat_id: str, request: Request) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        body = await _json_body(request)
+        cause = body.get("cause") if isinstance(body, dict) else None
+        if cause not in ("pause", "abort"):
+            return _error(400, "cause must be 'pause' or 'abort'")
+        chat = found[1]
+        chat.agent.cancel(CancelCause.user_pause if cause == "pause" else CancelCause.user_abort)
+        return JSONResponse(chat.summary())
+
+    @app.post("/api/chats/{chat_id}/resume")
+    async def resume(chat_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return _error(404, "no such chat")
+        chat = found[1]
+        if chat.agent.status != Status.paused:
+            return _error(409, "chat is not paused")
+        chat.agent.resume()
+        if chat.drive.acknowledge(False, chat.agent.status):
+            _begin_drive(chat)
+        return JSONResponse(chat.summary(), status_code=202)
 
     @app.get("/api/chats/{chat_id}/events")
     async def events(chat_id: str, request: Request) -> Response:

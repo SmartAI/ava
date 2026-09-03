@@ -301,3 +301,68 @@ def client_agent(client: httpx.AsyncClient, chat_id: str):
     found = registry.find_chat(chat_id)
     assert found is not None
     return found[1].agent
+
+
+async def test_pause_resume_and_abort_controls(client: httpx.AsyncClient, scripted):
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    provider = scripted[0]
+    provider.scripts = [
+        tool_call_response("c1", "bash", json.dumps({"command": "echo one"})),
+        text_response("after resume"),
+        text_response("second turn"),
+    ]
+    provider.gate = asyncio.Event()
+    await client.post("/api/chats/c1/messages", json={"text": "go"})
+    await asyncio.wait_for(provider.started.wait(), 5)
+    assert (await client.post("/api/chats/c1/cancel", json={"cause": "later"})).status_code == 400
+    paused = await client.post("/api/chats/c1/cancel", json={"cause": "pause"})
+    assert paused.json()["status"] == "pausing"
+    # Steering while pausing is retained for the resumed continuation.
+    steer = await client.post(
+        "/api/chats/c1/messages", json={"text": "and then", "delivery": "steer"}
+    )
+    assert steer.status_code == 202
+    provider.gate.set()
+    # Status flips to paused before the closing record is durable, so wait on the record.
+    events = await _events_until(client, "c1", lambda e: e["kind"] == "turn/end")
+    assert events[-1]["reason"] == "user_pause"
+    assert any(e["kind"] == "status" and e["status"] == "pausing" for e in events)
+    assert (
+        await client.post("/api/chats/c1/messages", json={"text": "queued", "delivery": "followup"})
+    ).status_code == 202
+    assert (await client.get("/api/chats/c1")).json()["status"] == "paused"
+    resumed = await client.post("/api/chats/c1/resume")
+    assert resumed.status_code == 202
+    assert (await client.post("/api/chats/c1/resume")).status_code == 409
+    events = await _events_until(client, "c1", lambda e: e["kind"] == "turn/end" and e["turn"] == 3)
+    claims = [
+        (e["turn"], e["step"], e["target"], e["messages"][0]["blocks"][-1]["text"])
+        for e in events
+        if e["kind"] == "step/claimed"
+    ]
+    # The paused turn is closed, so the continuation is a new turn that claims only steering
+    # (no synthetic user message); the queued follow-up opens the turn after it.
+    assert claims == [
+        (1, 1, "next_turn", "go"),
+        (2, 1, "next_step", "and then"),
+        (3, 1, "next_turn", "queued"),
+    ]
+    assert [e["reason"] for e in events if e["kind"] == "turn/end"] == [
+        "user_pause",
+        "completed",
+        "completed",
+    ]
+
+    provider.scripts = [text_response("never finishes")]
+    provider.started.clear()
+    provider.gate = asyncio.Event()
+    await client.post("/api/chats/c1/messages", json={"text": "abort me"})
+    await asyncio.wait_for(provider.started.wait(), 5)
+    aborted = await client.post("/api/chats/c1/cancel", json={"cause": "abort"})
+    assert aborted.json()["status"] == "aborting"
+    events = await _events_until(client, "c1", lambda e: e["kind"] == "turn/end" and e["turn"] == 4)
+    assert events[-1]["reason"] == "user_abort"
+    events = await _events_until(
+        client, "c1", lambda e: e["kind"] == "status" and e["status"] == "idle"
+    )
+    assert (await client.get("/api/chats/c1")).json()["status"] == "idle"
