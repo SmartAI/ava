@@ -54,6 +54,7 @@ async def client(home: Path, project: Path, scripted):
         yield client
     server.should_exit = True
     await task
+    assert all(provider.closed for provider in scripted)
 
 
 async def _sse_events(response: httpx.Response):

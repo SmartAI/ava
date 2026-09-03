@@ -2,9 +2,9 @@
 
 A coding-agent harness in Python: a durable, replayable session log, a `drive → turn → step` loop
 with a two-target inbox, four bounded tools, Anthropic and OpenAI-compatible providers, and a
-loopback Web UI. It is a port of [ava-cpp](../ava-cpp)'s architecture; the design documents there
-(`docs/agent-loop.md`, `docs/session-log.md`, `docs/model-layer.md`, `docs/functional-spec.md`)
-remain the specification this code implements.
+loopback Web UI. It is a port of ava-cpp's architecture; the local
+[architecture notes](docs/architecture.md) describe the boundaries and invariants this code
+implements.
 
 ## The shape
 
@@ -30,10 +30,10 @@ from pathlib import Path
 from ava.agent import Agent
 from ava.llm import Item, Role, make_text_block, provider_from_environment
 
-agent = Agent.create(provider_from_environment(), Path.cwd())
-subscription = agent.subscribe(lambda event: print(event.seq, type(event.payload).__name__))
-await agent.followup(Item(role=Role.user, blocks=[make_text_block("add a test for the parser")]))
-await agent.drive()
+async with Agent.create(provider_from_environment(), Path.cwd()) as agent:
+    subscription = agent.subscribe(lambda event: print(event.seq, type(event.payload).__name__))
+    await agent.followup(Item(role=Role.user, blocks=[make_text_block("add a test for the parser")]))
+    await agent.drive()
 ```
 
 Every model-visible fact is a durable event. The model's context, the browser's transcript, and
@@ -124,6 +124,7 @@ The checked-in browser bundle is rebuilt with `npm ci && npm run build` when tha
 ```sh
 uv run pytest
 uv run ruff check src tests
+uv run mypy src
 npm run check
 ```
 

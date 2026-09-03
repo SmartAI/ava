@@ -152,12 +152,11 @@ class _Turn:
 
     async def apply_pending_selection(self) -> None:
         provider = self.state.provider
-        while self.state.pending_model is not None:
-            pending, self.state.pending_model = self.state.pending_model, None
-            provider.selection.model = pending
-            provider.selection.effort = None
-            provider.selection_model_may_be_alias = pending in provider.model_aliases or _is_alias(
-                pending
+        while self.state.pending_selection is not None:
+            pending, self.state.pending_selection = self.state.pending_selection, None
+            provider.selection = pending
+            provider.selection_model_may_be_alias = (
+                pending.model in provider.model_aliases or _is_alias(pending.model)
             )
             await resolve_selection_model(provider, self.cancel)
             provider.context_window = (
@@ -165,8 +164,6 @@ class _Turn:
             )
             if self.drive.abort_requested:
                 return
-        if self.state.pending_effort is not None:
-            provider.selection.effort, self.state.pending_effort = self.state.pending_effort, None
 
     async def maybe_compact_at_seam(self) -> TurnOutcome | None:
         options = self.state.compaction_options

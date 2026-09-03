@@ -73,6 +73,7 @@ class ScriptedProvider(Provider):
         self.contexts: list[Context] = []
         self.gate: asyncio.Event | None = None
         self.started: asyncio.Event = asyncio.Event()
+        self.closed = False
 
     async def stream(
         self,
@@ -100,6 +101,9 @@ class ScriptedProvider(Provider):
             sink(event)
         sink(StreamEvent(kind=StreamEventKind.done))
         return stop
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def text_response(*deltas: str, usage: Usage | None = None) -> list:

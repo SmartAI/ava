@@ -59,7 +59,11 @@ class CancelToken:
         """
         self.raise_if_cancelled()
         task = asyncio.ensure_future(awaitable)
-        remove = self.on_cancel(task.cancel)
+
+        def cancel_task() -> None:
+            task.cancel()
+
+        remove = self.on_cancel(cancel_task)
         try:
             return await task
         except asyncio.CancelledError:
