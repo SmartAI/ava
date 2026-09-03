@@ -36,6 +36,7 @@ from ava.session.log import (
     SessionCandidate,
     canonical_working_directory,
     default_session_root,
+    discover_all_sessions_in,
     discover_sessions_in,
 )
 from ava.session.session import EventSink, Inbox, Session, Subscription
@@ -80,5 +81,6 @@ __all__ = [
     "UserMessage",
     "canonical_working_directory",
     "default_session_root",
+    "discover_all_sessions_in",
     "discover_sessions_in",
 ]

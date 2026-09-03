@@ -39,7 +39,10 @@ def web_asset() -> str:
 def create_app(
     cwd: Path, options: CompactionOptions | None = None, selection: SelectionOverride | None = None
 ) -> FastAPI:
+    compaction = options or CompactionOptions()
+    selected = selection or SelectionOverride()
     registry = Registry(cwd.resolve())
+    registry.restore(compaction, selected, provider_from_environment)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -58,8 +61,8 @@ def create_app(
     app.state.bound_port = 0
     state = WebState(
         registry=registry,
-        compaction=options or CompactionOptions(),
-        selection=selection or SelectionOverride(),
+        compaction=compaction,
+        selection=selected,
         provider_factory=provider_from_environment,
     )
 

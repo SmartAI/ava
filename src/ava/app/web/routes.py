@@ -36,13 +36,12 @@ from .models import (
     SelectionBody,
     parse_body,
 )
-from .registry import Chat, Project, WebState
+from .registry import Chat, Project, WebState, title_from_text
 from .streaming import begin_drive, event_stream
 
 ATTACHMENT_COUNT_LIMIT = 10
 ATTACHMENT_BYTE_LIMIT = 8 * 1024 * 1024
 ATTACHMENT_IMAGE_LIMIT = 10
-TITLE_LIMIT = 40
 COMPACTION_MESSAGES = {
     CompactNowOutcome.compacted: "compacted the conversation; the model now sees a summary plus the recent tail",
     CompactNowOutcome.nothing_to_compact: "nothing to compact yet",
@@ -55,18 +54,6 @@ def error_response(status: int, message: str) -> JSONResponse:
     return JSONResponse(
         {"error": message}, status_code=status, headers={"cache-control": "no-store"}
     )
-
-
-def title_from_text(text: str) -> str:
-    if not text:
-        return "New chat"
-    encoded = text.encode("utf-8")
-    boundary = valid_utf8_prefix(encoded, TITLE_LIMIT)
-    if boundary is None:
-        return "New chat"
-    if boundary == len(encoded):
-        return text
-    return encoded[:boundary].decode("utf-8") + "…"
 
 
 def list_directories(requested: Path) -> dict[str, Any]:
@@ -192,6 +179,11 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             return JSONResponse(existing.summary())
         project = Project(id=registry.next_project_id(), name=path.name or str(path), path=path)
         registry.projects.append(project)
+        try:
+            registry.persist()
+        except AvaError as error:
+            registry.projects.remove(project)
+            return error_response(503, error.message)
         return JSONResponse(project.summary(), status_code=201)
 
     @app.post("/api/chats")
@@ -203,11 +195,24 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         if project is None:
             return error_response(404, "no such project")
         try:
-            agent = Agent.create(state.provider_factory(state.selection), project.path, state.compaction)
+            provider = state.provider_factory(
+                state.selection, None, AuthRequirement.required
+            )
+            agent = Agent.create(provider, project.path, state.compaction)
         except AvaError as error:
             return error_response(503, error.message)
-        chat = Chat(id=registry.next_chat_id(), agent=agent)
-        project.chats.append(chat)
+        session_id = agent.session_id
+        if session_id is None:
+            await agent.aclose()
+            return error_response(503, "cannot identify the new session")
+        chat = Chat(id=registry.next_chat_id(), agent=agent, session_id=session_id)
+        project.chats.insert(0, chat)
+        try:
+            registry.persist()
+        except AvaError as error:
+            project.chats.remove(chat)
+            await agent.aclose()
+            return error_response(503, error.message)
         return JSONResponse(chat.summary(), status_code=201)
 
     @app.get("/api/chats/{chat_id}")
@@ -237,8 +242,15 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         body = await parse_body(request, ArchiveBody)
         if body is None:
             return error_response(400, "archived must be a JSON boolean")
-        found[1].archived = body.archived
-        return JSONResponse(found[1].summary())
+        chat = found[1]
+        previous = chat.archived
+        chat.archived = body.archived
+        try:
+            registry.persist()
+        except AvaError as error:
+            chat.archived = previous
+            return error_response(503, error.message)
+        return JSONResponse(chat.summary())
 
     @app.post("/api/chats/{chat_id}/messages")
     async def post_message(chat_id: str, request: Request) -> Response:
@@ -284,6 +296,11 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             return error_response(status, error.message)
         if not chat.title:
             chat.title = title
+            try:
+                registry.persist()
+            except AvaError:
+                # The accepted input is already durable and can re-derive its title on restart.
+                pass
         if chat.drive.acknowledge(followed_running_drive, agent.status):
             begin_drive(chat)
         return JSONResponse({"accepted": True, "chat": chat.summary()}, status_code=202)

@@ -10,12 +10,29 @@ import { StatusBar } from './components/StatusBar'
 import { Transcript } from './components/Transcript'
 import { formatBytes, transcriptRow } from './utils'
 
+const savedSet = key => {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '[]')
+    return new Set(Array.isArray(value) ? value.filter(item => typeof item === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+const loadLocal = key => {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+
+const saveLocal = (key, value) => {
+  try { localStorage.setItem(key, value) } catch { /* Browser storage may be disabled. */ }
+}
+
 export default function App() {
   const [projects, setProjects] = useState([])
   const [current, setCurrent] = useState(null)
   const [projectId, setProjectId] = useState(null)
-  const [openProjects, setOpenProjects] = useState(new Set())
-  const [archiveOpen, setArchiveOpen] = useState(new Set())
+  const [openProjects, setOpenProjects] = useState(() => savedSet('ava-open-projects'))
+  const [archiveOpen, setArchiveOpen] = useState(() => savedSet('ava-open-archives'))
   const [status, setStatus] = useState('idle')
   const [statusInfo, setStatusInfo] = useState(null)
   const [transcript, setTranscript] = useState([])
@@ -223,6 +240,7 @@ export default function App() {
       for (const event of chat.events || []) applyEvent(event)
       setEmpty(!(chat.events || []).length)
       setStatus(chat.status)
+      saveLocal('ava-current-chat', id)
       openStream(id, selection)
       if (!chat.archived) window.setTimeout(() => draftRef.current?.focus(), 0)
     } catch (error) {
@@ -570,7 +588,9 @@ export default function App() {
     api.projects().catch(() => []).then(items => {
       if (!active) return
       setProjects(items)
-      const first = items.flatMap(project => project.chats)[0]
+      const chats = items.flatMap(project => project.chats)
+      const remembered = loadLocal('ava-current-chat')
+      const first = chats.find(chat => chat.id === remembered) || chats[0]
       if (first) selectChat(first.id)
       else {
         setEmpty(true)
@@ -584,6 +604,14 @@ export default function App() {
       for (const entry of stagedRef.current) if (entry.preview) URL.revokeObjectURL(entry.preview)
     }
   }, [])
+
+  useEffect(() => {
+    saveLocal('ava-open-projects', JSON.stringify([...openProjects]))
+  }, [openProjects])
+
+  useEffect(() => {
+    saveLocal('ava-open-archives', JSON.stringify([...archiveOpen]))
+  }, [archiveOpen])
 
   useEffect(() => {
     const preventDrop = event => event.preventDefault()

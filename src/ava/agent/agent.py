@@ -42,6 +42,7 @@ from ava.session import (
     InboxMessage,
     InboxSpliced,
     InboxTarget,
+    SessionStart,
     Subscription,
     TurnEnd,
     TurnEndReason,
@@ -144,6 +145,13 @@ class Agent:
     @property
     def session_path(self) -> Path | None:
         return self._state.writer.log.path if self._state.writer is not None else None
+
+    @property
+    def session_id(self) -> str | None:
+        if not self._state.session.events:
+            return None
+        header = self._state.session.events[0].payload
+        return header.id if isinstance(header, SessionStart) else None
 
     @property
     def provider_id(self) -> str:

@@ -130,12 +130,7 @@ class SessionCandidate:
     header: SessionStart
 
 
-def discover_sessions_in(state_root: Path, cwd: Path) -> list[SessionCandidate]:
-    """Header identity is verified so a bucket collision never selects another directory."""
-    canonical = canonical_working_directory(cwd)
-    directory = state_root / bucket_name(canonical)
-    if not directory.exists():
-        return []
+def _discover_session_directory(directory: Path, canonical: Path) -> list[SessionCandidate]:
     candidates: list[SessionCandidate] = []
     try:
         entries = sorted(directory.iterdir())
@@ -146,9 +141,52 @@ def discover_sessions_in(state_root: Path, cwd: Path) -> list[SessionCandidate]:
         if not path.is_file() or not (name.endswith(".jsonl.zst") or name.endswith(".jsonl")):
             continue
         header = Log.read_header(path)
-        if header.cwd != str(canonical):
+        if header.cwd == str(canonical):
+            candidates.append(SessionCandidate(path=path, header=header))
+    return candidates
+
+
+def discover_sessions_in(state_root: Path, cwd: Path) -> list[SessionCandidate]:
+    """Header identity is verified so a bucket collision never selects another directory."""
+    canonical = canonical_working_directory(cwd)
+    directory = state_root / bucket_name(canonical)
+    if not directory.exists():
+        return []
+    candidates = _discover_session_directory(directory, canonical)
+    candidates.sort(key=lambda candidate: candidate.header.id, reverse=True)
+    return candidates
+
+
+def discover_all_sessions_in(state_root: Path) -> list[SessionCandidate]:
+    """Discover default logs across live working directories, rejecting misplaced headers."""
+    if not state_root.exists():
+        return []
+    try:
+        directories = sorted(state_root.iterdir())
+    except OSError as error:
+        raise _io_error(f"cannot list session root '{state_root}'", error) from error
+    candidates: list[SessionCandidate] = []
+    for directory in directories:
+        if not directory.is_dir():
             continue
-        candidates.append(SessionCandidate(path=path, header=header))
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError as error:
+            raise _io_error(f"cannot list session directory '{directory}'", error) from error
+        for path in entries:
+            name = path.name
+            if not path.is_file() or not (
+                name.endswith(".jsonl.zst") or name.endswith(".jsonl")
+            ):
+                continue
+            header = Log.read_header(path)
+            try:
+                canonical = canonical_working_directory(Path(header.cwd))
+            except AvaError:
+                continue
+            if directory.name != bucket_name(canonical) or header.cwd != str(canonical):
+                continue
+            candidates.append(SessionCandidate(path=path, header=header))
     candidates.sort(key=lambda candidate: candidate.header.id, reverse=True)
     return candidates
 
@@ -838,6 +876,7 @@ __all__ = [
     "SessionCandidate",
     "canonical_working_directory",
     "default_session_root",
+    "discover_all_sessions_in",
     "discover_sessions_in",
     "fnv1a_64",
     "new_ulid",

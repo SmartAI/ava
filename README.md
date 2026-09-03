@@ -91,6 +91,12 @@ stream keyed by event sequence, and keeps no second transcript. The same stream 
 `status` messages so the page renders the agent's control state (idle, running, pausing, paused,
 aborting) the moment core accepts a request.
 
+Projects, stable chat IDs, titles, and archive flags are atomically indexed in `$AVA_HOME/web.json`.
+Conversation content and lifecycle status remain authoritative in `$AVA_HOME/sessions`: startup
+validates and reopens every default session log, recreates projects found only in historical logs,
+and replays their complete histories. The browser separately remembers the selected chat and
+expanded sidebar groups, so refresh returns to the same view.
+
 | State | Enter | Alt+Enter | Esc | Button |
 | --- | --- | --- | --- | --- |
 | idle | send | send | | send |

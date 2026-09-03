@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -35,25 +36,33 @@ def scripted(monkeypatch: pytest.MonkeyPatch):
     return providers
 
 
-@pytest.fixture
-async def client(home: Path, project: Path, scripted):
-    """A real loopback server so the event stream is exercised over HTTP, not a buffered ASGI shim."""
+@asynccontextmanager
+async def _running_client(app):
+    """Run an app on loopback so SSE and lifespan behavior match the browser-facing server."""
     from ava.app.web.server import bind, create_server
 
     sock = bind(0)
-    app = create_app(project)
     server = create_server(app, sock)
     task = asyncio.create_task(server.serve(sockets=[sock]))
     while not server.started:
         await asyncio.sleep(0.01)
     port = sock.getsockname()[1]
-    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=10) as client:
-        client.headers["host"] = f"127.0.0.1:{port}"
-        client.port = port  # type: ignore[attr-defined]
-        client.app = app  # type: ignore[attr-defined]
-        yield client
-    server.should_exit = True
-    await task
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", timeout=10) as client:
+            client.headers["host"] = f"127.0.0.1:{port}"
+            client.port = port  # type: ignore[attr-defined]
+            client.app = app  # type: ignore[attr-defined]
+            yield client
+    finally:
+        server.should_exit = True
+        await task
+
+
+@pytest.fixture
+async def client(home: Path, project: Path, scripted):
+    """A real loopback server so the event stream is exercised over HTTP, not a buffered ASGI shim."""
+    async with _running_client(create_app(project)) as running:
+        yield running
     assert all(provider.closed for provider in scripted)
 
 
@@ -146,6 +155,84 @@ async def test_projects_chats_and_archive(client: httpx.AsyncClient, project: Pa
     ] is False
     opened = (await client.get("/api/chats/c1")).json()
     assert opened["project_id"] == "p1" and opened["cwd"] == str(other) and opened["events"] == []
+
+
+async def test_projects_and_sessions_survive_a_server_restart(
+    home: Path, project: Path, scripted
+):
+    other = project.parent / "remembered-project"
+    other.mkdir()
+
+    async with _running_client(create_app(project)) as first:
+        added = await first.post("/api/projects", json={"path": str(other)})
+        assert added.status_code == 201
+        created = await first.post("/api/chats", json={"project_id": added.json()["id"]})
+        chat_id = created.json()["id"]
+        accepted = await first.post(
+            f"/api/chats/{chat_id}/messages", json={"text": "remember this history"}
+        )
+        assert accepted.status_code == 202
+        await _events_until(first, chat_id, "turn/end")
+        archived = await first.post(f"/api/chats/{chat_id}/archive", json={"archived": True})
+        assert archived.json()["archived"] is True
+
+    async with _running_client(create_app(project)) as second:
+        projects = (await second.get("/api/projects")).json()["projects"]
+        remembered = next(item for item in projects if item["path"] == str(other))
+        assert remembered["chats"] == [
+            {
+                "id": chat_id,
+                "title": "remember this history",
+                "status": "idle",
+                "archived": True,
+            }
+        ]
+        opened = (await second.get(f"/api/chats/{chat_id}")).json()
+        assert opened["project_id"] == remembered["id"]
+        assert opened["cwd"] == str(other)
+        replay = await _events_until(second, chat_id, "turn/end")
+        assert any(
+            event["kind"] == "step/claimed"
+            and event["messages"][0]["blocks"][-1]["text"] == "remember this history"
+            for event in replay
+        )
+        assert any(
+            event["kind"] == "assistant/message"
+            and event["blocks"] == [{"kind": "text", "text": "web answer"}]
+            for event in replay
+        )
+
+    assert (home / "web.json").is_file()
+    assert (home / "web.json").stat().st_mode & 0o777 == 0o600
+    assert all(provider.closed for provider in scripted)
+
+
+async def test_historical_logs_recreate_projects_without_a_web_index(
+    home: Path, project: Path, scripted
+):
+    historical_project = project.parent / "historical-project"
+    historical_project.mkdir()
+
+    async with _running_client(create_app(project)) as first:
+        added = await first.post("/api/projects", json={"path": str(historical_project)})
+        created = await first.post("/api/chats", json={"project_id": added.json()["id"]})
+        chat_id = created.json()["id"]
+        await first.post(
+            f"/api/chats/{chat_id}/messages", json={"text": "history from logs"}
+        )
+        await _events_until(first, chat_id, "turn/end")
+
+    (home / "web.json").unlink()
+
+    async with _running_client(create_app(project)) as second:
+        projects = (await second.get("/api/projects")).json()["projects"]
+        restored = next(item for item in projects if item["path"] == str(historical_project))
+        assert len(restored["chats"]) == 1
+        assert restored["chats"][0]["title"] == "history from logs"
+        replay = await _events_until(second, restored["chats"][0]["id"], "turn/end")
+        assert any(event["kind"] == "assistant/message" for event in replay)
+
+    assert all(provider.closed for provider in scripted)
 
 
 async def test_message_validation(client: httpx.AsyncClient):
