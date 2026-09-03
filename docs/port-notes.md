@@ -30,10 +30,15 @@ C++ design element maps onto Python, and where this port deliberately differs.
 - **Prompt resources** ship inside the package (`ava/agent/prompts/system.md`,
   `ava/session/prompts/checkpoint.md`); `AVA_AGENT_SYSTEM_PROMPT_PATH` still overrides the system
   prompt template.
-- **Web composer race fixed.** ava-cpp records that the composer can show a stale running state
-  when a submission acknowledgement arrives after the stream delivered the turn's terminal events.
-  The page now ignores an acknowledgement's status once a `turn/end` or `drive/error` has been
-  applied since the request was sent.
+- **Web control state is pushed, not polled.** ava-cpp records that the composer can show a stale
+  running state when a submission acknowledgement arrives after the stream delivered the turn's
+  terminal events. Here the event stream carries unkeyed `status` messages from
+  `Agent.watch_status`, so the page never derives control state from a keypress or an HTTP
+  snapshot; acknowledgements do not set status at all.
+- **The Web UI covers the TUI's controls and slash commands.** Pause, abort, resume, steering
+  versus follow-up, pending chips, and `/model`, `/effort`, `/compact`, `/skills`, `/login`,
+  `/logout`, `/copy`, `/new`, `/theme`, `/help` all reach core through routes on the same
+  `Agent` handle. `/quit` has no Web meaning.
 
 ## What the tests gate
 

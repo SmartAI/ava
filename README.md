@@ -87,8 +87,29 @@ loop and the Web UI run with no network and no key.
 
 `ava --serve` binds `127.0.0.1`, accepts only a matching `Host`, and rejects cross-origin
 `Origin` headers. The browser folds `GET /api/chats/:id/events`, a replay-first Server-Sent Events
-stream keyed by event sequence, and keeps no second transcript. While a turn runs, Enter steers
-the current turn at its next step boundary and Alt+Enter queues a follow-up turn.
+stream keyed by event sequence, and keeps no second transcript. The same stream carries unkeyed
+`status` messages so the page renders the agent's control state (idle, running, pausing, paused,
+aborting) the moment core accepts a request.
+
+| State | Enter | Alt+Enter | Esc | Button |
+| --- | --- | --- | --- | --- |
+| idle | send | send | | send |
+| running | steer the next step | queue a follow-up turn | pause after this step | pause |
+| pausing | steer the resumed turn | queue a follow-up turn | abort now | abort |
+| paused | resume (text steers first) | queue without resuming | | resume |
+
+Chips above the composer count queued follow-ups and steering, derived from the durable inbox
+events. Typing `/` opens the command menu:
+
+| Command | Effect |
+| --- | --- |
+| `/model [ID]` | Pick a model from the provider catalog; applies at the next step |
+| `/effort [LEVEL]` | Set reasoning effort (`none` clears it) |
+| `/compact` | Summarize older history now |
+| `/skills` | List the skills the model can load |
+| `/login [PROVIDER]`, `/logout [PROVIDER]` | Store or remove an API key in `$AVA_HOME/auth.json` |
+| `/theme`, `/copy [code]`, `/new`, `/clear`, `/help` | Presentation and chat housekeeping |
+| `/pause`, `/abort`, `/resume` | The turn controls, as commands |
 
 ## Tests
 
