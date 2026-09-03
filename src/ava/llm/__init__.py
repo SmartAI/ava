@@ -1,5 +1,6 @@
 """Provider construction, selection, and normalized streaming. Knows nothing about turns."""
 
+from ava.llm.configuration import remember_selection
 from ava.llm.provider import (
     ModelCapabilities,
     ModelProfile,
@@ -18,6 +19,14 @@ from ava.llm.provider import (
     sort_model_ids,
     stream,
     validate_effort,
+)
+from ava.llm.registry import (
+    AuthRequirement,
+    MockProvider,
+    ProviderFamily,
+    ProviderOptions,
+    create_provider,
+    provider_from_environment,
 )
 from ava.llm.types import (
     ContentBlock,
@@ -39,15 +48,19 @@ from ava.llm.types import (
 )
 
 __all__ = [
+    "AuthRequirement",
     "ContentBlock",
     "ContentBlockKind",
     "Context",
     "Item",
+    "MockProvider",
     "ModelCapabilities",
     "ModelProfile",
     "Origin",
     "Provenance",
     "Provider",
+    "ProviderFamily",
+    "ProviderOptions",
     "Role",
     "Selection",
     "SelectionOverride",
@@ -59,6 +72,7 @@ __all__ = [
     "ToolParam",
     "ToolParamType",
     "Usage",
+    "create_provider",
     "is_context_overflow",
     "is_model_alias_candidate",
     "make_file_text_block",
@@ -67,6 +81,8 @@ __all__ = [
     "make_text_block",
     "make_tool_call_block",
     "make_tool_result_block",
+    "provider_from_environment",
+    "remember_selection",
     "resolve_model_alias",
     "resolve_selection_model",
     "sort_model_ids",
