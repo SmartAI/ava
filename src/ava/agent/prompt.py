@@ -117,7 +117,15 @@ def _skill_description(path: Path) -> str | None:
     return None
 
 
-def _collect_skills(skills: dict[str, tuple[str, Path, str]], root: Path, scope: str) -> None:
+@dataclass(frozen=True, slots=True)
+class Skill:
+    name: str
+    description: str
+    scope: str
+    path: Path
+
+
+def _collect_skills(skills: dict[str, Skill], root: Path, scope: str) -> None:
     try:
         entries = sorted(root.iterdir())
     except OSError:
@@ -127,15 +135,21 @@ def _collect_skills(skills: dict[str, tuple[str, Path, str]], root: Path, scope:
         name = entry.name
         description = _skill_description(path)
         if description and _SKILL_NAME.match(name) and name not in skills:
-            skills[name] = (description, path, scope)
+            skills[name] = Skill(name=name, description=description, scope=scope, path=path)
 
 
-def _append_skills(prompt: list[str], project_root: Path) -> None:
-    skills: dict[str, tuple[str, Path, str]] = {}
-    _collect_skills(skills, project_root / ".agents/skills", "project")
+def discover_skills(cwd: Path) -> list[Skill]:
+    """The skill catalog for a working directory: project skills shadow same-named global ones."""
+    skills: dict[str, Skill] = {}
+    _collect_skills(skills, find_project_root(cwd) / ".agents/skills", "project")
     home = os.environ.get("HOME")
     if home:
         _collect_skills(skills, Path(home) / ".codex/skills", "global")
+    return [skills[name] for name in sorted(skills)]
+
+
+def _append_skills(prompt: list[str], cwd: Path) -> None:
+    skills = discover_skills(cwd)
     if not skills:
         return
     prompt.append(
@@ -143,9 +157,8 @@ def _append_skills(prompt: list[str], project_root: Path) -> None:
         "When a task matches a skill, use `read` to load its complete SKILL.md before acting. "
         "Resolve relative references from the directory containing SKILL.md.\n\n"
     )
-    for name in sorted(skills):
-        description, path, scope = skills[name]
-        prompt.append(f"- {name} [{scope}]: {description} ({path})\n")
+    for skill in skills:
+        prompt.append(f"- {skill.name} [{skill.scope}]: {skill.description} ({skill.path})\n")
 
 
 def _platform_description() -> str:
@@ -225,5 +238,5 @@ def make_system_prompt(cwd: Path, scratchpad: Path | None = None) -> str:
     prompt = _replace_field(prompt, "{{scratchpad}}", scratchpad_section)
     parts = [prompt]
     _append_agent_instructions(parts, cwd)
-    _append_skills(parts, project_root)
+    _append_skills(parts, cwd)
     return "".join(parts)
