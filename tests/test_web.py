@@ -251,6 +251,10 @@ async def test_status_channel_reports_provider_neutral_context_usage(
             "context_used_tokens": 0,
             "context_window_tokens": 10_000,
             "context_remaining_percent": 100,
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_hit_percent": None,
+            "ttft_ms": None,
         }
     ]
 
@@ -262,6 +266,10 @@ async def test_status_channel_reports_provider_neutral_context_usage(
     settled = await _events_until(client, "c1", "status")
     assert settled[0]["context_used_tokens"] == 4500
     assert settled[0]["context_remaining_percent"] == 55
+    assert settled[0]["input_tokens"] == 4000
+    assert settled[0]["output_tokens"] == 500
+    assert settled[0]["cache_hit_percent"] == 25
+    assert isinstance(settled[0]["ttft_ms"], int)
 
 
 async def test_running_enter_steers_and_alt_enter_queues(client: httpx.AsyncClient, scripted):

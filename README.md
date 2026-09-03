@@ -99,8 +99,10 @@ aborting) the moment core accepts a request.
 | paused | resume (text steers first) | queue without resuming | | resume |
 
 Chips above the composer count queued follow-ups and steering, derived from the durable inbox events.
-The status bar below the composer shows the selected model and effort, working directory, and estimated context remaining.
-Its context value comes from the provider-neutral model context and the selected model's context window.
+The status bar below the composer shows the selected model and effort, working directory, provider-reported
+input/output token totals, cache hit rate, latest time to first token (TTFT), and estimated context remaining.
+Its context value comes from the provider-neutral model context and the selected model's context window. Input
+totals include uncached, cache-read, and cache-write tokens; the cache rate is cache reads divided by that total.
 Typing `/` opens the command menu:
 
 | Command | Effect |

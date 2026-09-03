@@ -36,6 +36,7 @@ from ava.llm import (
     sort_model_ids,
 )
 from ava.session import (
+    AttemptTiming,
     DriveError,
     EventSink,
     InboxMessage,
@@ -45,6 +46,7 @@ from ava.session import (
     TurnEnd,
     TurnEndReason,
     TurnStart,
+    Usage,
 )
 from ava.session.codec import validate_step_claimed_record
 from ava.session.compaction import estimate_context_tokens
@@ -294,6 +296,35 @@ class Agent:
             if context_window
             else None
         )
+
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        cached_read = 0
+        cache_reported = False
+        ttft_ms: int | None = None
+        for event in state.session.events:
+            match event.payload:
+                case Usage(
+                    input=input,
+                    cached_read=cached_read_tokens,
+                    cache_write=cache_write,
+                    output=output,
+                ):
+                    input_parts = (input, cached_read_tokens, cache_write)
+                    if any(value is not None for value in input_parts):
+                        input_tokens = (input_tokens or 0) + sum(value or 0 for value in input_parts)
+                    if output is not None:
+                        output_tokens = (output_tokens or 0) + output
+                    if cached_read_tokens is not None:
+                        cached_read += cached_read_tokens
+                        cache_reported = True
+                case AttemptTiming(ttft_ms=latest_ttft):
+                    # The newest attempt describes the latency the user most recently felt.
+                    ttft_ms = latest_ttft
+
+        cache_hit_percent = (
+            cached_read * 100 // input_tokens if cache_reported and input_tokens else None
+        )
         return {
             "status": self.status.value,
             "turn_open": self.turn_open,
@@ -304,6 +335,10 @@ class Agent:
             "context_used_tokens": used_tokens,
             "context_window_tokens": context_window,
             "context_remaining_percent": remaining,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_hit_percent": cache_hit_percent,
+            "ttft_ms": ttft_ms,
         }
 
     async def cycle_effort(self) -> str:
