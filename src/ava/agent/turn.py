@@ -34,6 +34,7 @@ from ava.tool import Output
 
 INTERRUPTED_TOOL_TEXT = "[Tool call interrupted by user abort before it finished.]"
 SKIPPED_TOOL_TEXT = "[Tool call skipped: the turn was aborted before it started.]"
+FAILED_TOOL_TEXT = "[Tool call failed before Ava could record a result.]"
 
 
 class TurnFailure(Exception):
@@ -317,6 +318,19 @@ class _Turn:
                     )
                 return await self.abort_tool_step(assistant, calls, position, True, results)
             if failure is not None:
+                for pending_position in range(position, len(calls)):
+                    pending = assistant.blocks[calls[pending_position]]
+                    skipped = pending_position != position
+                    repair = make_tool_result_block(
+                        pending.call_id,
+                        SKIPPED_TOOL_TEXT if skipped else FAILED_TOOL_TEXT,
+                        True,
+                    )
+                    if skipped:
+                        repair.origin = Origin.skipped
+                    results.blocks.append(repair)
+                self.state.append(ToolResult(item=results, durations=durations))
+                self.drive.tool_results_owed = False
                 self.end_step(StepEndReason.tool_error)
                 raise TurnFailure(failure, TurnEndReason.tool_error)
             assert output is not None

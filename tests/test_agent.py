@@ -9,8 +9,16 @@ from pathlib import Path
 import pytest
 
 from ava.agent import Agent, CancelCause, CompactionOptions, Status
-from ava.base import AvaError
-from ava.llm import ModelCapabilities, Origin, StopReason, StreamEvent, StreamEventKind, Usage
+from ava.base import AvaError, ErrorKind
+from ava.llm import (
+    ModelCapabilities,
+    Origin,
+    StopReason,
+    StreamEvent,
+    StreamEventKind,
+    ToolDef,
+    Usage,
+)
 from ava.llm.types import ContentBlockKind
 from ava.session import (
     AssistantMessage,
@@ -25,6 +33,7 @@ from ava.session import (
     TurnEnd,
     TurnEndReason,
 )
+from ava.tool import Tool
 from tests.conftest import (
     ScriptedProvider,
     message,
@@ -120,6 +129,46 @@ async def test_tool_calls_run_in_order_and_feed_the_next_request(home: Path, pro
     assert result.item.blocks[0].is_error and "unknown tool 'nope'" in result.item.blocks[0].text
     await agent.aclose()
     await agent2.aclose()
+
+
+async def test_tool_failure_records_results_for_every_call(home: Path, project: Path):
+    provider = ScriptedProvider(
+        [
+            tool_call_response("c1", "fail", "{}")
+            + tool_call_response("c2", "read", json.dumps({"path": "never"})),
+            text_response("recovered"),
+        ]
+    )
+    agent = Agent.create(provider, project)
+
+    async def fail(_arguments, _cancel):
+        raise AvaError(ErrorKind.io, "tool exploded")
+
+    agent.state.tools.insert(0, Tool(definition=ToolDef(name="fail", description="fail"), run=fail))
+    await agent.followup(message("run both"))
+
+    with pytest.raises(AvaError, match="tool exploded"):
+        await agent.drive()
+
+    result = next(
+        event.payload for event in agent.state.session.events if isinstance(event.payload, ToolResult)
+    )
+    assert [(block.call_id, block.origin) for block in result.item.blocks] == [
+        ("c1", Origin.none),
+        ("c2", Origin.skipped),
+    ]
+    assert step_ends(agent) == [StepEndReason.tool_error]
+    assert turn_ends(agent) == [TurnEndReason.tool_error]
+    await agent.followup(message("continue"))
+    await agent.drive()
+    assert [item.role.value for item in provider.contexts[1].items] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert turn_ends(agent) == [TurnEndReason.tool_error, TurnEndReason.completed]
+    await agent.aclose()
 
 
 async def test_steer_lands_at_next_step_and_followup_opens_its_own_turn(home: Path, project: Path):
