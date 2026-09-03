@@ -65,6 +65,7 @@ class InboxTarget(StrEnum):
 class InboxMessage:
     id: str
     item: Item
+    source_id: str = ""
 
 
 @dataclass(slots=True)

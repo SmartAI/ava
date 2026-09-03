@@ -276,6 +276,10 @@ class Session:
                 for message in payload.inserted:
                     if not message.id:
                         raise invalid("inbox message id is empty")
+                    if message.source_id and message.source_id not in seen_ids:
+                        raise invalid(
+                            f"inbox message source id has not been seen: {message.source_id}"
+                        )
                     if message.id in pending_ids:
                         raise invalid(f"inbox message id is already pending: {message.id}")
                     if message.id in seen_ids:

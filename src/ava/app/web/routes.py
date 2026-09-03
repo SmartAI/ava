@@ -41,6 +41,7 @@ from .models import (
     CreateChatBody,
     CredentialsBody,
     MessageBody,
+    ReviseMessageBody,
     SelectionBody,
     SettingsBody,
     parse_body,
@@ -445,6 +446,68 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         if chat.drive.acknowledge(followed_running_drive, agent.status):
             begin_drive(chat)
         return JSONResponse({"accepted": True, "chat": chat.summary()}, status_code=202)
+
+    @app.patch("/api/chats/{chat_id}/inbox/{message_id}")
+    async def revise_pending_message(chat_id: str, message_id: str, request: Request) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        chat = found[1]
+        if chat.archived:
+            return error_response(409, "chat is archived")
+        body = await parse_body(request, ReviseMessageBody)
+        if body is None:
+            return error_response(400, "text must be a JSON string")
+        try:
+            await chat.agent.revise_pending(message_id, body.text.strip())
+        except AvaError as error:
+            status = (
+                409
+                if error.kind == ErrorKind.not_found
+                else 400
+                if error.kind == ErrorKind.invalid_argument
+                else 503
+            )
+            return error_response(status, error.message)
+        return JSONResponse({"revised": True, "chat": chat.summary()})
+
+    @app.delete("/api/chats/{chat_id}/inbox/{message_id}")
+    async def delete_pending_message(chat_id: str, message_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        chat = found[1]
+        if chat.archived:
+            return error_response(409, "chat is archived")
+        try:
+            await chat.agent.delete_pending(message_id)
+        except AvaError as error:
+            status = 409 if error.kind == ErrorKind.not_found else 503
+            return error_response(status, error.message)
+        return JSONResponse({"deleted": True, "chat": chat.summary()})
+
+    @app.post("/api/chats/{chat_id}/inbox/{message_id}/send")
+    async def send_pending_message(chat_id: str, message_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        chat = found[1]
+        if chat.archived:
+            return error_response(409, "chat is archived")
+        if chat.agent.status == Status.aborting:
+            return error_response(409, "chat is aborting")
+        agent = chat.agent
+        followed_running_drive = chat.drive.running
+        try:
+            await agent.send_pending(message_id)
+        except AvaError as error:
+            status = 409 if error.kind == ErrorKind.not_found else 503
+            return error_response(status, error.message)
+        if agent.status == Status.paused:
+            agent.resume()
+        if chat.drive.acknowledge(followed_running_drive, agent.status):
+            begin_drive(chat)
+        return JSONResponse({"sent": True, "chat": chat.summary()}, status_code=202)
 
     @app.post("/api/chats/{chat_id}/cancel")
     async def cancel(chat_id: str, request: Request) -> Response:

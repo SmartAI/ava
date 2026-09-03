@@ -81,6 +81,18 @@ def test_unknown_kind_is_preserved_byte_for_byte():
     assert encode_record(event) == line
 
 
+def test_inbox_message_source_round_trips_for_revisions():
+    payload = InboxSpliced(
+        target=InboxTarget.next_step,
+        index=0,
+        removed=0,
+        inserted=[InboxMessage(id="m-2", item=message("revised"), source_id="m-1")],
+    )
+    line = encode_record(_event(1, payload))
+    assert json.loads(line)["inserted"][0]["source_id"] == "m-1"
+    assert decode_record(line).payload == payload
+
+
 def test_claim_shape_is_validated():
     with pytest.raises(AvaError):
         encode_record(

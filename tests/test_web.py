@@ -524,6 +524,52 @@ async def test_running_enter_steers_and_alt_enter_queues(client: httpx.AsyncClie
     assert (await client.get("/api/chats/c1")).json()["status"] == "idle"
 
 
+async def test_pending_message_routes_revise_delete_and_send_now(
+    client: httpx.AsyncClient, scripted
+):
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    provider = scripted[0]
+    provider.gate = asyncio.Event()
+    await client.post("/api/chats/c1/messages", json={"text": "initial request"})
+    await asyncio.wait_for(provider.started.wait(), 5)
+
+    queued = await client.post(
+        "/api/chats/c1/messages", json={"text": "discard this", "delivery": "followup"}
+    )
+    assert queued.status_code == 202
+    deleted = await client.delete("/api/chats/c1/inbox/m-2")
+    assert deleted.status_code == 200 and deleted.json()["deleted"] is True
+
+    await client.post(
+        "/api/chats/c1/messages", json={"text": "rough follow-up", "delivery": "followup"}
+    )
+    malformed = await client.patch("/api/chats/c1/inbox/m-3", json={"text": 42})
+    assert malformed.status_code == 400
+    empty = await client.patch("/api/chats/c1/inbox/m-3", json={"text": "   "})
+    assert empty.status_code == 400
+    revised = await client.patch("/api/chats/c1/inbox/m-3", json={"text": "revised for this turn"})
+    assert revised.status_code == 200 and revised.json()["revised"] is True
+
+    sent = await client.post("/api/chats/c1/inbox/m-4/send")
+    assert sent.status_code == 202 and sent.json()["sent"] is True
+    stale = await client.delete("/api/chats/c1/inbox/m-4")
+    assert stale.status_code == 409
+    inbox = client_agent(client, "c1").state.session.inbox()
+    assert inbox.next_turn == []
+    assert [entry.id for entry in inbox.next_step] == ["m-5"]
+
+    provider.gate.set()
+    events = await _events_until(client, "c1", "turn/end")
+    claims = [event for event in events if event["kind"] == "step/claimed"]
+    assert [
+        (claim["turn"], claim["step"], claim["target"], claim["messages"][0]["blocks"][-1]["text"])
+        for claim in claims
+    ] == [
+        (1, 1, "next_turn", "initial request"),
+        (1, 2, "next_step", "revised for this turn"),
+    ]
+
+
 async def test_event_stream_disconnect_releases_the_subscription(
     client: httpx.AsyncClient, scripted
 ):

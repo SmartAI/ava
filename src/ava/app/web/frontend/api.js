@@ -21,6 +21,12 @@ export const api = {
   open: id => call('GET', `/api/chats/${id}`),
   message: (id, text, attachments, delivery) =>
     call('POST', `/api/chats/${id}/messages`, { text, attachments, delivery }),
+  revisePending: (id, messageId, text) =>
+    call('PATCH', `/api/chats/${id}/inbox/${encodeURIComponent(messageId)}`, { text }),
+  deletePending: (id, messageId) =>
+    call('DELETE', `/api/chats/${id}/inbox/${encodeURIComponent(messageId)}`),
+  sendPending: (id, messageId) =>
+    call('POST', `/api/chats/${id}/inbox/${encodeURIComponent(messageId)}/send`),
   archive: (id, archived) => call('POST', `/api/chats/${id}/archive`, { archived }),
   cancel: (id, cause) => call('POST', `/api/chats/${id}/cancel`, { cause }),
   resume: id => call('POST', `/api/chats/${id}/resume`),

@@ -110,9 +110,11 @@ survives reloads.
 | pausing | steer the resumed turn | queue a follow-up turn | abort now | abort |
 | paused | resume (text steers first) | queue without resuming | | resume |
 
-Chips above the composer count queued follow-ups and steering, derived from the durable inbox events.
-The status bar below the composer shows the selected model and effort, working directory, provider-reported
-input/output token totals, cache hit rate, latest time to first token (TTFT), and estimated context remaining.
+Rows above the input preview each queued steering message and follow-up from the durable inbox events.
+Each row can be revised, deleted, or sent now; sending a follow-up now promotes it to steering, and
+sending while paused resumes the chat. The status bar below the composer shows the selected model and
+effort, working directory, provider-reported input/output token totals, cache hit rate, latest time to
+first token (TTFT), and estimated context remaining.
 Its context value comes from the provider-neutral model context and the selected model's context window. Input
 totals include uncached, cache-read, and cache-write tokens; the cache rate is cache reads divided by that total.
 Typing `/` opens the command menu:

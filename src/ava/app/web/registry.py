@@ -177,15 +177,16 @@ def _restored_chat_details(log: Log) -> tuple[str, int, int]:
     title = ""
     attachment_bytes = 0
     image_attachments = 0
-    seen_messages: set[str] = set()
+    seen_sources: set[str] = set()
     items: list[Any] = []
     for event in log.loaded_events:
         payload = event.payload
         if isinstance(payload, InboxSpliced):
             for message in payload.inserted:
-                if message.id in seen_messages:
+                source_id = message.source_id or message.id
+                if source_id in seen_sources:
                     continue
-                seen_messages.add(message.id)
+                seen_sources.add(source_id)
                 items.append(message.item)
         elif isinstance(payload, UserMessage):
             items.append(payload.item)

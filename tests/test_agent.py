@@ -18,12 +18,14 @@ from ava.llm import (
     StreamEventKind,
     ToolDef,
     Usage,
+    make_file_text_block,
 )
 from ava.llm.types import ContentBlockKind
 from ava.session import (
     AssistantMessage,
     DriveError,
     Event,
+    InboxSpliced,
     Log,
     OpenMode,
     StepClaimed,
@@ -93,6 +95,45 @@ async def test_one_turn_claims_input_and_closes_cleanly(home: Path, project: Pat
     assert [tool.name for tool in context.tools] == ["read", "write", "edit", "bash"]
     assert [block.text for item in context.items for block in item.blocks] == ["hi"]
     assert agent.state.session.inbox().next_turn == []
+    await agent.aclose()
+
+
+async def test_pending_messages_can_be_revised_deleted_and_promoted(home: Path, project: Path):
+    agent = Agent.create(ScriptedProvider([]), project)
+    with_attachment = message("revise me")
+    with_attachment.blocks.insert(0, make_file_text_block("notes.txt", "attached fact"))
+    await agent.followup(with_attachment)
+    await agent.followup(message("delete me"))
+    await agent.steer(message("already steering"))
+
+    await agent.delete_pending("m-2")
+    await agent.revise_pending("m-1", "revised follow-up")
+    await agent.send_pending("m-4")
+    before_noop = len(agent.state.session.events)
+    await agent.send_pending("m-3")
+
+    inbox = agent.state.session.inbox()
+    assert inbox.next_turn == []
+    assert [entry.id for entry in inbox.next_step] == ["m-3", "m-5"]
+    assert inbox.next_step[1].source_id == "m-1"
+    assert inbox.next_step[1].item.blocks[0] == make_file_text_block(
+        "notes.txt", "attached fact"
+    )
+    assert [
+        block.text
+        for entry in inbox.next_step
+        for block in entry.item.blocks
+        if block.kind == ContentBlockKind.text
+    ] == ["already steering", "revised follow-up"]
+    assert len(agent.state.session.events) == before_noop
+    assert [
+        (event.payload.target.value, event.payload.removed)
+        for event in agent.state.session.events
+        if isinstance(event.payload, InboxSpliced)
+    ][-2:] == [("next_turn", 1), ("next_step", 0)]
+
+    with pytest.raises(AvaError, match="no longer pending"):
+        await agent.delete_pending("m-2")
     await agent.aclose()
 
 

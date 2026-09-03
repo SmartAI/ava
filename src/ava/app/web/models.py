@@ -31,6 +31,10 @@ class MessageBody(RequestBody):
     delivery: str = "followup"
 
 
+class ReviseMessageBody(RequestBody):
+    text: str
+
+
 class CancelBody(RequestBody):
     cause: Literal["pause", "abort"]
 

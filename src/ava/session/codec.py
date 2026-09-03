@@ -222,10 +222,14 @@ def block_from_wire(wire: dict[str, Any]) -> ContentBlock:
     return block
 
 
-def item_to_wire(item: Item, message_id: str | None = None) -> dict[str, Any]:
+def item_to_wire(
+    item: Item, message_id: str | None = None, source_id: str | None = None
+) -> dict[str, Any]:
     wire: dict[str, Any] = {}
     if message_id:
         wire["id"] = message_id
+    if source_id:
+        wire["source_id"] = source_id
     wire["role"] = item.role.value
     wire["blocks"] = [block_to_wire(block) for block in item.blocks]
     if item.provenance.provider or item.provenance.model:
@@ -372,7 +376,8 @@ def payload_to_wire(payload: EventPayload) -> dict[str, Any]:
             if payload.target is not None:
                 wire["target"] = payload.target.value
             wire["claimed"] = [
-                item_to_wire(message.item, message.id or None) for message in payload.claimed
+                item_to_wire(message.item, message.id or None, message.source_id or None)
+                for message in payload.claimed
             ]
         case InboxSpliced():
             if any(message.id == "" for message in payload.inserted):
@@ -383,7 +388,8 @@ def payload_to_wire(payload: EventPayload) -> dict[str, Any]:
                 )
             wire.update(target=payload.target.value, index=payload.index, removed=payload.removed)
             wire["inserted"] = [
-                item_to_wire(message.item, message.id) for message in payload.inserted
+                item_to_wire(message.item, message.id, message.source_id or None)
+                for message in payload.inserted
             ]
         case UserMessage():
             wire["item"] = item_to_wire(payload.item)
@@ -530,7 +536,13 @@ def _messages(wire_items: Any, require_id: bool) -> list[InboxMessage]:
         message_id = _string(wire_item, "id")
         if require_id and not message_id:
             raise _fail("invalid inbox/spliced record", "inserted messages require a nonempty id")
-        messages.append(InboxMessage(id=message_id, item=item_from_wire(wire_item)))
+        messages.append(
+            InboxMessage(
+                id=message_id,
+                item=item_from_wire(wire_item),
+                source_id=_string(wire_item, "source_id"),
+            )
+        )
     return messages
 
 
@@ -720,7 +732,7 @@ def validate_step_claimed_record(target: InboxTarget, item: Item) -> None:
                 turn=maximum,
                 step=maximum,
                 target=target,
-                claimed=[InboxMessage(id=f"m-{maximum}", item=item)],
+                claimed=[InboxMessage(id=f"m-{maximum}", item=item, source_id=f"m-{maximum}")],
             ),
         )
     )

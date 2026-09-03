@@ -9,6 +9,7 @@ import { Sidebar } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
 import { StatusBar } from './components/StatusBar'
 import { Transcript } from './components/Transcript'
+import { emptyPending, applyPendingEvent } from './pending'
 import { formatBytes, transcriptRow } from './utils'
 
 const savedSet = key => {
@@ -43,7 +44,7 @@ export default function App() {
   const [statusInfo, setStatusInfo] = useState(null)
   const [transcript, setTranscript] = useState([])
   const [empty, setEmpty] = useState(true)
-  const [pending, setPending] = useState(new Map())
+  const [pending, setPending] = useState(emptyPending)
   const [modelSelection, setModelSelection] = useState(null)
   const [modal, setModal] = useState(null)
   const [draft, setDraft] = useState('')
@@ -140,11 +141,7 @@ export default function App() {
 
   const applyEvent = event => {
     if (event.kind === 'inbox/spliced') {
-      setPending(items => {
-        const next = new Map(items)
-        for (const message of event.inserted || []) next.set(message.id, event.target)
-        return next
-      })
+      setPending(items => applyPendingEvent(items, event))
       return
     }
     if (event.kind === 'step/claimed') {
@@ -152,11 +149,7 @@ export default function App() {
         if (!message.id || !displayedInputsRef.current.has(message.id)) addUser(message.blocks)
         if (message.id) displayedInputsRef.current.add(message.id)
       }
-      setPending(items => {
-        const next = new Map(items)
-        for (const message of event.messages || []) if (message.id) next.delete(message.id)
-        return next
-      })
+      setPending(items => applyPendingEvent(items, event))
       return
     }
     if (event.kind === 'user/message') addUser(event.blocks)
@@ -197,7 +190,7 @@ export default function App() {
       closeTail()
       if (event.reason === 'user_pause') addNotice('Paused after a completed step')
       else if (event.reason === 'user_abort') {
-        setPending(new Map())
+        setPending(items => applyPendingEvent(items, event))
         addNotice('Aborted; history repaired')
       } else if (event.reason === 'interrupted') addNotice('The previous run was interrupted; the session was repaired')
     } else if (event.kind === 'compaction/seed') addNotice('Context compacted')
@@ -231,7 +224,7 @@ export default function App() {
     displayedInputsRef.current = new Set()
     tailRef.current = null
     lastAssistantRef.current = ''
-    setPending(new Map())
+    setPending(emptyPending())
     setModelSelection(null)
     setStatusInfo(null)
     setTranscript([])
@@ -557,6 +550,42 @@ export default function App() {
     }
   }
 
+  const revisePending = async (messageId, text) => {
+    if (!currentRef.current) return false
+    try {
+      const result = await api.revisePending(currentRef.current, messageId, text.trim())
+      updateChat(result.chat)
+      return true
+    } catch (error) {
+      addError(error)
+      return false
+    }
+  }
+
+  const deletePending = async messageId => {
+    if (!currentRef.current) return false
+    try {
+      const result = await api.deletePending(currentRef.current, messageId)
+      updateChat(result.chat)
+      return true
+    } catch (error) {
+      addError(error)
+      return false
+    }
+  }
+
+  const sendPending = async messageId => {
+    if (!currentRef.current) return false
+    try {
+      const result = await api.sendPending(currentRef.current, messageId)
+      updateChat(result.chat)
+      return true
+    } catch (error) {
+      addError(error)
+      return false
+    }
+  }
+
   const onEnter = altKey => {
     const line = draft.trim()
     if (line.startsWith('/') && stagedRef.current.length === 0) {
@@ -767,6 +796,9 @@ export default function App() {
             onPickSlash={pickSlash}
             onFiles={stageFiles}
             onRemoveFile={removeStaged}
+            onRevisePending={revisePending}
+            onDeletePending={deletePending}
+            onSendPending={sendPending}
             onOpenProjects={openPicker}
             onUnarchive={(chat) => setArchived(chat, false)}
             onControl={control}

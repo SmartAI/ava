@@ -26,10 +26,12 @@ from ava.agent.turn import TurnFailure, run_turn
 from ava.base import AvaError, CancelToken, ErrorKind
 from ava.llm import (
     AuthRequirement,
+    ContentBlockKind,
     Item,
     ModelCapabilities,
     Provider,
     Selection,
+    make_text_block,
     provider_from_environment,
     resolve_model_alias,
     resolve_selection_model,
@@ -170,6 +172,44 @@ class Agent:
 
     # ---- input ---------------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_next_step(messages: list[InboxMessage]) -> None:
+        """Ensure the complete prospective steering claim fits one durable record."""
+        from ava.session import StepClaimed
+        from ava.session.codec import _MAX_TIME, encode_record
+        from ava.session.event import Event
+
+        maximum = 2**64 - 1
+        encode_record(
+            Event(
+                seq=maximum,
+                at=_MAX_TIME,
+                payload=StepClaimed(
+                    turn=maximum,
+                    step=maximum,
+                    target=InboxTarget.next_step,
+                    claimed=messages,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _find_pending(
+        next_turn: list[InboxMessage], next_step: list[InboxMessage], message_id: str
+    ) -> tuple[InboxTarget, int, InboxMessage]:
+        for target, messages in (
+            (InboxTarget.next_turn, next_turn),
+            (InboxTarget.next_step, next_step),
+        ):
+            for index, message in enumerate(messages):
+                if message.id == message_id:
+                    return target, index, message
+        raise AvaError(ErrorKind.not_found, "queued message is no longer pending")
+
+    @staticmethod
+    def _next_inbox_message(state: AgentState, item: Item, source_id: str = "") -> InboxMessage:
+        return InboxMessage(id=f"m-{state.next_message}", item=item, source_id=source_id)
+
     async def _enqueue(self, target: InboxTarget, item: Item) -> None:
         validate_step_claimed_record(target, item)
         state = self._state
@@ -177,36 +217,17 @@ class Agent:
         try:
             state.initialize()
             inbox = state.session.inbox()
-            message_id = f"m-{state.next_message}"
             messages = inbox.target(target)
+            message = self._next_inbox_message(state, item)
             if target == InboxTarget.next_step:
-                # The prospective complete batch must fit one record with worst-case ordinals.
-                from ava.session import StepClaimed
-                from ava.session.codec import encode_record
-                from ava.session.event import Event
-
-                maximum = 2**64 - 1
-                from ava.session.codec import _MAX_TIME
-
-                encode_record(
-                    Event(
-                        seq=maximum,
-                        at=_MAX_TIME,
-                        payload=StepClaimed(
-                            turn=maximum,
-                            step=maximum,
-                            target=InboxTarget.next_step,
-                            claimed=[*messages, InboxMessage(id=message_id, item=item)],
-                        ),
-                    )
-                )
+                self._validate_next_step([*messages, message])
             state.next_message += 1
             state.acknowledge(
                 InboxSpliced(
                     target=target,
                     index=len(messages),
                     removed=0,
-                    inserted=[InboxMessage(id=message_id, item=item)],
+                    inserted=[message],
                 )
             )
         finally:
@@ -219,6 +240,97 @@ class Agent:
     async def steer(self, item: Item) -> None:
         """Returns only after the durable next-step inbox record is complete."""
         await self._enqueue(InboxTarget.next_step, item)
+
+    async def delete_pending(self, message_id: str) -> None:
+        """Delete an unclaimed inbox message, serialized against step claims."""
+        state = self._state
+        await state.inbox_gate.acquire()
+        try:
+            state.initialize()
+            inbox = state.session.inbox()
+            target, index, _ = self._find_pending(inbox.next_turn, inbox.next_step, message_id)
+            state.acknowledge(InboxSpliced(target=target, index=index, removed=1, inserted=[]))
+        finally:
+            state.inbox_gate.release()
+
+    async def revise_pending(self, message_id: str, text: str) -> None:
+        """Replace an unclaimed inbox message's text while preserving its attachments."""
+        state = self._state
+        await state.inbox_gate.acquire()
+        try:
+            state.initialize()
+            inbox = state.session.inbox()
+            target, index, current = self._find_pending(
+                inbox.next_turn, inbox.next_step, message_id
+            )
+            blocks = [block for block in current.item.blocks if block.kind != ContentBlockKind.text]
+            if text:
+                blocks.append(make_text_block(text))
+            if not blocks:
+                raise AvaError(
+                    ErrorKind.invalid_argument,
+                    "queued message must contain non-empty text or an attachment",
+                )
+            item = Item(
+                role=current.item.role,
+                blocks=blocks,
+                provenance=current.item.provenance,
+            )
+            validate_step_claimed_record(target, item)
+            replacement = self._next_inbox_message(state, item, current.source_id or current.id)
+            if target == InboxTarget.next_step:
+                prospective = list(inbox.next_step)
+                prospective[index] = replacement
+                self._validate_next_step(prospective)
+            state.next_message += 1
+            state.acknowledge(
+                InboxSpliced(
+                    target=target,
+                    index=index,
+                    removed=1,
+                    inserted=[replacement],
+                )
+            )
+        finally:
+            state.inbox_gate.release()
+
+    async def send_pending(self, message_id: str) -> None:
+        """Promote a queued follow-up into the current turn's steering batch."""
+        state = self._state
+        await state.inbox_gate.acquire()
+        try:
+            state.initialize()
+            inbox = state.session.inbox()
+            target, index, current = self._find_pending(
+                inbox.next_turn, inbox.next_step, message_id
+            )
+            if target == InboxTarget.next_step:
+                return
+            promoted = self._next_inbox_message(
+                state, current.item, current.source_id or current.id
+            )
+            self._validate_next_step([*inbox.next_step, promoted])
+            state.next_message += 1
+            # Queue both records before acknowledge drains them, making the cross-target move
+            # one physical frame. The message therefore survives a crash exactly once.
+            state.append(
+                InboxSpliced(
+                    target=InboxTarget.next_turn,
+                    index=index,
+                    removed=1,
+                    inserted=[],
+                )
+            )
+            state.acknowledge(
+                InboxSpliced(
+                    target=InboxTarget.next_step,
+                    index=len(inbox.next_step),
+                    removed=0,
+                    inserted=[promoted],
+                )
+            )
+        finally:
+            state.inbox_gate.release()
 
     # ---- control -------------------------------------------------------------------------
 
