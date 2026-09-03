@@ -104,6 +104,7 @@ async def test_fence_rejects_foreign_host_and_origin(client: httpx.AsyncClient):
     assert index.status_code == 200
     assert index.text.startswith("<!doctype html>")
     assert "<title>ava</title>" in index.text and "katex" in index.text
+    assert '<div id="root"></div>' in index.text and "@AVA_REACT_JS@" not in index.text
     assert (await client.get("/favicon.ico")).status_code == 204
 
 

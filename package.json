@@ -1,0 +1,15 @@
+{
+  "name": "ava-webui",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/ava/app/web/frontend/app.jsx --bundle --minify --format=iife --target=es2022 --outfile=src/ava/app/web/assets/app.min.js",
+    "check": "esbuild src/ava/app/web/frontend/app.jsx --bundle --format=iife --target=es2022 --outfile=/dev/null"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

@@ -114,11 +114,15 @@ Typing `/` opens the command menu:
 | `/theme`, `/copy [code]`, `/new`, `/clear`, `/help` | Presentation and chat housekeeping |
 | `/pause`, `/abort`, `/resume` | The turn controls, as commands |
 
+The Web UI source is native React in `src/ava/app/web/frontend/app.jsx`, with no component framework or runtime CDN dependency.
+The checked-in browser bundle is rebuilt with `npm ci && npm run build` when that source changes.
+
 ## Tests
 
 ```sh
 uv run pytest
 uv run ruff check src tests
+npm run check
 ```
 
 The suite is the acceptance gate for the borrowed invariants: an acknowledged input is present
