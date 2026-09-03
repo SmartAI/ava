@@ -39,6 +39,7 @@ from ava.llm import (
 )
 from ava.llm.credentials import delete_api_key, save_api_key
 from ava.session import Event
+from ava.session.compaction import estimate_context_tokens
 from ava.session.context_report import context_report
 
 DEFAULT_PORT = 8777
@@ -665,7 +666,39 @@ def _begin_drive(chat: Chat) -> None:
 
 
 def status_payload(chat: Chat) -> dict[str, Any]:
-    return {"status": chat.status, "turn_open": chat.agent.turn_open}
+    """Provider-neutral facts for the passive status bar and control state."""
+    agent = chat.agent
+    selection = agent.current_selection()
+    report = context_report(
+        agent.state.session,
+        agent.state.provider.context_window,
+        agent.state.compaction_options.threshold_percent,
+    )
+    used_tokens = (
+        report.estimated_tokens
+        if report.measured_input_tokens is None
+        else estimate_context_tokens(agent.state.session)
+    )
+    capabilities = agent.state.provider.capabilities(selection.model)
+    context_window = capabilities.context_window_tokens
+    if context_window is None and selection.model == agent.state.provider.selection.model:
+        context_window = agent.state.provider.context_window
+    context_window = context_window or 0
+    remaining = None
+    if context_window:
+        remaining = round(max(0, context_window - used_tokens) * 100 / context_window)
+
+    return {
+        "status": chat.status,
+        "turn_open": agent.turn_open,
+        "cwd": str(agent.cwd),
+        "provider": selection.provider,
+        "model": selection.model,
+        "effort": selection.effort,
+        "context_used_tokens": used_tokens,
+        "context_window_tokens": context_window,
+        "context_remaining_percent": remaining,
+    }
 
 
 async def _event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
@@ -690,6 +723,9 @@ async def _event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
     subscription = agent.subscribe(emit)
     unwatch = agent.watch_status(on_status)
     chat.status_watchers.append(on_status)
+    # Replay can contain older selections. Repeat the current snapshot after it so the passive
+    # status bar always settles on the pending or active selection, including after navigation.
+    queue.put_nowait(("status", status_payload(chat)))
     try:
         while True:
             channel, payload = await queue.get()
