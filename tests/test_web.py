@@ -59,20 +59,34 @@ async def client(home: Path, project: Path, scripted):
 async def _events_until(
     client: httpx.AsyncClient, chat_id: str, stop, last: str | None = None
 ) -> list[dict]:
-    """Read the stream until ``stop`` (an event kind or a predicate) matches."""
+    """Read the stream until ``stop`` (an event kind or a predicate) matches.
+
+    Session events come back as their JSON payload; unkeyed ``status`` messages come back as
+    ``{"kind": "status", ...}`` so a test can watch control state on the same channel.
+    """
     done = stop if callable(stop) else (lambda event: event["kind"] == stop)
     headers = {"last-event-id": last} if last is not None else {}
     events: list[dict] = []
+    name = ""
     async with client.stream("GET", f"/api/chats/{chat_id}/events", headers=headers) as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
         async for line in response.aiter_lines():
-            if line.startswith("data: "):
+            if line.startswith("event: "):
+                name = line[7:]
+            elif line.startswith("data: "):
                 event = json.loads(line[6:])
+                if name == "status":
+                    event = {"kind": "status", **event}
+                name = ""
                 events.append(event)
                 if done(event):
                     break
     return events
+
+
+def _kinds(events: list[dict], *, with_status: bool = False) -> list[str]:
+    return [event["kind"] for event in events if with_status or event["kind"] != "status"]
 
 
 async def test_fence_rejects_foreign_host_and_origin(client: httpx.AsyncClient):
@@ -173,6 +187,11 @@ async def test_message_runs_a_turn_and_events_replay(client: httpx.AsyncClient, 
         "chat": {"id": "c1", "title": "photo.png", "status": "running", "archived": False},
     }
     events = await _events_until(client, "c1", "turn/end")
+    assert (
+        events[0] == {"kind": "status", "status": "running", "turn_open": True}
+        or events[0]["kind"] == "status"
+    )
+    events = [event for event in events if event["kind"] != "status"]
     kinds = [event["kind"] for event in events]
     assert kinds == [
         "session/start",
@@ -200,7 +219,8 @@ async def test_message_runs_a_turn_and_events_replay(client: httpx.AsyncClient, 
     assert [block.kind.value for block in first.blocks] == ["image", "file_text"]
     # Last-Event-ID suppresses already received sequence numbers on reconnect.
     replay = await _events_until(client, "c1", "turn/end", last="10")
-    assert [event["seq"] for event in replay] == [11, 12]
+    assert [event["seq"] for event in replay if event["kind"] != "status"] == [11, 12]
+    assert replay[0] == {"kind": "status", "status": "idle", "turn_open": False}
     chat = (await client.get("/api/chats/c1")).json()
     assert chat["status"] == "idle" and chat["title"] == "photo.png"
 
@@ -266,7 +286,7 @@ async def test_event_stream_disconnect_releases_the_subscription(
     baseline = len(subscribers)
     async with client.stream("GET", "/api/chats/c1/events") as response:
         async for line in response.aiter_lines():
-            if line.startswith("data: "):
+            if line.startswith("id: "):
                 break
         assert len(subscribers) == baseline + 1
     for _ in range(50):

@@ -100,7 +100,10 @@ class Chat:
 
     @property
     def status(self) -> str:
-        return "running" if self.drive.running or self.agent.status == Status.running else "idle"
+        """The agent's control state; a drive between turns still reads as running."""
+        if self.agent.status == Status.idle and self.drive.running:
+            return "running"
+        return self.agent.status.value
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -359,6 +362,7 @@ def create_app(
                 "title": chat.title,
                 "cwd": str(project.path),
                 "status": chat.status,
+                "turn_open": chat.agent.turn_open,
                 "archived": chat.archived,
                 "events": [],
             }
@@ -431,7 +435,7 @@ def create_app(
             return _error(404, "not found")
         last = _last_event_id(request.headers.get("last-event-id"))
         return StreamingResponse(
-            _event_stream(found[1].agent, last),
+            _event_stream(found[1], last),
             media_type="text/event-stream",
             headers={"cache-control": "no-store"},
         )
@@ -473,24 +477,44 @@ def _begin_drive(chat: Chat) -> None:
     chat.task = asyncio.create_task(run_drives())
 
 
-async def _event_stream(agent: Agent, last: int | None) -> AsyncIterator[bytes]:
-    queue: asyncio.Queue[Event] = asyncio.Queue()
+def status_payload(chat: Chat) -> dict[str, Any]:
+    return {"status": chat.status, "turn_open": chat.agent.turn_open}
+
+
+async def _event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
+    """Session events keyed by seq, multiplexed with unkeyed ``status`` messages.
+
+    The status channel mirrors `Agent.watch_status`: it carries transient control state so the
+    page never has to infer pausing, paused, or aborting from a stale HTTP snapshot. It has no
+    event id, so `Last-Event-ID` replay is unaffected.
+    """
+    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+    agent = chat.agent
 
     def emit(event: Event) -> None:
         if last is not None and event.seq <= last:
             return
-        queue.put_nowait(event)
+        queue.put_nowait(("event", event))
 
+    def on_status(status: Status, turn_open: bool) -> None:
+        queue.put_nowait(("status", status_payload(chat)))
+
+    queue.put_nowait(("status", status_payload(chat)))
     subscription = agent.subscribe(emit)
+    unwatch = agent.watch_status(on_status)
     try:
         while True:
-            event = await queue.get()
+            channel, payload = await queue.get()
+            if channel == "status":
+                yield f"event: status\ndata: {json.dumps(payload)}\n\n".encode()
+                continue
             try:
-                encoded = event_json(event)
+                encoded = event_json(payload)
             except AvaError:
                 return
-            yield f"id: {event.seq}\ndata: {encoded}\n\n".encode()
+            yield f"id: {payload.seq}\ndata: {encoded}\n\n".encode()
     finally:
+        unwatch()
         subscription.close()
 
 
