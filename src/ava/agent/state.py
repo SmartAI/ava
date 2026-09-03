@@ -329,8 +329,7 @@ class AgentState:
     maintenance_running: bool = False
     ordinals_recovered: bool = False
     initialized: bool = False
-    pending_model: str | None = None
-    pending_effort: str | None = None
+    pending_selection: Selection | None = None
 
     @classmethod
     def create(

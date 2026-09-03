@@ -167,15 +167,11 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _emit_openai_usage(source: dict, sink: StreamSink) -> None:
-    details = (
-        source.get("prompt_tokens_details")
-        if isinstance(source.get("prompt_tokens_details"), dict)
-        else {}
-    )
-    completion_details = (
-        source.get("completion_tokens_details")
-        if isinstance(source.get("completion_tokens_details"), dict)
-        else {}
+    raw_details = source.get("prompt_tokens_details")
+    details: dict = raw_details if isinstance(raw_details, dict) else {}
+    raw_completion_details = source.get("completion_tokens_details")
+    completion_details: dict = (
+        raw_completion_details if isinstance(raw_completion_details, dict) else {}
     )
     prompt_tokens = _int_or_none(source.get("prompt_tokens"))
     cached = _int_or_none(details.get("cached_tokens"))
@@ -219,7 +215,8 @@ def _consume_tool_delta(delta: dict, sink: StreamSink, state: OpenAIStreamState)
                 "OpenAI changed a streamed tool call id; check endpoint compatibility",
             )
         state.tool_id = streamed_id
-    function = delta.get("function") if isinstance(delta.get("function"), dict) else {}
+    raw_function = delta.get("function")
+    function: dict = raw_function if isinstance(raw_function, dict) else {}
     name = function.get("name")
     if isinstance(name, str) and name:
         if state.tool_name and state.tool_name != name:

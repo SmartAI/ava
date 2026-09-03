@@ -47,6 +47,8 @@ from ava.session import (
     TurnStart,
 )
 from ava.session.codec import validate_step_claimed_record
+from ava.session.compaction import estimate_context_tokens
+from ava.session.context_report import ContextReport, context_report
 from ava.session.log import Log, OpenMode
 
 
@@ -107,8 +109,21 @@ class Agent:
             agent._state.drive_state.restore_paused()
         return agent
 
-    def close(self) -> None:
-        self._state.close()
+    async def aclose(self) -> None:
+        """Close the provider and durable state. The agent must be idle."""
+        state = self._state
+        if state.drive_state.status not in (Status.idle, Status.paused):
+            raise AvaError(ErrorKind.invalid_argument, "cannot close the agent while it is running")
+        try:
+            await state.provider.aclose()
+        finally:
+            state.close()
+
+    async def __aenter__(self) -> Agent:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
 
     # ---- observation ----------------------------------------------------------------------
 
@@ -224,7 +239,7 @@ class Agent:
                 available = False
         finally:
             state.model_catalog_operations -= 1
-        current = state.pending_model or state.provider.selection.model
+        current = self.current_selection().model
         models = [*listed, current, *state.provider.model_aliases.values()]
         sort_model_ids(models)
         deduplicated = list(dict.fromkeys(models))
@@ -235,21 +250,61 @@ class Agent:
     def select_model(self, model: str) -> None:
         if not model:
             raise AvaError(ErrorKind.invalid_argument, "model id must not be empty")
-        self._state.pending_model = model
-        self._state.pending_effort = None
+        current = self.current_selection()
+        self._state.pending_selection = Selection(current.provider, model, None)
         self._state.model_revision += 1
 
     def current_selection(self) -> Selection:
-        provider = self._state.provider
-        selection = Selection(
-            provider.selection.provider, provider.selection.model, provider.selection.effort
+        pending = self._state.pending_selection
+        selected = pending or self._state.provider.selection
+        return Selection(selected.provider, selected.model, selected.effort)
+
+    def current_capabilities(self) -> ModelCapabilities:
+        """Capabilities for the pending or active model selection."""
+        return self._state.provider.capabilities(self.current_selection().model)
+
+    def context_report(self, *, prepare: bool = False) -> ContextReport:
+        """Describe the provider-neutral context without exposing runtime state."""
+        if prepare:
+            self.prepare()
+        state = self._state
+        return context_report(
+            state.session,
+            state.provider.context_window,
+            state.compaction_options.threshold_percent,
         )
-        if self._state.pending_model is not None:
-            selection.model = self._state.pending_model
-            selection.effort = None
-        if self._state.pending_effort is not None:
-            selection.effort = self._state.pending_effort
-        return selection
+
+    def status_snapshot(self) -> dict[str, object]:
+        """Return the stable frontend status contract from agent-owned state."""
+        state = self._state
+        selected = self.current_selection()
+        report = self.context_report()
+        used_tokens = (
+            report.estimated_tokens
+            if report.measured_input_tokens is None
+            else estimate_context_tokens(state.session)
+        )
+        capabilities = state.provider.capabilities(selected.model)
+        context_window = capabilities.context_window_tokens
+        if context_window is None and selected.model == state.provider.selection.model:
+            context_window = state.provider.context_window
+        context_window = context_window or 0
+        remaining = (
+            round(max(0, context_window - used_tokens) * 100 / context_window)
+            if context_window
+            else None
+        )
+        return {
+            "status": self.status.value,
+            "turn_open": self.turn_open,
+            "cwd": str(self.cwd),
+            "provider": selected.provider,
+            "model": selected.model,
+            "effort": selected.effort,
+            "context_used_tokens": used_tokens,
+            "context_window_tokens": context_window,
+            "context_remaining_percent": remaining,
+        }
 
     async def cycle_effort(self) -> str:
         state = self._state
@@ -280,7 +335,7 @@ class Agent:
         except ValueError:
             index = -1
         next_effort = efforts[0] if index < 0 or index + 1 >= len(efforts) else efforts[index + 1]
-        state.pending_effort = next_effort
+        state.pending_selection = Selection(selected.provider, selected.model, next_effort)
         return next_effort
 
     def select_effort(self, effort: str | None) -> None:
@@ -295,9 +350,10 @@ class Agent:
                     f"the current model does not advertise reasoning effort '{effort}'; "
                     f"choose one of {', '.join(capabilities.effort_values) or 'none'}",
                 )
-        self._state.pending_effort = effort
+        selected = self.current_selection()
+        self._state.pending_selection = Selection(selected.provider, selected.model, effort)
 
-    def reload_credentials(
+    async def reload_credentials(
         self, auth_requirement: AuthRequirement = AuthRequirement.required
     ) -> None:
         state = self._state
@@ -307,7 +363,11 @@ class Agent:
             or state.model_catalog_operations
         ):
             raise AvaError(ErrorKind.invalid_argument, "cannot reload credentials while busy")
-        state.provider = provider_from_environment(None, state.provider.selection, auth_requirement)
+        old_provider = state.provider
+        new_provider = provider_from_environment(None, old_provider.selection, auth_requirement)
+        state.provider = new_provider
+        if new_provider is not old_provider:
+            await old_provider.aclose()
 
     # ---- the driver ----------------------------------------------------------------------
 
@@ -410,13 +470,15 @@ class Agent:
                         owns = False
                         return
                     if not drive.close_turn():
-                        error = AvaError(
+                        close_error = AvaError(
                             ErrorKind.internal,
                             "cannot close a turn while tool results remain outstanding",
                         )
-                        await self._finish_failed_turn(turn_number, TurnEndReason.completed, error)
+                        await self._finish_failed_turn(
+                            turn_number, TurnEndReason.completed, close_error
+                        )
                         owns = False
-                        raise error
+                        raise close_error
                     elapsed_ms = int((time.monotonic() - turn_started) * 1000)
                     state.append(
                         TurnEnd(

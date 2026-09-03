@@ -61,7 +61,7 @@ async def test_report_attributes_every_kind_and_sums_to_the_estimate(home: Path,
     assert report.estimated_tokens == sum(section.tokens for section in report.sections)
     assert report.measured_input_tokens is None and not report.compacted
     assert (report.context_window, report.threshold_percent) == (10_000, 85)
-    agent.close()
+    await agent.aclose()
 
 
 async def test_report_reflects_the_compacted_window(home: Path, project: Path):
@@ -83,4 +83,4 @@ async def test_report_reflects_the_compacted_window(home: Path, project: Path):
     # The summarized prefix is gone from the window: only the post-seed exchange remains.
     assert by_kind["user_text"].count == 1 and "h" * 4000 not in ""
     assert report.measured_input_tokens == 350
-    agent.close()
+    await agent.aclose()

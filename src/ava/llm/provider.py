@@ -7,7 +7,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
 
 from ava.base import AvaError, CancelToken, ErrorKind, ascii_lower
 from ava.base.cancel import NEVER
@@ -181,10 +180,6 @@ class Provider:
 
     async def aclose(self) -> None:
         return None
-
-
-class _ProviderFactory(Protocol):
-    def __call__(self, selection: Selection) -> Provider: ...
 
 
 def encode_base64(data: bytes) -> str:

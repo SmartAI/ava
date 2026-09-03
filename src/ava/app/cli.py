@@ -360,14 +360,21 @@ def run(argv: list[str]) -> int:
     except AvaError as error:
         _print_error(error)
         return EXIT_ERROR
+    session_path = agent.session_path
+
+    async def run_and_close() -> int:
+        try:
+            return await _run_one_shot(agent, item)
+        finally:
+            await agent.aclose()
+
     try:
-        return asyncio.run(_run_one_shot(agent, item))
+        return asyncio.run(run_and_close())
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED
     finally:
-        if plan.create_path is None and plan.resume is None and agent.session_path is not None:
-            print(f"ava: session {agent.session_path}", file=sys.stderr)
-        agent.close()
+        if plan.create_path is None and plan.resume is None and session_path is not None:
+            print(f"ava: session {session_path}", file=sys.stderr)
 
 
 def main() -> None:

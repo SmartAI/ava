@@ -15,6 +15,7 @@ import hashlib
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -717,7 +718,7 @@ def _read_all(fd: int) -> bytes:
     return b"".join(chunks)
 
 
-def _append_bytes_transactionally(fd: int, data: bytes, poison: callable) -> None:
+def _append_bytes_transactionally(fd: int, data: bytes, poison: Callable[[], None]) -> None:
     if not data:
         raise AvaError(ErrorKind.invalid_argument, "cannot append session frame", "frame is empty")
     original_end = os.lseek(fd, 0, os.SEEK_END)
@@ -731,13 +732,15 @@ def _append_bytes_transactionally(fd: int, data: bytes, poison: callable) -> Non
             _rollback(fd, original_end, poison, error)
             raise _io_error("cannot append session frame", error) from error
         if count == 0:
-            error = OSError(5, "Input/output error")
-            _rollback(fd, original_end, poison, error)
-            raise _io_error("cannot append session frame", error) from error
+            write_stopped = OSError(5, "Input/output error")
+            _rollback(fd, original_end, poison, write_stopped)
+            raise _io_error("cannot append session frame", write_stopped) from write_stopped
         written += count
 
 
-def _rollback(fd: int, original_end: int, poison: callable, write_error: OSError) -> None:
+def _rollback(
+    fd: int, original_end: int, poison: Callable[[], None], write_error: OSError
+) -> None:
     try:
         os.ftruncate(fd, original_end)
     except OSError as rollback_error:

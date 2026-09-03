@@ -84,7 +84,7 @@ async def test_one_turn_claims_input_and_closes_cleanly(home: Path, project: Pat
     assert [tool.name for tool in context.tools] == ["read", "write", "edit", "bash"]
     assert [block.text for item in context.items for block in item.blocks] == ["hi"]
     assert agent.state.session.inbox().next_turn == []
-    agent.close()
+    await agent.aclose()
 
 
 async def test_tool_calls_run_in_order_and_feed_the_next_request(home: Path, project: Path):
@@ -118,8 +118,8 @@ async def test_tool_calls_run_in_order_and_feed_the_next_request(home: Path, pro
         e.payload for e in agent2.state.session.events if isinstance(e.payload, ToolResult)
     )
     assert result.item.blocks[0].is_error and "unknown tool 'nope'" in result.item.blocks[0].text
-    agent.close()
-    agent2.close()
+    await agent.aclose()
+    await agent2.aclose()
 
 
 async def test_steer_lands_at_next_step_and_followup_opens_its_own_turn(home: Path, project: Path):
@@ -161,7 +161,7 @@ async def test_steer_lands_at_next_step_and_followup_opens_its_own_turn(home: Pa
     assert "steer now" in texts[1] and "queue later" not in texts[1]
     assert "queue later" in texts[2]
     assert turn_ends(agent) == [TurnEndReason.completed, TurnEndReason.completed]
-    agent.close()
+    await agent.aclose()
 
 
 async def test_pause_stops_at_step_seam_and_resume_continues_verbatim(home: Path, project: Path):
@@ -194,7 +194,7 @@ async def test_pause_stops_at_step_seam_and_resume_continues_verbatim(home: Path
     assert len(claims) == 1  # continuation has no synthetic user message
     second_roles = [item.role.value for item in provider.contexts[1].items]
     assert second_roles == ["user", "assistant", "tool"]
-    agent.close()
+    await agent.aclose()
 
 
 async def test_abort_during_stream_repairs_history(home: Path, project: Path):
@@ -214,7 +214,7 @@ async def test_abort_during_stream_repairs_history(home: Path, project: Path):
     inbox = agent.state.session.inbox()
     assert inbox.next_turn == [] and inbox.next_step == []
     assert agent.cancel(CancelCause.user_abort) is None  # no-op when idle
-    agent.close()
+    await agent.aclose()
 
 
 async def test_abort_during_tool_marks_interrupted_and_skipped(home: Path, project: Path):
@@ -252,7 +252,7 @@ async def test_abort_during_tool_marks_interrupted_and_skipped(home: Path, proje
     origins = [(block.call_id, block.origin) for block in result.item.blocks]
     assert origins == [("c1", Origin.interrupted), ("c2", Origin.skipped)]
     assert turn_ends(agent) == [TurnEndReason.user_abort]
-    agent.close()
+    await agent.aclose()
 
 
 async def test_provider_error_is_contained_at_the_drive_boundary(home: Path, project: Path):
@@ -272,7 +272,7 @@ async def test_provider_error_is_contained_at_the_drive_boundary(home: Path, pro
     assert [m.item.blocks[0].text for m in agent.state.session.inbox().next_turn] == ["after"]
     await agent.drive()
     assert turn_ends(agent)[-1] == TurnEndReason.completed
-    agent.close()
+    await agent.aclose()
 
 
 async def test_reopen_restores_paused_state_and_repairs_a_killed_turn(home: Path, project: Path):
@@ -288,13 +288,13 @@ async def test_reopen_restores_paused_state_and_repairs_a_killed_turn(home: Path
     agent.cancel(CancelCause.user_pause)
     provider.gate.set()
     await drive
-    agent.close()
+    await agent.aclose()
     reopened = Agent.reopen(ScriptedProvider([text_response("resumed")]), project, path)
     assert reopened.status == Status.paused
     reopened.resume()
     await reopened.drive()
     assert turn_ends(reopened)[-1] == TurnEndReason.completed
-    reopened.close()
+    await reopened.aclose()
     # A log whose process died mid-turn reopens balanced with exactly one interrupted closer.
     log = Log.open(path, OpenMode.read_only)
     plain_events = [event.payload for event in log.loaded_events]
@@ -316,7 +316,7 @@ async def test_duplicate_driver_is_rejected(home: Path, project: Path):
     await drive
     with pytest.raises(AvaError):
         await agent.drive()  # nothing pending
-    agent.close()
+    await agent.aclose()
 
 
 async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, project: Path):
@@ -352,7 +352,7 @@ async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, projec
         isinstance(e.payload, AssistantMessage) and e.payload.item is context.items[0]
         for e in agent.state.session.events
     )
-    agent.close()
+    await agent.aclose()
 
 
 async def test_status_watchers_and_effort_selection(home: Path, project: Path):
@@ -388,6 +388,29 @@ async def test_status_watchers_and_effort_selection(home: Path, project: Path):
     assert agent.current_selection().effort == "high"
     with pytest.raises(AvaError):
         agent.select_effort("max")
+    provider.selection.effort = "high"
     agent.select_effort(None)
     assert agent.current_selection().effort is None
-    agent.close()
+    await agent.followup(message("apply cleared effort"))
+    await agent.drive()
+    assert provider.selection.effort is None
+    await agent.aclose()
+    assert provider.closed
+
+
+async def test_reloading_credentials_closes_the_replaced_provider(
+    home: Path, project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    provider = ScriptedProvider([text_response("old")])
+    replacement = ScriptedProvider([text_response("new")])
+    agent = Agent.create(provider, project)
+    monkeypatch.setattr(
+        "ava.agent.agent.provider_from_environment", lambda *_args, **_kwargs: replacement
+    )
+
+    await agent.reload_credentials()
+
+    assert provider.closed
+    assert agent.state.provider is replacement
+    await agent.aclose()
+    assert replacement.closed

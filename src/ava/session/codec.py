@@ -175,6 +175,8 @@ def block_from_wire(wire: dict[str, Any]) -> ContentBlock:
     if not isinstance(wire, dict):
         raise _fail("invalid JSONL record", "block must be an object")
     kind_name = wire.get("kind")
+    if not isinstance(kind_name, str):
+        raise _fail("invalid JSONL record", "block kind must be a string")
     try:
         kind = ContentBlockKind(kind_name)
     except ValueError:

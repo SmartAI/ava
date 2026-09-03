@@ -99,7 +99,8 @@ def parse_codex_credential(text: str, now: int | None = None) -> CodexCredential
         raise _auth_error() from None
     if not isinstance(document, dict) or document.get("auth_mode") != "chatgpt":
         raise _auth_error()
-    tokens = document.get("tokens") if isinstance(document.get("tokens"), dict) else {}
+    raw_tokens = document.get("tokens")
+    tokens: dict = raw_tokens if isinstance(raw_tokens, dict) else {}
     access_token = tokens.get("access_token") or ""
     id_token = tokens.get("id_token") or ""
     if (
@@ -347,16 +348,10 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _emit_usage(source: dict, sink: StreamSink) -> None:
-    input_details = (
-        source.get("input_tokens_details")
-        if isinstance(source.get("input_tokens_details"), dict)
-        else {}
-    )
-    output_details = (
-        source.get("output_tokens_details")
-        if isinstance(source.get("output_tokens_details"), dict)
-        else {}
-    )
+    raw_input_details = source.get("input_tokens_details")
+    input_details: dict = raw_input_details if isinstance(raw_input_details, dict) else {}
+    raw_output_details = source.get("output_tokens_details")
+    output_details: dict = raw_output_details if isinstance(raw_output_details, dict) else {}
     cached = _int_or_none(input_details.get("cached_tokens"))
     reasoning = _int_or_none(output_details.get("reasoning_tokens"))
     usage = Usage(
@@ -515,9 +510,11 @@ def consume_codex_event(
         )
         state.arguments_done = True
     elif kind in ("response.completed", "response.incomplete", "response.failed"):
-        response = value.get("response") if isinstance(value.get("response"), dict) else {}
-        if isinstance(response.get("usage"), dict):
-            _emit_usage(response["usage"], sink)
+        raw_response = value.get("response")
+        response: dict = raw_response if isinstance(raw_response, dict) else {}
+        usage = response.get("usage")
+        if isinstance(usage, dict):
+            _emit_usage(usage, sink)
         if state.tool_started:
             raise _stream_error(
                 "Codex stopped before finishing a tool call; retry or check endpoint compatibility"
@@ -530,11 +527,8 @@ def consume_codex_event(
                 ErrorKind.provider,
             )
         if kind == "response.incomplete":
-            details = (
-                response.get("incomplete_details")
-                if isinstance(response.get("incomplete_details"), dict)
-                else {}
-            )
+            raw_details = response.get("incomplete_details")
+            details: dict = raw_details if isinstance(raw_details, dict) else {}
             if details.get("reason") != "max_output_tokens":
                 raise _stream_error(
                     "Codex returned an incomplete response; retry or check provider status",
