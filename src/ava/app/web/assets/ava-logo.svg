@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="768" viewBox="0 0 1536 768" role="img" aria-labelledby="title description">
+  <title id="title">AVA monogram</title>
+  <desc id="description">A flat violet AVA monogram crossed by one transparent event channel with three mint nodes.</desc>
+  <defs>
+    <mask id="event-channel" maskUnits="userSpaceOnUse" x="0" y="0" width="1536" height="768">
+      <rect width="1536" height="768" fill="white"/>
+      <rect x="214" y="430" width="1108" height="110" rx="55" fill="black"/>
+    </mask>
+  </defs>
+
+  <g fill="#7c3aed" fill-rule="evenodd" mask="url(#event-channel)">
+    <path d="M100 650 L300 120 H390 L590 650 H475 L434 540 H256 L215 650 Z
+             M345 278 L402 430 H288 Z"/>
+    <path d="M520 120 H635 L768 486 L901 120 H1016 L820 650 H716 Z"/>
+    <path d="M946 650 L1146 120 H1236 L1436 650 H1321 L1280 540 H1102 L1061 650 Z
+             M1191 278 L1248 430 H1134 Z"/>
+  </g>
+
+  <circle cx="370" cy="485" r="34" fill="#34d399"/>
+  <rect x="734" y="451" width="68" height="68" rx="19" fill="#34d399"/>
+  <circle cx="1166" cy="485" r="34" fill="#34d399"/>
+</svg>
