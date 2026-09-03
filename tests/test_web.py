@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from ava.app.web.server import create_app
+from ava.llm import Selection
 from tests.conftest import ScriptedProvider, text_response, tool_call_response
 
 PNG_2X3 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD")
@@ -29,6 +30,14 @@ def scripted(monkeypatch: pytest.MonkeyPatch):
                 text_response("after tool"),
             ]
         )
+        requested = args[0] if args else None
+        if getattr(requested, "provider", None):
+            provider.id = requested.provider
+            provider.selection = Selection(
+                requested.provider,
+                requested.model or "scripted-model",
+                requested.effort,
+            )
         providers.append(provider)
         return provider
 
@@ -114,9 +123,114 @@ async def test_fence_rejects_foreign_host_and_origin(client: httpx.AsyncClient):
     assert index.status_code == 200
     assert index.text.startswith("<!doctype html>")
     assert "<title>ava</title>" in index.text and "katex" in index.text
+    assert '<link rel="icon" href="/favicon.svg" type="image/svg+xml" />' in index.text
     assert '<div id="root"></div>' in index.text
     assert "@AVA_REACT_CSS@" not in index.text and "@AVA_REACT_JS@" not in index.text
-    assert (await client.get("/favicon.ico")).status_code == 204
+    for path in ("/favicon.svg", "/favicon.ico"):
+        favicon = await client.get(path)
+        assert favicon.status_code == 200
+        assert favicon.headers["content-type"] == "image/svg+xml"
+        assert b"AVA monogram" in favicon.content
+
+
+async def test_settings_route_saves_custom_provider_configuration(
+    client: httpx.AsyncClient, home: Path
+):
+    initial = (await client.get("/api/settings")).json()
+    assert initial["provider_type"] == "builtin"
+    assert initial["provider"] == "anthropic"
+    assert {item["id"] for item in initial["built_in_providers"]} == {
+        "anthropic",
+        "openai",
+        "deepseek",
+        "codex",
+        "llamacpp",
+    }
+
+    saved = await client.put(
+        "/api/settings",
+        json={
+            "provider_type": "custom",
+            "provider": "company-gateway",
+            "family": "openai",
+            "base_url": "https://gateway.example.com/v1/",
+            "model": "company-model",
+            "effort": None,
+            "api_key": "sk-private",
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json() | {"built_in_providers": []} == {
+        "provider_type": "custom",
+        "provider": "company-gateway",
+        "model": "company-model",
+        "effort": None,
+        "family": "openai",
+        "base_url": "https://gateway.example.com/v1",
+        "built_in_providers": [],
+        "applied_to_current": False,
+        "warning": None,
+        "selection": {
+            "provider": "company-gateway",
+            "model": "company-model",
+            "effort": None,
+        },
+    }
+    assert (await client.get("/api/settings")).json()["provider"] == "company-gateway"
+    settings_text = (home / "settings.json").read_text()
+    document = json.loads(settings_text)
+    assert document["providers"]["company-gateway"] == {
+        "family": "openai",
+        "base_url": "https://gateway.example.com/v1",
+    }
+    assert "sk-private" not in settings_text
+    assert json.loads((home / "auth.json").read_text())["company-gateway"]["key"] == (
+        "sk-private"
+    )
+    assert "api_key" not in saved.json()
+
+    invalid = await client.put(
+        "/api/settings",
+        json={
+            "provider_type": "custom",
+            "provider": "openai",
+            "family": "openai",
+            "base_url": "https://gateway.example.com/v1",
+            "model": "model",
+        },
+    )
+    assert invalid.status_code == 400
+    assert "reserved" in invalid.json()["error"]
+
+
+async def test_settings_apply_to_the_current_idle_chat(
+    client: httpx.AsyncClient, scripted
+):
+    assert (await client.post("/api/chats", json={"project_id": "workspace"})).status_code == 201
+    original = scripted[0]
+    saved = await client.put(
+        "/api/settings",
+        json={
+            "provider_type": "custom",
+            "provider": "company-gateway",
+            "family": "openai",
+            "base_url": "https://gateway.example.com/v1",
+            "model": "company-model",
+            "effort": "high",
+            "chat_id": "c1",
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["applied_to_current"] is True
+    assert saved.json()["selection"] == {
+        "provider": "company-gateway",
+        "model": "company-model",
+        "effort": "high",
+    }
+    assert original.closed is True
+    replacement = client_agent(client, "c1").state.provider
+    assert replacement is scripted[1]
+    assert replacement.selection == Selection("company-gateway", "company-model", "high")
 
 
 async def test_projects_chats_and_archive(client: httpx.AsyncClient, project: Path):

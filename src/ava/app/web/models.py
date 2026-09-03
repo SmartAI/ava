@@ -45,6 +45,17 @@ class CredentialsBody(RequestBody):
     key: str = Field(min_length=1)
 
 
+class SettingsBody(RequestBody):
+    provider_type: Literal["builtin", "custom"]
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    effort: str | None = None
+    family: Literal["anthropic", "openai"] | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    chat_id: str | None = None
+
+
 async def parse_body[Body: RequestBody](
     request: Request, body_type: type[Body]
 ) -> Body | None:

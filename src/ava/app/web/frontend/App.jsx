@@ -6,6 +6,7 @@ import { Composer } from './components/Composer'
 import { Header } from './components/Header'
 import { Modal } from './components/Modal'
 import { Sidebar } from './components/Sidebar'
+import { SettingsModal } from './components/SettingsModal'
 import { StatusBar } from './components/StatusBar'
 import { Transcript } from './components/Transcript'
 import { formatBytes, transcriptRow } from './utils'
@@ -25,6 +26,11 @@ const loadLocal = key => {
 
 const saveLocal = (key, value) => {
   try { localStorage.setItem(key, value) } catch { /* Browser storage may be disabled. */ }
+}
+
+const savedFontSize = () => {
+  const value = loadLocal('ava-font-size')
+  return ['small', 'default', 'large'].includes(value) ? value : 'default'
 }
 
 export default function App() {
@@ -48,6 +54,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const [controlling, setControlling] = useState(false)
   const [railOpen, setRailOpen] = useState(false)
+  const [fontSize, setFontSize] = useState(savedFontSize)
 
   const currentRef = useRef(null)
   const selectionRef = useRef(0)
@@ -253,6 +260,32 @@ export default function App() {
     setModal({ kind: 'projects', browse: null, error: '' })
   }
   const closeModal = () => setModal(null)
+
+  const openSettings = async () => {
+    setRailOpen(false)
+    setModal({ kind: 'settings', settings: null, error: '' })
+    try {
+      const settings = await api.settings()
+      setModal(value => value?.kind === 'settings' ? { ...value, settings, error: '' } : value)
+    } catch (error) {
+      setModal(value => value?.kind === 'settings'
+        ? { ...value, error: String(error?.message || error) }
+        : value)
+    }
+  }
+
+  const saveSettings = async values => {
+    const { font_size: nextFontSize, ...providerSettings } = values
+    const result = await api.saveSettings({ ...providerSettings, chat_id: currentRef.current })
+    document.documentElement.dataset.fontSize = nextFontSize
+    saveLocal('ava-font-size', nextFontSize)
+    setFontSize(nextFontSize)
+    if (result.applied_to_current) setModelSelection(result.selection)
+    closeModal()
+    if (currentRef.current) {
+      addNotice(result.warning || `Settings saved · ${result.provider} · ${result.model}`)
+    }
+  }
 
   const browse = async path => {
     try {
@@ -671,11 +704,13 @@ export default function App() {
       projects={projects}
       current={current}
       status={status}
+      selection={modelSelection}
       open={openProjects}
       archiveOpen={archiveOpen}
       mobileOpen={railOpen}
       onClose={() => setRailOpen(false)}
       onNew={openPicker}
+      onSettings={openSettings}
       onToggleProject={id => setOpenProjects(items => {
         const next = new Set(items)
         next.has(id) ? next.delete(id) : next.add(id)
@@ -759,7 +794,14 @@ export default function App() {
         </div>
       </div>
     </main>
-    <Modal
+    {modal?.kind === 'settings' ? <SettingsModal
+      settings={modal.settings}
+      fontSize={fontSize}
+      loadError={modal.error}
+      onClose={closeModal}
+      onRetry={openSettings}
+      onSave={saveSettings}
+    /> : <Modal
       modal={modal}
       projects={projects}
       onClose={closeModal}
@@ -768,6 +810,6 @@ export default function App() {
       onUseFolder={useFolder}
       onStartChat={startChat}
       onConfirm={value => modal?.confirm?.run(value)}
-    />
+    />}
   </>
 }

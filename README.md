@@ -97,6 +97,12 @@ validates and reopens every default session log, recreates projects found only i
 and replays their complete histories. The browser separately remembers the selected chat and
 expanded sidebar groups, so refresh returns to the same view.
 
+The Settings row at the bottom of the sidebar configures a built-in provider or a custom Anthropic-
+or OpenAI-compatible endpoint, including its model, optional reasoning effort, base URL, and API
+key. Provider defaults are saved in `$AVA_HOME/settings.json`; keys remain in credential storage.
+Saving also updates the current chat when it is idle. Font size is a browser-local preference and
+survives reloads.
+
 | State | Enter | Alt+Enter | Esc | Button |
 | --- | --- | --- | --- | --- |
 | idle | send | send | | send |

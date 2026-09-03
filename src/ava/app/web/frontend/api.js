@@ -13,6 +13,8 @@ const call = async (method, path, body) => {
 
 export const api = {
   projects: () => call('GET', '/api/projects').then(payload => payload.projects),
+  settings: () => call('GET', '/api/settings'),
+  saveSettings: body => call('PUT', '/api/settings', body),
   addProject: path => call('POST', '/api/projects', { path }),
   browse: path => call('GET', `/api/fs?path=${encodeURIComponent(path || '')}`),
   createChat: project => call('POST', '/api/chats', { project_id: project }),

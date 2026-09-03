@@ -1,6 +1,6 @@
 import React from 'react'
 
-import { ArchiveIcon, CaretIcon, ComposeIcon, FolderIcon, PlusIcon } from './Icons'
+import { ArchiveIcon, CaretIcon, ComposeIcon, FolderIcon, PlusIcon, SettingsIcon } from './Icons'
 
 const rowClass = 'flex w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-1.75 text-left text-sm text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent'
 const iconButtonClass = 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border-0 bg-transparent text-quiet hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
@@ -29,7 +29,7 @@ export function StatusDot({ state }) {
   return <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${colors[state] || 'bg-transparent'}`} />
 }
 
-export function Sidebar({ projects, current, status, open, archiveOpen, mobileOpen, onClose, onNew, onToggleProject, onToggleArchive, onSelect, onArchive }) {
+export function Sidebar({ projects, current, status, selection, open, archiveOpen, mobileOpen, onClose, onNew, onSettings, onToggleProject, onToggleArchive, onSelect, onArchive }) {
   return <>
     <aside className={`fixed inset-y-0 left-0 z-30 flex w-[min(84vw,320px)] shrink-0 flex-col border-r border-line bg-sidebar shadow-float transition-transform duration-150 motion-reduce:transition-none min-[701px]:static min-[701px]:z-auto min-[701px]:w-[252px] min-[701px]:translate-x-0 min-[701px]:shadow-none ${mobileOpen ? 'translate-x-0' : '-translate-x-[102%]'}`}>
       <div className="flex h-13 shrink-0 items-center gap-2 py-0 pr-3 pl-4">
@@ -59,6 +59,17 @@ export function Sidebar({ projects, current, status, open, archiveOpen, mobileOp
           </section>
         })}
       </nav>
+      <div className="shrink-0 border-t border-line px-2 py-2">
+        <button className={`${rowClass} py-2`} type="button" onClick={onSettings}>
+          <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><SettingsIcon /></span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-ink">Settings</span>
+            <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-faint">
+              {selection ? `${selection.provider} · ${selection.model}` : 'Provider and model'}
+            </span>
+          </span>
+        </button>
+      </div>
     </aside>
     {mobileOpen && <button className="fixed inset-y-0 right-0 left-[min(84vw,320px)] z-20 border-0 bg-mask min-[701px]:hidden" aria-label="Close navigation" onClick={onClose} />}
   </>

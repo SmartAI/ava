@@ -28,6 +28,10 @@ export function ThemeIcon() {
   return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="3.25" /><path d="M8 1v1.5M8 13.5V15M15 8h-1.5M2.5 8H1M12.95 3.05l-1.06 1.06M4.11 11.89l-1.06 1.06M12.95 12.95l-1.06-1.06M4.11 4.11L3.05 3.05" strokeLinecap="round" /></svg>
 }
 
+export function SettingsIcon() {
+  return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.25" /><path d="M6.9 1.8h2.2l.4 1.65c.35.14.68.33.98.56l1.62-.5 1.1 1.9-1.22 1.15c.03.2.05.4.05.61s-.02.42-.05.62l1.22 1.14-1.1 1.9-1.62-.5c-.3.24-.63.43-.98.57l-.4 1.64H6.9l-.4-1.64a4.8 4.8 0 01-.98-.57l-1.62.5-1.1-1.9 1.22-1.14A4.24 4.24 0 014 7.17c0-.21.02-.41.05-.61L2.8 5.41l1.1-1.9 1.62.5c.3-.23.63-.42.98-.56l.4-1.65z" /></svg>
+}
+
 export function CloseIcon() {
   return <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
 }

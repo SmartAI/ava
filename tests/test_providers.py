@@ -28,7 +28,11 @@ from ava.llm import (
     sort_model_ids,
 )
 from ava.llm.anthropic import AnthropicProvider, AnthropicSettings, request_body
-from ava.llm.configuration import load_provider_settings
+from ava.llm.configuration import (
+    load_provider_settings,
+    load_saved_provider_settings,
+    save_basic_configuration,
+)
 from ava.llm.openai import OpenAIProvider, openai_request_body
 from ava.llm.provider import resolve_model_alias
 
@@ -284,3 +288,53 @@ def test_settings_resolution_order(home: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     provider = provider_from_environment(SelectionOverride(provider="openai"))
     assert provider.id == "openai" and provider.context_window == 1_050_000
+
+
+def test_web_managed_settings_save_custom_and_builtin_defaults(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    custom = save_basic_configuration(
+        Selection("my-gateway", "company-model", "high"),
+        custom=True,
+        family="openai",
+        base_url="https://gateway.internal/v1/",
+    )
+    assert custom.family == "openai"
+    assert custom.base_url == "https://gateway.internal/v1"
+    assert custom.model_overrides["company-model"].effort_values == ["high"]
+    assert load_saved_provider_settings().selection == Selection(
+        "my-gateway", "company-model", "high"
+    )
+
+    monkeypatch.setenv("AVA_PROVIDER", "anthropic")
+    assert load_saved_provider_settings().selection.provider == "my-gateway"
+    assert load_provider_settings(SelectionOverride(), None).selection.provider == "anthropic"
+
+    built_in = save_basic_configuration(
+        Selection("openai", "gpt-5.4-mini"), custom=False
+    )
+    assert built_in.selection == Selection("openai", "gpt-5.4-mini")
+    document = json.loads((home / "settings.json").read_text())
+    assert document["providers"]["my-gateway"]["base_url"] == (
+        "https://gateway.internal/v1"
+    )
+    assert document["providers"]["openai"] == {}
+    assert (home / "settings.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_web_managed_settings_reject_insecure_custom_endpoint(home: Path):
+    with pytest.raises(AvaError, match="must use HTTPS"):
+        save_basic_configuration(
+            Selection("my-gateway", "model"),
+            custom=True,
+            family="openai",
+            base_url="http://gateway.internal/v1",
+        )
+    assert not (home / "settings.json").exists()
+    with pytest.raises(AvaError, match="do not accept a reasoning effort"):
+        save_basic_configuration(
+            Selection("anthropic-gateway", "claude", "high"),
+            custom=True,
+            family="anthropic",
+            base_url="https://gateway.internal",
+        )

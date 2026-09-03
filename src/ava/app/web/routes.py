@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from ava.agent import Agent, CancelCause, CompactNowOutcome, Status
 from ava.agent.prompt import discover_skills
@@ -24,7 +24,15 @@ from ava.llm import (
     make_image_block,
     make_text_block,
 )
+from ava.llm.configuration import (
+    BUILTIN_PROVIDER_DEFAULT_MODELS,
+    BUILTIN_PROVIDERS,
+    ProviderSettings,
+    load_saved_provider_settings,
+    save_basic_configuration,
+)
 from ava.llm.credentials import delete_api_key, save_api_key
+from ava.llm.provider import Selection, SelectionOverride
 
 from .models import (
     AddProjectBody,
@@ -34,10 +42,13 @@ from .models import (
     CredentialsBody,
     MessageBody,
     SelectionBody,
+    SettingsBody,
     parse_body,
 )
 from .registry import Chat, Project, WebState, title_from_text
 from .streaming import begin_drive, event_stream
+
+FAVICON = Path(__file__).parent / "assets" / "ava-logo.svg"
 
 ATTACHMENT_COUNT_LIMIT = 10
 ATTACHMENT_BYTE_LIMIT = 8 * 1024 * 1024
@@ -48,6 +59,34 @@ COMPACTION_MESSAGES = {
     CompactNowOutcome.failed: "compaction failed; the conversation is unchanged",
     CompactNowOutcome.disabled: "compaction is disabled for this run",
 }
+BUILTIN_PROVIDER_LABELS = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "deepseek": "DeepSeek",
+    "codex": "Codex",
+    "llamacpp": "llama.cpp",
+}
+
+
+def settings_payload(settings: ProviderSettings) -> dict[str, Any]:
+    selection = settings.selection
+    custom = selection.provider not in BUILTIN_PROVIDERS
+    return {
+        "provider_type": "custom" if custom else "builtin",
+        "provider": selection.provider,
+        "model": selection.model,
+        "effort": selection.effort,
+        "family": settings.family if custom else None,
+        "base_url": settings.base_url if custom else None,
+        "built_in_providers": [
+            {
+                "id": provider,
+                "label": BUILTIN_PROVIDER_LABELS[provider],
+                "default_model": BUILTIN_PROVIDER_DEFAULT_MODELS[provider],
+            }
+            for provider in BUILTIN_PROVIDERS
+        ],
+    }
 
 
 def error_response(status: int, message: str) -> JSONResponse:
@@ -148,9 +187,10 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
     async def index() -> Response:
         return HTMLResponse(index_html())
 
+    @app.get("/favicon.svg")
     @app.get("/favicon.ico")
     async def favicon() -> Response:
-        return Response(status_code=204)
+        return FileResponse(FAVICON, media_type="image/svg+xml")
 
     @app.get("/api/fs")
     async def browse(path: str = "") -> Response:
@@ -165,6 +205,107 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
     @app.get("/api/projects")
     async def projects() -> Response:
         return JSONResponse({"projects": [project.summary() for project in registry.projects]})
+
+    @app.get("/api/settings")
+    async def settings() -> Response:
+        try:
+            return JSONResponse(settings_payload(load_saved_provider_settings()))
+        except AvaError as error:
+            return error_response(503, error.message)
+
+    @app.put("/api/settings")
+    async def update_settings(request: Request) -> Response:
+        body = await parse_body(request, SettingsBody)
+        if body is None:
+            return error_response(400, "settings must be a valid JSON object")
+        found = registry.find_chat(body.chat_id) if body.chat_id is not None else None
+        if body.chat_id is not None and found is None:
+            return error_response(404, "no such chat")
+
+        provider_name = body.provider.strip()
+        model = body.model.strip()
+        effort = body.effort.strip() if body.effort is not None else None
+        effort = effort or None
+        family = body.family
+        base_url = body.base_url.strip() if body.base_url is not None else None
+        if not provider_name or not model:
+            return error_response(400, "provider and model must not be empty")
+        if body.api_key and provider_name == "codex":
+            return error_response(
+                400, "the codex provider reuses the Codex CLI login; run 'codex login' instead"
+            )
+
+        selected = Selection(provider_name, model, effort)
+        try:
+            saved = save_basic_configuration(
+                selected,
+                custom=body.provider_type == "custom",
+                family=family,
+                base_url=base_url,
+            )
+            if body.api_key:
+                save_api_key(provider_name, body.api_key)
+        except AvaError as error:
+            status = (
+                400
+                if error.kind in (ErrorKind.invalid_argument, ErrorKind.parse)
+                else 503
+            )
+            return error_response(status, error.message)
+
+        payload = settings_payload(saved)
+        payload.update(
+            applied_to_current=False,
+            warning=None,
+            selection={
+                "provider": selected.provider,
+                "model": selected.model,
+                "effort": selected.effort,
+            },
+        )
+        if found is None:
+            return JSONResponse(payload)
+
+        chat = found[1]
+        if chat.status != "idle" or chat.drive.running:
+            payload["warning"] = "Defaults were saved, but the current chat is busy and was not changed."
+            return JSONResponse(payload)
+        try:
+            replacement = state.provider_factory(
+                SelectionOverride(
+                    provider=selected.provider,
+                    model=selected.model,
+                    effort=selected.effort,
+                ),
+                None,
+                AuthRequirement.allow_missing,
+            )
+            # A blank effort is an explicit UI choice, even if an AVA_EFFORT override exists.
+            replacement.selection = Selection(
+                selected.provider, selected.model, selected.effort
+            )
+        except AvaError as error:
+            payload["warning"] = (
+                f"Defaults were saved, but the current chat was not changed: {error.message}"
+            )
+            return JSONResponse(payload)
+        try:
+            await chat.agent.replace_provider(replacement)
+        except AvaError as error:
+            await replacement.aclose()
+            payload["warning"] = (
+                f"Defaults were saved, but the current chat was not changed: {error.message}"
+            )
+            return JSONResponse(payload)
+        current_selection = chat.agent.current_selection()
+        payload["applied_to_current"] = True
+        payload["selection"] = {
+            "provider": current_selection.provider,
+            "model": current_selection.model,
+            "effort": current_selection.effort,
+        }
+        chat.notify_status()
+        return JSONResponse(payload)
 
     @app.post("/api/projects")
     async def add_project(request: Request) -> Response:

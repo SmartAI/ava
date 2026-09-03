@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,7 +21,15 @@ from ava.llm.provider import (
 )
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-BUILTIN_PROVIDERS = ("anthropic", "openai", "deepseek", "codex", "llamacpp")
+BUILTIN_PROVIDER_DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-5",
+    "openai": "gpt-5.4",
+    "deepseek": "deepseek-v4-flash",
+    "codex": "default",
+    "llamacpp": "default",
+}
+BUILTIN_PROVIDERS = tuple(BUILTIN_PROVIDER_DEFAULT_MODELS)
+_PROVIDER_ID = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
 @dataclass(slots=True)
@@ -195,7 +205,7 @@ def _resolve_provider_config(config: dict | None, selection: Selection) -> dict 
     provider_config: dict | None = None
     if isinstance(providers, dict):
         provider_config = providers.get(selection.provider)
-        if provider_config is None and selection.provider != "llamacpp":
+        if provider_config is None and not _is_builtin(selection.provider):
             raise AvaError(
                 ErrorKind.parse, f"configuration field 'providers.{selection.provider}' is required"
             )
@@ -378,9 +388,9 @@ def normalized_base_url(base_url: str) -> str:
     return base_url
 
 
-def load_provider_settings(cli: SelectionOverride, resumed: Selection | None) -> ProviderSettings:
-    config = read_configuration()
-    selection, flags = _resolve_selection(config, cli, resumed)
+def _provider_settings(
+    config: dict | None, selection: Selection, flags: _Flags
+) -> ProviderSettings:
     if selection.provider == "mock":
         if not selection.model:
             selection.model = "mock"
@@ -396,29 +406,35 @@ def load_provider_settings(cli: SelectionOverride, resumed: Selection | None) ->
     return settings
 
 
-def remember_selection(selection: Selection) -> None:
-    """Update the top-level selection fields atomically, preserving provider definitions."""
+def load_provider_settings(cli: SelectionOverride, resumed: Selection | None) -> ProviderSettings:
+    config = read_configuration()
+    selection, flags = _resolve_selection(config, cli, resumed)
+    return _provider_settings(config, selection, flags)
+
+
+def load_saved_provider_settings() -> ProviderSettings:
+    """Load only the persisted default, without CLI, resumed-session, or environment overrides."""
+    config = read_configuration()
+    selection = Selection(provider="anthropic", model="claude-sonnet-5")
+    flags = _Flags()
+    if config is not None:
+        model = config.get("model")
+        _apply_layer(
+            selection,
+            flags,
+            config.get("provider"),
+            model,
+            config.get("effort"),
+            model_may_be_alias=isinstance(model, str) and is_model_alias_candidate(model),
+            configured_aliases_allowed=model is not None,
+        )
+    return _provider_settings(config, selection, flags)
+
+
+def _write_configuration(document: dict) -> None:
     resolved = settings_path()
-    if not selection.provider or not selection.model:
-        raise AvaError(ErrorKind.io, "cannot remember an incomplete selection")
     path = resolved.path
-    document: dict = {}
     exists = path.exists()
-    if exists:
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            raise AvaError(
-                ErrorKind.parse, f"cannot update invalid settings file '{path}'"
-            ) from None
-        if not isinstance(document, dict):
-            raise AvaError(ErrorKind.parse, f"cannot update invalid settings file '{path}'")
-    document["provider"] = selection.provider
-    document["model"] = selection.model
-    if selection.effort is not None:
-        document["effort"] = selection.effort
-    else:
-        document.pop("effort", None)
     encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":"))
     parent = path.parent
     created = not parent.exists()
@@ -430,13 +446,154 @@ def remember_selection(selection: Selection) -> None:
         raise AvaError(
             ErrorKind.io, f"cannot create settings directory '{parent}': {error}"
         ) from error
-    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    temporary = path.with_name(
+        f"{path.name}.tmp.{os.getpid()}.{secrets.token_hex(6)}"
+    )
     try:
-        with open(temporary, "w", encoding="utf-8") as output:
+        with open(temporary, "x", encoding="utf-8") as output:
             output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
         mode = path.stat().st_mode & 0o777 if exists else 0o600
         os.chmod(temporary, mode)
         os.replace(temporary, path)
     except OSError as error:
         temporary.unlink(missing_ok=True)
         raise AvaError(ErrorKind.io, f"cannot replace settings file '{path}': {error}") from error
+
+
+def save_basic_configuration(
+    selection: Selection,
+    *,
+    custom: bool,
+    family: str | None = None,
+    base_url: str | None = None,
+) -> ProviderSettings:
+    """Validate and atomically save the fields managed by the Web settings dialog."""
+    if not _PROVIDER_ID.fullmatch(selection.provider):
+        raise AvaError(
+            ErrorKind.invalid_argument,
+            "provider must start with a lowercase letter and contain only lowercase letters, digits, or '-'",
+        )
+    if not selection.model or selection.effort == "":
+        raise AvaError(
+            ErrorKind.invalid_argument, "model and any reasoning effort must be non-empty"
+        )
+    if custom:
+        if selection.provider in (*BUILTIN_PROVIDERS, "mock"):
+            raise AvaError(
+                ErrorKind.invalid_argument,
+                f"'{selection.provider}' is reserved for a built-in provider",
+            )
+        if family not in ("anthropic", "openai"):
+            raise AvaError(
+                ErrorKind.invalid_argument,
+                "a custom provider must use the Anthropic or OpenAI protocol family",
+            )
+        if not base_url:
+            raise AvaError(
+                ErrorKind.invalid_argument, "a custom provider must specify a base URL"
+            )
+        if family == "anthropic" and selection.effort is not None:
+            raise AvaError(
+                ErrorKind.invalid_argument,
+                "Anthropic-compatible providers do not accept a reasoning effort",
+            )
+        base_url = normalized_base_url(base_url)
+    elif selection.provider not in BUILTIN_PROVIDERS:
+        raise AvaError(ErrorKind.invalid_argument, "choose a supported built-in provider")
+    elif selection.provider == "anthropic" and selection.effort is not None:
+        raise AvaError(
+            ErrorKind.invalid_argument, "Anthropic does not accept a reasoning effort"
+        )
+
+    document = read_configuration() or {}
+    providers_value = document.get("providers")
+    if providers_value is not None and not isinstance(providers_value, dict):
+        raise AvaError(ErrorKind.parse, "configuration field 'providers' must be an object")
+    providers = providers_value if isinstance(providers_value, dict) else {}
+    if custom:
+        existing = providers.get(selection.provider, {})
+        if not isinstance(existing, dict):
+            raise AvaError(
+                ErrorKind.parse,
+                f"configuration field 'providers.{selection.provider}' must be an object",
+            )
+        configured = dict(existing)
+        configured.update(family=family, base_url=base_url)
+        if selection.effort is not None:
+            models_value = configured.get("models")
+            if models_value is not None and not isinstance(models_value, dict):
+                raise AvaError(
+                    ErrorKind.parse,
+                    f"configuration field 'providers.{selection.provider}.models' must be an object",
+                )
+            models = dict(models_value or {})
+            profile_value = models.get(selection.model)
+            if profile_value is not None and not isinstance(profile_value, dict):
+                raise AvaError(
+                    ErrorKind.parse,
+                    f"configuration field 'providers.{selection.provider}.models.{selection.model}' must be an object",
+                )
+            profile = dict(profile_value or {})
+            efforts_value = profile.get("effort_values")
+            if efforts_value is not None and (
+                not isinstance(efforts_value, list)
+                or any(not isinstance(effort, str) or not effort for effort in efforts_value)
+            ):
+                raise AvaError(
+                    ErrorKind.parse,
+                    f"configuration field 'providers.{selection.provider}.models.{selection.model}.effort_values' must contain non-empty strings",
+                )
+            efforts = list(efforts_value or [])
+            if selection.effort not in efforts:
+                efforts.append(selection.effort)
+            profile["effort_values"] = efforts
+            models[selection.model] = profile
+            configured["models"] = models
+        providers[selection.provider] = configured
+        document["providers"] = providers
+    elif providers_value is not None:
+        existing = providers.get(selection.provider, {})
+        if not isinstance(existing, dict):
+            raise AvaError(
+                ErrorKind.parse,
+                f"configuration field 'providers.{selection.provider}' must be an object",
+            )
+        configured = dict(existing)
+        for name in ("family", "base_url", "api_key_env"):
+            configured.pop(name, None)
+        providers[selection.provider] = configured
+
+    document["provider"] = selection.provider
+    document["model"] = selection.model
+    if selection.effort is None:
+        document.pop("effort", None)
+    else:
+        document["effort"] = selection.effort
+
+    flags = _Flags(
+        model_may_be_alias=is_model_alias_candidate(selection.model),
+        configured_aliases_allowed=True,
+    )
+    settings = _provider_settings(
+        document,
+        Selection(selection.provider, selection.model, selection.effort),
+        flags,
+    )
+    _write_configuration(document)
+    return settings
+
+
+def remember_selection(selection: Selection) -> None:
+    """Update the top-level selection fields atomically, preserving provider definitions."""
+    if not selection.provider or not selection.model:
+        raise AvaError(ErrorKind.io, "cannot remember an incomplete selection")
+    document = read_configuration() or {}
+    document["provider"] = selection.provider
+    document["model"] = selection.model
+    if selection.effort is not None:
+        document["effort"] = selection.effort
+    else:
+        document.pop("effort", None)
+    _write_configuration(document)

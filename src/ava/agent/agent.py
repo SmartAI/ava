@@ -396,6 +396,29 @@ class Agent:
         selected = self.current_selection()
         self._state.pending_selection = Selection(selected.provider, selected.model, effort)
 
+    async def replace_provider(self, provider: Provider) -> None:
+        """Adopt a configured provider while idle; ownership transfers only on success."""
+        state = self._state
+        if (
+            state.drive_state.status != Status.idle
+            or state.maintenance_running
+            or state.model_catalog_operations
+        ):
+            raise AvaError(ErrorKind.invalid_argument, "cannot change provider while busy")
+        old_provider = state.provider
+        if provider is old_provider:
+            return
+        state.maintenance_running = True
+        await state.inbox_gate.acquire()
+        try:
+            await old_provider.aclose()
+            state.provider = provider
+            state.pending_selection = None
+            state.model_revision += 1
+        finally:
+            state.maintenance_running = False
+            state.inbox_gate.release()
+
     async def reload_credentials(
         self, auth_requirement: AuthRequirement = AuthRequirement.required
     ) -> None:
