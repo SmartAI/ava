@@ -1085,6 +1085,7 @@
     tail: null,       // live assistant block: { node, raw, pending }
     calls: new Map(), // call_id → tool row element
     displayedInputs: new Set(),
+    terminalEvents: 0, // turn/end and drive/error seen; a stale acknowledgement must not revive 'running'
   }
 
   const $ = id => document.getElementById(id)
@@ -1422,11 +1423,13 @@
       closeTail()
     } else if (event.kind === 'turn/end') {
       closeTail()
+      state.terminalEvents++
       setStatus('idle')
     } else if (event.kind === 'compaction/failed') {
       addError(event.message)
     } else if (event.kind === 'drive/error') {
       addError(event.message)
+      state.terminalEvents++
       setStatus('idle')
     }
   }
@@ -1757,6 +1760,7 @@
         name: entry.file.name,
         data_base64: await readBase64(entry.file),
       })))
+      const terminalBefore = state.terminalEvents
       const accepted = await api.message(chatId, text, attachments, delivery)
       clearStaged()
       draft.value = ''
@@ -1765,7 +1769,9 @@
       if (chat) Object.assign(chat, accepted.chat)
       if (state.current === accepted.chat.id) {
         $('title').textContent = accepted.chat.title
-        setStatus(accepted.chat.status)
+        // The stream is authoritative: a turn that already ended must not be shown as running
+        // because its acknowledgement arrived late.
+        if (state.terminalEvents === terminalBefore) setStatus(accepted.chat.status)
       }
       renderRail()
     } catch (error) {
