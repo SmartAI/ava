@@ -13,6 +13,7 @@ import base64
 import binascii
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -287,7 +288,9 @@ def codex_input_json(context: Context, selected: Selection) -> str:
     return output
 
 
-def codex_request_body(context: Context, selected: Selection) -> str:
+def codex_request_body(
+    context: Context, selected: Selection, *, prompt_cache_key: str | None = None
+) -> str:
     """The stateless Responses request, assembled around the pre-encoded input array."""
     reasoning: dict = {"effort": selected.effort} if selected.effort is not None else {}
     head: dict = {"model": selected.model}
@@ -302,6 +305,8 @@ def codex_request_body(context: Context, selected: Selection) -> str:
         "stream": True,
         "include": ["reasoning.encrypted_content"],
     }
+    if prompt_cache_key is not None:
+        tail["prompt_cache_key"] = prompt_cache_key
     body = (
         _dumps(head)[:-1]
         + ',"input":'
@@ -636,6 +641,7 @@ class CodexProvider(Provider):
         self._base_url = base_url.rstrip("/")
         self._credential = credential
         self._capabilities: dict[str, ModelCapabilities] = {}
+        self._prompt_cache_key = secrets.token_hex(16)
         self._transport = Client()
 
     def _headers(self, accept: str) -> list[tuple[str, str]]:
@@ -648,7 +654,7 @@ class CodexProvider(Provider):
     async def stream(
         self, context: Context, selected: Selection, sink: StreamSink, cancel: CancelToken = NEVER
     ) -> StopReason:
-        body = codex_request_body(context, selected)
+        body = codex_request_body(context, selected, prompt_cache_key=self._prompt_cache_key)
         request = Request(
             url=self._base_url + "/responses",
             headers=[("content-type", "application/json")] + self._headers("text/event-stream"),

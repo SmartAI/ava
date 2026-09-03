@@ -396,6 +396,14 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
     stop = await provider.stream(Context(), selected, events.append)
     assert stop.value == "end_turn"
     assert "".join(e.text for e in events if e.kind == StreamEventKind.text_delta) == "codex answer"
+    first_cache_key = _Codex.posts[0]["body"]["prompt_cache_key"]
+    assert len(first_cache_key) == 32
+    assert _Codex.posts[1]["body"]["prompt_cache_key"] == first_cache_key
+
+    other = CodexProvider(Selection("codex", "default"), codex_server, credential)
+    await other.stream(Context(), selected, lambda _event: None)
+    assert _Codex.posts[2]["body"]["prompt_cache_key"] != first_cache_key
+    await other.aclose()
     await provider.aclose()
 
 
