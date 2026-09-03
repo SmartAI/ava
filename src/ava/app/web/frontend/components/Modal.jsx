@@ -10,6 +10,8 @@ export function Modal({ modal, projects, onClose, onBack, onBrowse, onUseFolder,
   const listRef = useRef(null)
   const picker = modal?.kind === 'projects'
   const browsing = picker && modal.browse !== null
+  const addOnly = picker && Boolean(modal.addOnly)
+  const loading = picker && Boolean(modal.loading)
 
   useEffect(() => {
     if (modal?.kind === 'generic' && modal.input) inputRef.current?.focus()
@@ -18,22 +20,28 @@ export function Modal({ modal, projects, onClose, onBack, onBrowse, onUseFolder,
 
   if (!modal) return null
 
-  const title = picker ? (browsing ? 'Choose a folder' : 'Start a new chat') : modal.title
+  const title = picker
+    ? (addOnly ? 'Add a project' : (browsing ? 'Choose a folder' : 'Start a new chat'))
+    : modal.title
   const note = modal.error || (picker
-    ? (browsing ? 'ava runs its tools inside the folder you choose.' : 'Chats are grouped by project directory.')
+    ? (loading
+        ? 'Loading folders…'
+        : (browsing
+            ? 'ava runs its tools inside the folder you choose.'
+            : (addOnly ? 'Choose a folder to add it as a project.' : 'Chats are grouped by project directory.')))
     : modal.note || '')
 
   return <div className="fixed inset-0 z-40 flex items-center justify-center bg-mask" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <div className="flex max-h-[min(560px,calc(100vh-64px))] w-[min(520px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-line-strong bg-menu shadow-float" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div className="flex shrink-0 items-center gap-2.5 px-4 pt-4 pb-3">
-        {browsing && <button className={iconButtonClass} title="Back" aria-label="Back" onClick={onBack}><BackIcon /></button>}
+        {browsing && !addOnly && <button className={iconButtonClass} title="Back" aria-label="Back" onClick={onBack}><BackIcon /></button>}
         <span className="min-w-0 flex-1 text-[15px] font-semibold" id="modal-title">{title}</span>
         <button className={iconButtonClass} title="Close" aria-label="Close" onClick={onClose}><CloseIcon /></button>
       </div>
       {browsing && <div className="shrink-0 overflow-hidden text-ellipsis whitespace-nowrap px-4 pb-2.5 font-mono text-xs text-faint">{modal.browse.path}</div>}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" ref={listRef}>
-        {picker && !browsing && projects.length === 0 && <div className="p-2 text-xs text-faint">No projects yet - browse for a folder to add one.</div>}
-        {picker && !browsing && projects.map(project => <button className={pickerRowClass} key={project.id} onClick={() => onStartChat(project.id)}><FolderIcon /><span className="min-w-0 flex-1"><span className="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span><span className="block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] text-faint">{project.path}</span></span></button>)}
+        {picker && !browsing && !addOnly && projects.length === 0 && <div className="p-2 text-xs text-faint">No projects yet - browse for a folder to add one.</div>}
+        {picker && !browsing && !addOnly && projects.map(project => <button className={pickerRowClass} key={project.id} onClick={() => onStartChat(project.id)}><FolderIcon /><span className="min-w-0 flex-1"><span className="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span><span className="block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] text-faint">{project.path}</span></span></button>)}
         {browsing && modal.browse.parent && <button className={pickerRowClass} onClick={() => onBrowse(modal.browse.parent)}><UpIcon /><span className="min-w-0 flex-1">..</span></button>}
         {browsing && modal.browse.entries.map(entry => <button className={pickerRowClass} key={entry.path} onClick={() => onBrowse(entry.path)}><FolderIcon /><span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{entry.name}</span></button>)}
         {browsing && modal.browse.entries.length === 0 && !modal.browse.parent && <div className="p-2 text-xs text-faint">Nothing to open here.</div>}
@@ -43,8 +51,8 @@ export function Modal({ modal, projects, onClose, onBack, onBrowse, onUseFolder,
       </div>
       <div className="flex shrink-0 items-center gap-2 border-t border-line-strong px-4 py-3">
         <span className="min-w-0 flex-1 text-xs text-faint">{note}</span>
-        {picker && !browsing && <button className="shrink-0 rounded-full border border-line-strong px-3.5 py-1.75 text-[13px] text-ink hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" onClick={() => onBrowse('')}>Browse…</button>}
-        {browsing && <button className="shrink-0 rounded-full bg-accent px-3.5 py-1.75 text-[13px] text-white hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" onClick={onUseFolder}>Use this folder</button>}
+        {picker && !browsing && !loading && <button className="shrink-0 rounded-full border border-line-strong px-3.5 py-1.75 text-[13px] text-ink hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" onClick={() => onBrowse('')}>{addOnly ? 'Retry' : 'Browse…'}</button>}
+        {browsing && <button className="shrink-0 rounded-full bg-accent px-3.5 py-1.75 text-[13px] text-white hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-50" disabled={loading} onClick={onUseFolder}>Use this folder</button>}
         {!picker && modal.confirm && <button className="shrink-0 rounded-full bg-accent px-3.5 py-1.75 text-[13px] text-white hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" onClick={() => onConfirm(inputRef.current?.value || '')}>{modal.confirm.label}</button>}
       </div>
     </div>

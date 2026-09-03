@@ -29,12 +29,12 @@ export function StatusDot({ state }) {
   return <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${colors[state] || 'bg-transparent'}`} />
 }
 
-export function Sidebar({ projects, current, status, selection, open, archiveOpen, mobileOpen, onClose, onNew, onSettings, onToggleProject, onToggleArchive, onSelect, onArchive }) {
+export function Sidebar({ projects, current, status, selection, open, archiveOpen, mobileOpen, onClose, onAddProject, onNew, onNewSession, onSettings, onToggleProject, onToggleArchive, onSelect, onArchive }) {
   return <>
     <aside className={`fixed inset-y-0 left-0 z-30 flex w-[min(84vw,320px)] shrink-0 flex-col border-r border-line bg-sidebar shadow-float transition-transform duration-150 motion-reduce:transition-none min-[701px]:static min-[701px]:z-auto min-[701px]:w-[252px] min-[701px]:translate-x-0 min-[701px]:shadow-none ${mobileOpen ? 'translate-x-0' : '-translate-x-[102%]'}`}>
       <div className="flex h-13 shrink-0 items-center gap-2 py-0 pr-3 pl-4">
         <span className="flex-1 text-[15px] font-semibold tracking-[0.01em]">ava</span>
-        <button className={iconButtonClass} title="New chat" aria-label="New chat" onClick={onNew}><PlusIcon /></button>
+        <button className={iconButtonClass} type="button" title="Add project" aria-label="Add project" onClick={onAddProject}><PlusIcon /></button>
       </div>
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" aria-label="Projects and chats">
         <button className={`${rowClass} mt-1 font-medium text-ink`} onClick={onNew}><span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><ComposeIcon /></span><span className="min-w-0 flex-1">New chat</span></button>
@@ -44,11 +44,14 @@ export function Sidebar({ projects, current, status, selection, open, archiveOpe
           const archived = project.chats.filter(chat => chat.archived)
           const archivedExpanded = archiveOpen.has(project.id)
           return <section key={project.id}>
-            <button className={`${rowClass} text-ink`} title={project.path} aria-expanded={expanded} onClick={() => onToggleProject(project.id)}>
-              <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><CaretIcon className={`transition-transform duration-100 ${expanded ? 'rotate-90' : ''}`} /></span>
-              <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><FolderIcon /></span>
-              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
-            </button>
+            <div className="group flex items-center rounded-lg hover:bg-hover">
+              <button className={`${rowClass} min-w-0 flex-1 text-ink hover:bg-transparent`} type="button" title={project.path} aria-expanded={expanded} onClick={() => onToggleProject(project.id)}>
+                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><CaretIcon className={`transition-transform duration-100 ${expanded ? 'rotate-90' : ''}`} /></span>
+                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><FolderIcon /></span>
+                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
+              </button>
+              <button className={`${iconButtonClass} mr-0.5 text-faint`} type="button" title="New session" aria-label={`New session in ${project.name}`} onClick={() => onNewSession(project.id)}><PlusIcon /></button>
+            </div>
             {expanded && <div>
               {project.chats.filter(chat => !chat.archived).map(chat => <ChatRow key={chat.id} chat={chat} current={chat.id === current} status={status} onSelect={() => onSelect(chat.id)} onArchive={() => onArchive(chat, true)} />)}
               {archived.length > 0 && <div>

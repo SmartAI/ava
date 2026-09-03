@@ -252,6 +252,13 @@ export default function App() {
     setRailOpen(false)
     setModal({ kind: 'projects', browse: null, error: '' })
   }
+
+  const openProjectBrowser = () => {
+    setRailOpen(false)
+    setModal({ kind: 'projects', browse: null, error: '', addOnly: true, loading: true })
+    browse('')
+  }
+
   const closeModal = () => setModal(null)
 
   const openSettings = async () => {
@@ -281,11 +288,16 @@ export default function App() {
   }
 
   const browse = async path => {
+    setModal(value => value?.kind === 'projects' ? { ...value, loading: true, error: '' } : value)
     try {
       const listing = await api.browse(path)
-      setModal({ kind: 'projects', browse: listing, error: '' })
+      setModal(value => value?.kind === 'projects'
+        ? { ...value, browse: listing, loading: false, error: '' }
+        : value)
     } catch (error) {
-      setModal(value => ({ ...value, error: String(error.message || error) }))
+      setModal(value => value?.kind === 'projects'
+        ? { ...value, loading: false, error: String(error.message || error) }
+        : value)
     }
   }
 
@@ -299,19 +311,28 @@ export default function App() {
       closeModal()
       await selectChat(created.id)
     } catch (error) {
-      setModal(value => ({ ...value, error: String(error.message || error) }))
+      const message = String(error.message || error)
+      setModal(value => value
+        ? { ...value, error: message }
+        : { kind: 'generic', title: 'Could not create session', text: message, error: '' })
     }
   }
 
   const useFolder = async () => {
     if (modal?.kind !== 'projects' || !modal.browse) return
+    const addOnly = Boolean(modal.addOnly)
     try {
       const added = await api.addProject(modal.browse.path)
       setProjects(items => {
         const exists = items.some(project => project.id === added.id)
         return exists ? items : [{ ...added, chats: added.chats || [] }, ...items]
       })
-      await startChat(added.id)
+      if (addOnly) {
+        setOpenProjects(items => new Set(items).add(added.id))
+        closeModal()
+      } else {
+        await startChat(added.id)
+      }
     } catch (error) {
       setModal(value => ({ ...value, error: String(error.message || error) }))
     }
@@ -738,7 +759,9 @@ export default function App() {
       archiveOpen={archiveOpen}
       mobileOpen={railOpen}
       onClose={() => setRailOpen(false)}
+      onAddProject={openProjectBrowser}
       onNew={openPicker}
+      onNewSession={startChat}
       onSettings={openSettings}
       onToggleProject={id => setOpenProjects(items => {
         const next = new Set(items)
