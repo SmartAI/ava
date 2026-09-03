@@ -821,6 +821,42 @@
     font-size: 12px;
   }
 
+  /* Slash menu: a filtered list of commands above the draft, like the TUI picker. */
+  .slashMenu {
+    margin: 0 10px;
+    padding: 4px;
+    border: 1px solid var(--border-l2);
+    border-radius: 12px;
+    background: var(--menu-fill);
+    box-shadow: var(--shadow-lv2);
+  }
+
+  .slashMenu .pick { padding: 6px 8px; }
+  .slashMenu .pick[data-active] { background: var(--sidebar-active); }
+  .slashMenu .pickName { font-family: var(--font-code); font-size: 13px; }
+  .slashMenu .pickPath { font-family: var(--font-ui); font-size: 12px; }
+
+  #modelChip { max-width: 260px; }
+  #modelChip .chipName { font-family: var(--font-code); }
+
+  .pick[data-selected] .pickName::after { content: ' ✓'; color: var(--accent); }
+
+  .modalInput {
+    width: 100%;
+    margin: 4px 0 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-l2);
+    border-radius: 8px;
+    background: var(--input-major);
+    color: var(--label-primary);
+    font: inherit;
+    font-family: var(--font-code);
+    outline: none;
+  }
+
+  .modalInput:focus { border-color: var(--accent); }
+  .modalText { padding: 8px; color: var(--label-secondary); font-size: 13px; line-height: 20px; white-space: pre-wrap; }
+
   .status[data-state='pausing'] .clock, .status[data-state='aborting'] .clock { display: none; }
 
   /* ---- Picker ---------------------------------------------------------- */
@@ -994,6 +1030,9 @@
     <span class="dot" id="headDot"></span>
     <span id="title">No chat</span>
     <span id="cwd"></span>
+    <button class="chip" id="modelChip" title="Model and reasoning effort (/model)" hidden>
+      <span class="chipName" id="modelName"></span>
+    </button>
     <button class="iconBtn" id="theme" title="Toggle theme" aria-label="Toggle theme">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
         <circle cx="8" cy="8" r="3.25" />
@@ -1009,6 +1048,7 @@
       <div id="card">
         <div class="attachments" id="attachmentTray" hidden></div>
         <input id="fileInput" type="file" multiple hidden>
+        <div class="slashMenu" id="slashMenu" hidden></div>
         <textarea id="draft" rows="1" placeholder="Ask ava to do something…"></textarea>
         <div class="archiveNotice" id="archiveNotice" hidden>
           <span>Archived — unarchive to continue</span>
@@ -1086,6 +1126,12 @@
     archive: (id, archived) => call('POST', `/api/chats/${id}/archive`, { archived }),
     cancel: (id, cause) => call('POST', `/api/chats/${id}/cancel`, { cause }),
     resume: id => call('POST', `/api/chats/${id}/resume`),
+    models: id => call('GET', `/api/chats/${id}/models`),
+    selectModel: (id, body) => call('POST', `/api/chats/${id}/model`, body),
+    compact: id => call('POST', `/api/chats/${id}/compact`),
+    skills: id => call('GET', `/api/chats/${id}/skills`).then(payload => payload.skills),
+    login: (provider, key) => call('POST', '/api/credentials', { provider, key }),
+    logout: provider => call('DELETE', `/api/credentials/${encodeURIComponent(provider)}`),
   }
 
   async function call(method, path, body) {
@@ -1115,6 +1161,8 @@
     submitting: false,
     controlling: false,
     pending: new Map(), // message id → 'next_turn' | 'next_step', from durable inbox events
+    modelSelection: null, // { provider, model, effort } from the newest selection event or picker
+    lastAssistant: '', // raw markdown of the last completed assistant message, for /copy
     startedAt: 0,
     tail: null,       // live assistant block: { node, raw, pending }
     calls: new Map(), // call_id → tool row element
@@ -1284,17 +1332,25 @@
     scroll.scrollTop = scroll.scrollHeight
   }
 
+  // Errors and notices go in above a still-streaming answer instead of splitting it.
+  function addAside(node) {
+    if (state.tail) {
+      column.insertBefore(node, state.tail.node)
+      scrollToBottom()
+      return node
+    }
+    return add(node)
+  }
+
   function addError(message) {
-    closeTail()
-    const row = add(element(
+    const row = addAside(element(
       `<div class="errorRow"><span class="dot"></span><div><span class="errorTitle">Error</span><span class="errorText"></span></div></div>`
     ))
     row.querySelector('.errorText').textContent = message
   }
 
   function addNotice(text) {
-    closeTail()
-    const row = add(element('<div class="notice"></div>'))
+    const row = addAside(element('<div class="notice"></div>'))
     row.textContent = text
   }
 
@@ -1483,7 +1539,10 @@
       }
       renderPending()
     } else if (event.kind === 'user/message') addUser(event.blocks)
-    else if (event.kind === 'selection' && event.warning) addError(event.warning)
+    else if (event.kind === 'selection') {
+      setSelection({ provider: event.provider, model: event.model, effort: event.effort ?? null })
+      if (event.warning) addError(event.warning)
+    }
     else if (event.kind === 'assistant/chunk') appendDelta(event.delta)
     else if (event.kind === 'assistant/message') {
       const blocks = event.blocks || []
@@ -1494,6 +1553,7 @@
         state.tail.raw = text
         paint(state.tail)
       } else if (text) appendDelta(text)
+      if (text) state.lastAssistant = text
       const calls = blocks.filter(block => block.kind === 'tool_call')
       for (const block of calls) {
         addToolCall({ call_id: block.call_id, tool: block.tool_name, args: block.arguments_json })
@@ -1626,6 +1686,9 @@
     state.calls.clear()
     state.displayedInputs.clear()
     state.pending.clear()
+    state.modelSelection = null
+    state.lastAssistant = ''
+    setSelection(null)
     closeTail()
     column.textContent = ''
     if (statusRow) { clearInterval(clockTimer); statusRow = null }
@@ -1671,7 +1734,14 @@
     renderPicker()
   }
 
-  const closePicker = () => $('overlay').removeAttribute('data-open')
+  const closePicker = () => {
+    $('overlay').removeAttribute('data-open')
+    if (modalMode === 'generic') {
+      modalMode = 'projects'
+      $('modalOpen').onclick = useFolder
+      $('modalOpen').textContent = 'Use this folder'
+    }
+  }
 
   function renderPicker() {
     const list = $('modalList')
@@ -1761,17 +1831,279 @@
   $('modalClose').addEventListener('click', closePicker)
   $('modalBack').addEventListener('click', () => { browsePath = null; renderPicker() })
   $('modalBrowse').addEventListener('click', () => browse(''))
-  $('modalOpen').addEventListener('click', useFolder)
+  $('modalOpen').onclick = useFolder
   $('overlay').addEventListener('click', event => {
     if (event.target === $('overlay')) closePicker()
   })
   addEventListener('keydown', event => {
     if (event.key !== 'Escape') return
     if ($('overlay').hasAttribute('data-open')) { closePicker(); return }
+    if (!$('slashMenu').hidden) { $('slashMenu').hidden = true; return }
     // First Esc pauses at the next step seam; a second Esc while pausing aborts now.
     if (state.status === 'running') control('pause')
     else if (state.status === 'pausing') control('abort')
   })
+
+  // ---- Model chip --------------------------------------------------------
+
+  function setSelection(selection) {
+    state.modelSelection = selection
+    const chip = $('modelChip')
+    chip.hidden = !selection
+    if (selection) {
+      chip.querySelector('.chipName').textContent =
+        `${selection.model}${selection.effort ? ' · ' + selection.effort : ''}`
+      chip.title = `${selection.provider} · ${selection.model}` +
+        (selection.effort ? ` · effort ${selection.effort}` : '') + ' (/model)'
+    }
+  }
+
+  $('modelChip').addEventListener('click', () => commands.model.run(''))
+
+  // ---- Generic modal -----------------------------------------------------
+  // The project picker owns the overlay's default contents; a generic list
+  // reuses the same shell so every dialog looks and closes the same way.
+
+  let modalMode = 'projects'
+
+  function showModal({ title, note, rows = [], text = '', input = null, confirm = null }) {
+    modalMode = 'generic'
+    const list = $('modalList')
+    list.textContent = ''
+    $('modalTitle').textContent = title
+    $('modalNote').textContent = note || ''
+    $('modalBack').hidden = true
+    $('modalPath').hidden = true
+    $('modalBrowse').hidden = true
+    const open = $('modalOpen')
+    open.hidden = !confirm
+    if (confirm) open.textContent = confirm.label
+    open.onclick = confirm ? () => confirm.run(list.querySelector('.modalInput')?.value ?? '') : null
+    if (text) {
+      const block = element('<div class="modalText"></div>')
+      block.textContent = text
+      list.append(block)
+    }
+    if (input) {
+      const field = element('<input class="modalInput">')
+      field.type = input.type || 'text'
+      field.placeholder = input.placeholder || ''
+      field.autocomplete = 'off'
+      field.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && confirm) { event.preventDefault(); confirm.run(field.value) }
+      })
+      list.append(field)
+    }
+    for (const row of rows) {
+      const node = element(`<button class="pick"><span class="pickText"><div class="pickName"></div><div class="pickPath"></div></span></button>`)
+      node.querySelector('.pickName').textContent = row.label
+      node.querySelector('.pickPath').textContent = row.detail || ''
+      if (row.selected) node.setAttribute('data-selected', '')
+      node.addEventListener('click', () => row.run())
+      list.append(node)
+    }
+    $('overlay').setAttribute('data-open', '')
+    list.querySelector('.modalInput')?.focus()
+  }
+
+  // ---- Slash commands ----------------------------------------------------
+  // The TUI's command set, plus the turn controls it puts on Esc and Enter.
+  // None of these become model-visible input; they act on the harness.
+
+  const commands = {
+    model: {
+      hint: '/model [ID]  choose the model; applies at the next step',
+      async run(argument) {
+        if (!state.current) return
+        if (argument) return applySelection({ model: argument })
+        const listed = await api.models(state.current)
+        showModal({
+          title: 'Choose a model',
+          note: listed.catalog_available
+            ? `${listed.provider}: the provider catalog plus configured aliases`
+            : `${listed.provider}: the catalog was unavailable; configured choices only`,
+          rows: listed.models.map(model => ({
+            label: model, selected: model === listed.model,
+            run: () => { closePicker(); applySelection({ model }) },
+          })),
+        })
+      },
+    },
+    effort: {
+      hint: '/effort [LEVEL]  set reasoning effort; "none" clears it',
+      async run(argument) {
+        if (!state.current) return
+        if (argument) return applySelection({ effort: argument === 'none' ? null : argument })
+        const listed = await api.models(state.current)
+        const values = listed.effort_values || []
+        if (!values.length) return addNotice('The current model does not advertise reasoning effort')
+        showModal({
+          title: 'Reasoning effort',
+          note: `${listed.model}`,
+          rows: [...values, 'none'].map(value => ({
+            label: value, selected: (listed.effort ?? 'none') === value,
+            run: () => { closePicker(); applySelection({ effort: value === 'none' ? null : value }) },
+          })),
+        })
+      },
+    },
+    compact: {
+      hint: '/compact  summarize older history now',
+      async run() {
+        if (!state.current) return
+        const outcome = await api.compact(state.current)
+        addNotice(outcome.message)
+      },
+    },
+    skills: {
+      hint: '/skills  list the skills the model can load',
+      async run() {
+        if (!state.current) return
+        const skills = await api.skills(state.current)
+        showModal({
+          title: 'Skills',
+          note: skills.length ? 'The model reads a skill only when it decides it is relevant.' : 'No skills found in .agents/skills or ~/.codex/skills.',
+          rows: skills.map(skill => ({ label: `${skill.name} [${skill.scope}]`, detail: `${skill.description} — ${skill.path}`, run: () => {} })),
+        })
+      },
+    },
+    login: {
+      hint: '/login [PROVIDER]  store an API key for a provider',
+      run(argument) {
+        const provider = argument || state.modelSelection?.provider || ''
+        showModal({
+          title: `API key for ${provider || 'a provider'}`,
+          note: 'Stored in $AVA_HOME/auth.json (0600); an environment variable still takes precedence.',
+          input: { type: 'password', placeholder: provider ? `${provider} API key` : 'first /login PROVIDER' },
+          confirm: {
+            label: 'Save',
+            run: async key => {
+              if (!provider || !key) return
+              try {
+                const result = await api.login(provider, key)
+                closePicker()
+                const failed = Object.entries(result.failed)
+                addNotice(`Stored a key for ${provider}` + (failed.length ? `; not reloaded: ${failed.map(([id, why]) => `${id} (${why})`).join(', ')}` : ''))
+              } catch (error) { $('modalNote').textContent = String(error.message || error) }
+            },
+          },
+        })
+      },
+    },
+    logout: {
+      hint: '/logout [PROVIDER]  remove a stored API key',
+      async run(argument) {
+        const provider = argument || state.modelSelection?.provider
+        if (!provider) return addNotice('Which provider? /logout PROVIDER')
+        await api.logout(provider)
+        addNotice(`Removed the stored key for ${provider}`)
+      },
+    },
+    theme: { hint: '/theme  toggle light and dark', run: () => $('theme').click() },
+    copy: {
+      hint: '/copy [code]  copy the last answer, or its last code block',
+      async run(argument) {
+        let text = state.lastAssistant
+        if (!text) return addNotice('Nothing to copy yet')
+        if (argument === 'code') {
+          const blocks = [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
+          if (!blocks.length) return addNotice('The last answer has no fenced code block')
+          text = blocks[blocks.length - 1][1]
+        }
+        await navigator.clipboard.writeText(text)
+        addNotice(argument === 'code' ? 'Copied the last code block' : 'Copied the last answer')
+      },
+    },
+    new: { hint: '/new  start a fresh chat in this project', run: () => state.project ? startChat(state.project) : openPicker() },
+    clear: { hint: '/clear  same as /new', run: () => commands.new.run() },
+    pause: { hint: '/pause  stop after the current step', run: () => control('pause') },
+    abort: { hint: '/abort  stop now and repair history', run: () => control('abort') },
+    resume: { hint: '/resume  continue a paused turn', run: () => control('resume') },
+    help: {
+      hint: '/help  this list',
+      run: () => showModal({
+        title: 'Commands',
+        note: 'Enter steers a running turn · Alt+Enter queues a follow-up · Esc pauses, then aborts',
+        text: Object.values(commands).map(command => command.hint).join('\n'),
+      }),
+    },
+  }
+
+  async function applySelection(body) {
+    try {
+      const selection = await api.selectModel(state.current, body)
+      setSelection(selection)
+      addNotice(`Next step uses ${selection.model}${selection.effort ? ' with effort ' + selection.effort : ''}`)
+    } catch (error) {
+      addError(String(error.message || error))
+    }
+  }
+
+  async function runCommand(line) {
+    const match = line.match(/^\/(\S+)\s*(.*)$/)
+    const command = match && commands[match[1]]
+    if (!command) return addError(`Unknown command ${line.split(' ')[0]}; try /help`)
+    try {
+      await command.run(match[2].trim())
+    } catch (error) {
+      addError(String(error.message || error))
+    }
+  }
+
+  // The menu opens when the draft is a lone slash word and closes once a space
+  // follows the command, so an argument such as a model id can be typed.
+  let slashActive = -1
+
+  function slashCandidates() {
+    const value = draft.value
+    if (!/^\/[a-z]*$/.test(value)) return null
+    const prefix = value.slice(1)
+    return Object.keys(commands).filter(name => name.startsWith(prefix))
+  }
+
+  function renderSlashMenu() {
+    const menu = $('slashMenu')
+    const candidates = slashCandidates()
+    if (!candidates || !candidates.length) { menu.hidden = true; slashActive = -1; return }
+    if (slashActive < 0 || slashActive >= candidates.length) slashActive = 0
+    menu.replaceChildren()
+    candidates.forEach((name, index) => {
+      const row = element(`<button class="pick" type="button"><span class="pickText"><div class="pickName"></div><div class="pickPath"></div></span></button>`)
+      row.querySelector('.pickName').textContent = '/' + name
+      row.querySelector('.pickPath').textContent = commands[name].hint.replace(/^\/\S+(\s+\[\S+\])?\s+/, '')
+      if (index === slashActive) row.setAttribute('data-active', '')
+      row.addEventListener('mousedown', event => { event.preventDefault(); pickSlash(name) })
+      menu.append(row)
+    })
+    menu.hidden = false
+  }
+
+  function pickSlash(name) {
+    draft.value = `/${name} `
+    autoGrow()
+    renderSlashMenu()
+    draft.focus()
+  }
+
+  function slashKeydown(event) {
+    const candidates = slashCandidates()
+    if (!candidates || !candidates.length || $('slashMenu').hidden) return false
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      slashActive = (slashActive + (event.key === 'ArrowDown' ? 1 : candidates.length - 1)) % candidates.length
+      renderSlashMenu()
+      return true
+    }
+    if (event.key === 'Tab') { pickSlash(candidates[slashActive]); return true }
+    if (event.key === 'Escape') { $('slashMenu').hidden = true; return true }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      draft.value = ''
+      autoGrow()
+      $('slashMenu').hidden = true
+      runCommand('/' + candidates[slashActive])
+      return true
+    }
+    return false
+  }
 
   // ---- Composer ----------------------------------------------------------
 
@@ -1858,6 +2190,14 @@
   // The TUI's table, verbatim: Enter acts on the current turn, Alt+Enter schedules
   // a later one, and while paused an empty Enter resumes.
   function onEnter(altKey) {
+    const line = draft.value.trim()
+    if (line.startsWith('/') && staged.length === 0) {
+      draft.value = ''
+      autoGrow()
+      $('slashMenu').hidden = true
+      runCommand(line)
+      return
+    }
     const empty = draft.value.trim() === '' && staged.length === 0
     if (state.status === 'paused') {
       if (altKey) { if (!empty) submit('followup'); return }
@@ -1931,8 +2271,10 @@
     event.preventDefault()
     card.removeAttribute('data-drag')
   })
-  draft.addEventListener('input', autoGrow)
+  draft.addEventListener('input', () => { autoGrow(); renderSlashMenu() })
+  draft.addEventListener('blur', () => setTimeout(() => { $('slashMenu').hidden = true }, 100))
   draft.addEventListener('keydown', keyEvent => {
+    if (slashKeydown(keyEvent)) { keyEvent.preventDefault(); return }
     if (keyEvent.key === 'Enter' && !keyEvent.shiftKey) {
       keyEvent.preventDefault()
       onEnter(keyEvent.altKey)
