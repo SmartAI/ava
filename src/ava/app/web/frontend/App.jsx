@@ -159,6 +159,9 @@ export default function App() {
     } else if (event.kind === 'assistant/chunk') appendDelta(event.delta)
     else if (event.kind === 'assistant/message') {
       const blocks = event.blocks || []
+      for (const block of blocks.filter(block => block.kind === 'reasoning' && block.summary)) {
+        addAside(transcriptRow('reasoning', { text: block.summary }))
+      }
       const text = blocks.filter(block => block.kind === 'text').map(block => block.text).join('')
       if (text) {
         if (tailRef.current === null) appendDelta(text)

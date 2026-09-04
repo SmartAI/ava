@@ -289,10 +289,16 @@ def codex_input_json(context: Context, selected: Selection) -> str:
 
 
 def codex_request_body(
-    context: Context, selected: Selection, *, prompt_cache_key: str | None = None
+    context: Context,
+    selected: Selection,
+    *,
+    prompt_cache_key: str | None = None,
+    reasoning_summary: str | None = "auto",
 ) -> str:
     """The stateless Responses request, assembled around the pre-encoded input array."""
     reasoning: dict = {"effort": selected.effort} if selected.effort is not None else {}
+    if reasoning_summary is not None:
+        reasoning["summary"] = reasoning_summary
     head: dict = {"model": selected.model}
     if context.system_prompt:
         head["instructions"] = context.system_prompt
@@ -443,6 +449,21 @@ def _finish_tool(item: dict, sink: StreamSink, state: CodexStreamState) -> None:
     state.saw_tool_call = True
 
 
+def _reasoning_summary(item: dict) -> str:
+    """Extract only provider-designated summary text; encrypted reasoning remains opaque."""
+    summary = item.get("summary")
+    if not isinstance(summary, list):
+        return ""
+    return "\n\n".join(
+        part["text"]
+        for part in summary
+        if isinstance(part, dict)
+        and part.get("type") == "summary_text"
+        and isinstance(part.get("text"), str)
+        and part["text"]
+    )
+
+
 def consume_codex_event(
     event: SseEvent, sink: StreamSink, state: CodexStreamState
 ) -> StopReason | None:
@@ -485,8 +506,14 @@ def consume_codex_event(
             else:
                 _start_tool(item, sink, state, require_item_id=True)
         elif done and item_type == "reasoning":
-            # Round-trip the provider's opaque state byte-identically: re-serialize the item exactly.
-            sink(StreamEvent(kind=StreamEventKind.reasoning_item, text=_dumps(item)))
+            # Replay the complete item, but expose only its provider-designated summary to clients.
+            sink(
+                StreamEvent(
+                    kind=StreamEventKind.reasoning_item,
+                    text=_dumps(item),
+                    summary=_reasoning_summary(item),
+                )
+            )
         elif item_type not in ("message", "reasoning"):
             raise _stream_error(
                 "Codex returned an unsupported output item; retry or check model compatibility",
@@ -573,6 +600,7 @@ def codex_response_error(status: int, body: str = "") -> AvaError:
 class CodexCatalogModel:
     id: str
     priority: int
+    supports_reasoning_summary: bool = True
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
 
@@ -623,6 +651,9 @@ def parse_codex_model_catalog(text: str) -> list[CodexCatalogModel]:
             CodexCatalogModel(
                 id=slug,
                 priority=priority if priority is not None else 2**63 - 1,
+                supports_reasoning_summary=(
+                    source.get("supports_reasoning_summary_parameter") is not False
+                ),
                 capabilities=capabilities,
             )
         )
@@ -641,6 +672,7 @@ class CodexProvider(Provider):
         self._base_url = base_url.rstrip("/")
         self._credential = credential
         self._capabilities: dict[str, ModelCapabilities] = {}
+        self._reasoning_summaries: dict[str, bool] = {}
         self._prompt_cache_key = secrets.token_hex(16)
         self._transport = Client()
 
@@ -654,7 +686,14 @@ class CodexProvider(Provider):
     async def stream(
         self, context: Context, selected: Selection, sink: StreamSink, cancel: CancelToken = NEVER
     ) -> StopReason:
-        body = codex_request_body(context, selected, prompt_cache_key=self._prompt_cache_key)
+        body = codex_request_body(
+            context,
+            selected,
+            prompt_cache_key=self._prompt_cache_key,
+            reasoning_summary=(
+                "auto" if self._reasoning_summaries.get(selected.model, True) else None
+            ),
+        )
         request = Request(
             url=self._base_url + "/responses",
             headers=[("content-type", "application/json")] + self._headers("text/event-stream"),
@@ -697,6 +736,9 @@ class CodexProvider(Provider):
             raise codex_response_error(response.status, response.body)
         catalog = parse_codex_model_catalog(response.body)
         self._capabilities = {model.id: model.capabilities for model in catalog}
+        self._reasoning_summaries = {
+            model.id: model.supports_reasoning_summary for model in catalog
+        }
         default_model = codex_default_model(catalog)
         if default_model:
             self.model_aliases.setdefault("default", default_model)

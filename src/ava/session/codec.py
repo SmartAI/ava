@@ -136,6 +136,8 @@ def block_to_wire(block: ContentBlock) -> dict[str, Any]:
         case ContentBlockKind.reasoning:
             if _present(block.opaque_json):
                 wire["opaque_json"] = block.opaque_json
+            if _present(block.text):
+                wire["summary"] = block.text
         case ContentBlockKind.tool_call:
             if _present(block.call_id):
                 wire["call_id"] = block.call_id
@@ -203,7 +205,11 @@ def block_from_wire(wire: dict[str, Any]) -> ContentBlock:
                 bytes=_decode_base64(_string(wire, "base64")),
             )
         case ContentBlockKind.reasoning:
-            block = ContentBlock(kind=kind, opaque_json=_string(wire, "opaque_json"))
+            block = ContentBlock(
+                kind=kind,
+                text=_string(wire, "summary"),
+                opaque_json=_string(wire, "opaque_json"),
+            )
         case ContentBlockKind.tool_call:
             block = ContentBlock(
                 kind=kind,

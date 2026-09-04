@@ -13,6 +13,7 @@ from ava.llm.types import (
     Origin,
     Role,
     make_image_block,
+    make_reasoning_block,
     make_text_block,
     make_tool_call_block,
     make_tool_result_block,
@@ -57,6 +58,9 @@ def test_record_round_trip_preserves_every_block_kind():
         blocks=[
             make_text_block("hello"),
             make_image_block("shot.png", b"\x89PNG", "image/png"),
+            make_reasoning_block(
+                '{"type":"reasoning","encrypted_content":"opaque"}', "Checked the parser"
+            ),
             make_tool_call_block("c1", "read", '{"path":"a"}'),
             make_tool_result_block("c1", "out", True),
         ],
@@ -72,6 +76,11 @@ def test_record_round_trip_preserves_every_block_kind():
     wire = json.loads(line)
     assert "origin" not in wire["item"]["blocks"][1]
     assert wire["item"]["blocks"][0]["origin"] == "interrupted"
+    assert wire["item"]["blocks"][2] == {
+        "kind": "reasoning",
+        "opaque_json": '{"type":"reasoning","encrypted_content":"opaque"}',
+        "summary": "Checked the parser",
+    }
 
 
 def test_unknown_kind_is_preserved_byte_for_byte():

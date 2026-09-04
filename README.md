@@ -95,7 +95,9 @@ Projects, stable chat IDs, titles, and archive flags are atomically indexed in `
 Conversation content and lifecycle status remain authoritative in `$AVA_HOME/sessions`: startup
 validates and reopens every default session log, recreates projects found only in historical logs,
 and replays their complete histories. The browser separately remembers the selected chat and
-expanded sidebar groups, so refresh returns to the same view.
+expanded sidebar groups, so refresh returns to the same view. Codex reasoning summaries appear as
+collapsed disclosures beside the response; encrypted reasoning state remains model-only and never
+reaches the browser.
 
 The Settings row at the bottom of the sidebar configures a built-in provider or a custom Anthropic-
 or OpenAI-compatible endpoint, including its model, optional reasoning effort, base URL, and API

@@ -56,6 +56,18 @@ function ActivityDisclosure({ entries }) {
   </div>
 }
 
+function ReasoningDisclosure({ entry }) {
+  const [open, setOpen] = useState(false)
+  const panelId = `reasoning-details-${entry.id}`
+  return <div className="min-w-0">
+    <button className="flex h-6 w-full min-w-0 items-center rounded-md border-0 bg-transparent p-0 text-left text-sm text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={panelId}>
+      <span className="relative mr-1.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><ChevronIcon open={open} /></span>
+      <span className="leading-6 font-medium">Reasoning</span>
+    </button>
+    {open && <div className="markdown mt-2 mr-0 mb-1 ml-5.5 border-l border-line-strong pl-3 text-sm leading-6 text-muted" id={panelId} dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }} />}
+  </div>
+}
+
 function MessageRow({ entry }) {
   if (entry.type === 'user') {
     const blocks = entry.blocks || []
@@ -69,6 +81,7 @@ function MessageRow({ entry }) {
   if (entry.type === 'assistant') {
     return <div className="markdown text-base leading-6.5 break-words" dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }} />
   }
+  if (entry.type === 'reasoning') return <ReasoningDisclosure entry={entry} />
   if (entry.type === 'activity') return <ActivityDisclosure entries={entry.entries} />
   if (entry.type === 'error') {
     return <div className="flex items-start gap-2 text-[13px] leading-5"><span className="mt-1.75 h-1.5 w-1.5 shrink-0 rounded-full bg-danger" /><div><span className="mr-1.5 font-semibold text-danger">Error</span><span className="text-muted">{entry.text}</span></div></div>

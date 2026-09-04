@@ -59,8 +59,10 @@ def make_image_block(display_path: str, data: bytes, media_type: str) -> Content
     )
 
 
-def make_reasoning_block(opaque_json: str) -> ContentBlock:
-    return ContentBlock(kind=ContentBlockKind.reasoning, opaque_json=opaque_json)
+def make_reasoning_block(opaque_json: str, summary: str = "") -> ContentBlock:
+    return ContentBlock(
+        kind=ContentBlockKind.reasoning, text=summary, opaque_json=opaque_json
+    )
 
 
 def make_tool_call_block(call_id: str, tool_name: str, arguments_json: str = "") -> ContentBlock:
