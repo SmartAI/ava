@@ -1,65 +1,174 @@
-# ava
+<p align="center">
+  <img src="src/ava/app/web/assets/ava-logo.svg" alt="AVA" width="300">
+</p>
 
-A coding-agent harness in Python: a durable, replayable session log, a `drive → turn → step` loop
-with a two-target inbox, four bounded tools, Anthropic and OpenAI-compatible providers, and a
-loopback Web UI. It is a port of ava-cpp's architecture; the local
-[architecture notes](docs/architecture.md) describe the boundaries and invariants this code
-implements.
+<p align="center">
+  <strong>A durable, replayable coding-agent harness for Python.</strong>
+</p>
 
-## The shape
+<p align="center">
+  <a href="https://github.com/SmartAI/ava-python/actions/workflows/ci.yml"><img src="https://github.com/SmartAI/ava-python/actions/workflows/ci.yml/badge.svg?branch=main" alt="Test status"></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-7c3aed?style=flat-square" alt="Python 3.12 or newer">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square" alt="Alpha status">
+</p>
 
-Two layers with an enforced seam. The headless layer never touches a terminal or a browser; the
-application layer never sees a provider wire format.
+## What is Ava?
 
+Ava is a compact Python runtime for building and running coding agents. It combines a
+provider-neutral agent loop, four bounded coding tools, a loopback Web UI, and an append-only
+session log that makes every run resumable and inspectable.
+
+The event stream is the source of truth. Model context, browser replay, queued input, compaction,
+and crash recovery are all projections of the same durable history—there is no second conversation
+store to drift out of sync.
+
+Use Ava when you want a harness that is:
+
+- **Easy to change:** a small, typed Python codebase with clear package boundaries.
+- **Safe to resume:** acknowledged input and completed events survive interruption and restart.
+- **Provider-neutral:** Anthropic, OpenAI-compatible endpoints, Codex, and a deterministic mock
+  provider share one internal model.
+- **Useful headlessly or interactively:** embed `Agent`, run a one-shot CLI task, or use the local
+  Web UI.
+- **Bounded by default:** HTTP bodies, SSE frames, session records, tool output, and decoded data
+  have explicit limits.
+
+> [!IMPORTANT]
+> Ava is alpha software. Its Python API and on-disk session format may change before 1.0.
+
+## Quick start
+
+Requirements: Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
+
+```sh
+git clone https://github.com/SmartAI/ava-python.git
+cd ava-python
+uv sync
+
+export ANTHROPIC_API_KEY=...
+uv run ava --serve
 ```
-src/ava/
-├── base/       AvaError · CancelToken · home and project-root lookup
-├── transport/  httpx client with an idle-only streaming timeout · SSE parser
-├── llm/        provider seam · Anthropic, OpenAI, and Codex adapters · settings · credentials · mock
-├── session/    event vocabulary · JSONL codec · zstd/plain log · recovery · projections
-├── proc/       process-group subprocesses with timeout escalation
-├── tool/       read · write · edit · bash (head+tail output cap)
-├── agent/      drive/turn/step loop · durable inbox · abort repair · compaction · prompt
-└── app/        CLI entry point · loopback FastAPI Web UI
+
+Open `http://127.0.0.1:8777`, choose a project directory, and start a chat. To use an
+OpenAI-compatible provider instead:
+
+```sh
+export OPENAI_API_KEY=...
+uv run ava --serve --provider openai
 ```
 
-The seam is the `Agent` handle plus the replay-first session event stream:
+Or reuse your existing Codex CLI login without copying an API key:
+
+```sh
+codex login
+uv run ava --serve --provider codex
+```
+
+The Codex adapter reads `~/.codex/auth.json` once, read-only, and never touches the refresh token.
+
+## Three ways to run
+
+### Web UI
+
+```sh
+uv run ava --serve            # http://127.0.0.1:8777
+uv run ava --serve 0          # choose an unused port and print the URL
+```
+
+The UI supports streamed responses, file and image attachments, project-scoped chats, steering,
+queued follow-ups, pause/resume/abort controls, session metrics, provider settings, and light/dark
+themes. It binds only to loopback and rejects mismatched `Host` and cross-origin `Origin` headers.
+
+### One-shot CLI
+
+```sh
+uv run ava -p "explain src/ava/agent/turn.py"
+uv run ava -c -p "now add a regression test"
+uv run ava -p --session run.jsonl.zst "review this project"
+uv run ava session dump run.jsonl.zst | jq .kind
+```
+
+### Python API
 
 ```python
 from pathlib import Path
+
 from ava.agent import Agent
 from ava.llm import Item, Role, make_text_block, provider_from_environment
 
+
 async with Agent.create(provider_from_environment(), Path.cwd()) as agent:
-    subscription = agent.subscribe(lambda event: print(event.seq, type(event.payload).__name__))
-    await agent.followup(Item(role=Role.user, blocks=[make_text_block("add a test for the parser")]))
-    await agent.drive()
+    with agent.subscribe(lambda event: print(event.seq, type(event.payload).__name__)):
+        await agent.followup(
+            Item(role=Role.user, blocks=[make_text_block("add a test for the parser")])
+        )
+        await agent.drive()
 ```
 
-Every model-visible fact is a durable event. The model's context, the browser's transcript, and
-resume after a crash are folds over the same append-only log. Recovery appends `interrupted`
-closers and never truncates a complete record; a torn final Zstandard frame is the only physical
-unit ever replaced.
+`Agent` is the public seam: applications submit input, control the driver, subscribe to durable
+events, and inspect provider-neutral status without handling provider wire formats.
 
-## Install and run
+## How it fits together
 
-Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
-
-```sh
-uv sync
-export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY with --provider=openai
-uv run ava                          # serve the Web UI on http://127.0.0.1:8777
-uv run ava --serve=0                # pick an unused port; the URL is printed on stdout
-uv run ava -p "explain src/ava/agent/turn.py"      # one-shot; the answer goes to stdout
-uv run ava -c -p "now add a test"                  # continue the most recent session here
-uv run ava -p --session run.jsonl.zst "prompt"     # create or resume an exact session file
-uv run ava session dump run.jsonl.zst | jq .kind   # inspect any log as plain JSONL
+```text
+CLI / Web UI
+     │
+     ▼
+   Agent ─────► read · write · edit · bash
+     │
+     ├────────► Anthropic · OpenAI-compatible · Codex · mock
+     │
+     ▼
+append-only session events
+     │
+     ├────────► model context
+     ├────────► UI replay
+     ├────────► resume and recovery
+     └────────► compaction and metrics
 ```
 
-Settings live in `$AVA_HOME/settings.json` (default `~/.ava`); API keys come from the provider's
-environment variable or `$AVA_HOME/auth.json`. Resolution order is CLI flag, then the resumed
-session, then environment (`AVA_PROVIDER`, `AVA_MODEL`, `AVA_EFFORT`), then the settings file,
-then built-in defaults. Any endpoint that speaks the Anthropic or OpenAI family is a config entry:
+The implementation keeps a strict seam between the headless runtime and application surfaces:
+
+```text
+src/ava/
+├── base/       errors, cancellation, home and project-root lookup
+├── transport/  bounded HTTP client and incremental SSE parser
+├── llm/        provider model, adapters, configuration, and credentials
+├── session/    event vocabulary, JSONL/Zstandard log, recovery, and projections
+├── proc/       process-group subprocesses with timeout escalation
+├── tool/       read, write, edit, and bash
+├── agent/      drive/turn/step loop, durable inbox, compaction, and prompt
+└── app/        CLI and loopback FastAPI Web UI
+```
+
+Read [Architecture](docs/architecture.md) for the package contracts and invariants, or
+[Port notes](docs/port-notes.md) for the deliberate differences from the original C++ Ava runtime.
+
+## Durable by design
+
+- Input is acknowledged only after its inbox event is durable, then claimed exactly once by a
+  step.
+- Session records are concatenated checksummed Zstandard frames. Recovery can replace an
+  incomplete final frame, but never rewrites a complete event.
+- Pause stops at a complete step boundary. Abort pairs partial tool calls with recorded
+  `interrupted` or `skipped` results so replay remains valid.
+- Provider failures are contained at the drive boundary and pending input stays available.
+- The browser consumes the replay-first event stream instead of maintaining its own transcript.
+
+## Configuration
+
+Settings live in `$AVA_HOME/settings.json` (default: `~/.ava`). Credentials come from the
+provider's environment variable or `$AVA_HOME/auth.json`. Selection precedence is:
+
+1. CLI flags
+2. Resumed session
+3. `AVA_PROVIDER`, `AVA_MODEL`, and `AVA_EFFORT`
+4. Settings file
+5. Built-in defaults
+
+Any endpoint that speaks the Anthropic or OpenAI API family can be registered in the settings
+file:
 
 ```json
 {
@@ -70,90 +179,43 @@ then built-in defaults. Any endpoint that speaks the Anthropic or OpenAI family 
       "family": "openai",
       "base_url": "https://gateway.internal/v1",
       "api_key_env": "GATEWAY_KEY",
-      "models": { "company-model": { "context_window": 128000, "effort_values": ["low", "high"] } }
+      "models": {
+        "company-model": {
+          "context_window": 128000,
+          "effort_values": ["low", "high"]
+        }
+      }
     }
   }
 }
 ```
 
-`--provider=codex` reuses the Codex CLI's ChatGPT login: Ava reads `~/.codex/auth.json` (or
-`$CODEX_HOME/auth.json`) once, read-only, and never touches the refresh token. Run `codex login`
-first; the model defaults to the catalog's preferred entry.
+For offline development, `AVA_PROVIDER=mock AVA_MOCK_SCRIPT=script.txt` selects the deterministic
+scripted provider. It exercises the full loop and Web UI without a network connection or API key.
 
-`AVA_PROVIDER=mock AVA_MOCK_SCRIPT=script.txt` selects the scripted provider, which is how the
-loop and the Web UI run with no network and no key.
-
-## The Web UI
-
-`ava --serve` binds `127.0.0.1`, accepts only a matching `Host`, and rejects cross-origin
-`Origin` headers. The browser folds `GET /api/chats/:id/events`, a replay-first Server-Sent Events
-stream keyed by event sequence, and keeps no second transcript. The same stream carries unkeyed
-`status` messages so the page renders the agent's control state (idle, running, pausing, paused,
-aborting) the moment core accepts a request.
-
-Projects, stable chat IDs, titles, and archive flags are atomically indexed in `$AVA_HOME/web.json`.
-Conversation content and lifecycle status remain authoritative in `$AVA_HOME/sessions`: startup
-validates and reopens every default session log, recreates projects found only in historical logs,
-and replays their complete histories. The browser separately remembers the selected chat and
-expanded sidebar groups, so refresh returns to the same view.
-
-The Settings row at the bottom of the sidebar configures a built-in provider or a custom Anthropic-
-or OpenAI-compatible endpoint, including its model, optional reasoning effort, base URL, and API
-key. Provider defaults are saved in `$AVA_HOME/settings.json`; keys remain in credential storage.
-Saving also updates the current chat when it is idle. Font size is a browser-local preference and
-survives reloads.
-
-| State | Enter | Alt+Enter | Esc | Button |
-| --- | --- | --- | --- | --- |
-| idle | send | send | | send |
-| running | steer the next step | queue a follow-up turn | pause after this step | pause |
-| pausing | steer the resumed turn | queue a follow-up turn | abort now | abort |
-| paused | resume (text steers first) | queue without resuming | | resume |
-
-Rows above the input preview each queued steering message and follow-up from the durable inbox events.
-Each row can be revised, deleted, or sent now; sending a follow-up now promotes it to steering, and
-sending while paused resumes the chat. The status bar below the composer shows the selected model and
-effort, working directory, provider-reported input/output token totals, cache hit rate, latest time to
-first token (TTFT), and estimated context remaining.
-Its context value comes from the provider-neutral model context and the selected model's context window. Input
-totals include uncached, cache-read, and cache-write tokens; the cache rate is cache reads divided by that total.
-Typing `/` opens the command menu:
-
-| Command | Effect |
-| --- | --- |
-| `/model [ID]` | Pick a model from the provider catalog; applies at the next step |
-| `/effort [LEVEL]` | Set reasoning effort (`none` clears it) |
-| `/compact` | Summarize older history now |
-| `/context` | Show what the model sees right now, by kind and size: prompt sections (system, environment, AGENTS.md, skills), tool schemas, the compaction summary, your messages, attachments, assistant text, reasoning, tool calls, tool results. Estimated tokens beside the newest provider-measured input. |
-| `/skills` | List the skills the model can load |
-| `/login [PROVIDER]`, `/logout [PROVIDER]` | Store or remove an API key in `$AVA_HOME/auth.json` |
-| `/theme`, `/copy [code]`, `/new`, `/clear`, `/help` | Presentation and chat housekeeping |
-| `/pause`, `/abort`, `/resume` | The turn controls, as commands |
-
-The Web UI source is native React with isolated components in `src/ava/app/web/frontend/` and Tailwind CSS as its design system.
-The checked-in browser bundle is rebuilt with `npm ci && npm run build` when that source changes.
-
-## Tests
+## Develop
 
 ```sh
 uv run pytest
 uv run ruff check src tests
 uv run mypy src
+npm ci
 npm run check
 ```
 
-The suite is the acceptance gate for the borrowed invariants: an acknowledged input is present
-exactly once after any kill point; `interrupted` never appears in a log a live loop produced;
-a torn final frame recovers idempotently at every byte offset; pause leaves fully paired history
-and resume continues without a synthetic user message; abort repairs unanswered calls as
-`interrupted` or `skipped`; a provider error is contained at the drive boundary with pending input
-retained.
+When the React source in `src/ava/app/web/frontend/` changes, rebuild the checked-in browser bundle
+with `npm run build`.
 
-## What is deliberately not here
+The acceptance suite focuses on observable invariants: durable input is never lost or duplicated;
+tool calls remain paired after abort and recovery; torn tails recover idempotently; pause/resume
+preserves valid model history; and provider failures do not discard pending work.
 
-No TUI and no voice frontend (the Web UI is the interactive surface). No MCP, permission prompts, plugins, subagents, or parallel tool dispatch. Session logs are as
-sensitive as the repository they record and are never scrubbed.
+## Scope
+
+Ava intentionally has no TUI or voice frontend. It also does not currently include MCP,
+permission prompts, plugins, subagents, or parallel tool dispatch. Session logs are as sensitive as
+the repositories they record and are never scrubbed.
 
 ## License
 
-MIT.
+[MIT](LICENSE) © 2026 Min Liu.

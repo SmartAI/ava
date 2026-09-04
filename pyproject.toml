@@ -1,10 +1,21 @@
 [project]
 name = "ava"
 version = "0.1.0"
-description = "A coding-agent harness: durable session log, drive/turn/step loop, and a loopback Web UI."
+description = "A durable, replayable coding-agent harness for Python."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
+keywords = ["agent", "anthropic", "coding-agent", "llm", "openai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: FastAPI",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
@@ -12,6 +23,12 @@ dependencies = [
     "pydantic>=2.10",
     "zstandard>=0.22",
 ]
+
+[project.urls]
+Homepage = "https://github.com/SmartAI/ava-python"
+Repository = "https://github.com/SmartAI/ava-python.git"
+Issues = "https://github.com/SmartAI/ava-python/issues"
+Documentation = "https://github.com/SmartAI/ava-python/tree/main/docs"
 
 [project.scripts]
 ava = "ava.app.cli:main"
