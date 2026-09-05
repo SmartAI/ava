@@ -89,7 +89,7 @@ class _Assembly:
                 if append_chunks:
                     state.append(AssistantChunk(attempt_id=attempt_id, delta=event.text))
             case StreamEventKind.reasoning_item:
-                blocks.append(make_reasoning_block(event.text))
+                blocks.append(make_reasoning_block(event.text, event.summary))
             case StreamEventKind.tool_call_start:
                 if self.open_tool_call is not None:
                     raise AvaError(

@@ -60,6 +60,7 @@ class StreamEvent:
     text: str = ""
     id: str = ""
     name: str = ""
+    summary: str = ""
     usage: Usage = field(default_factory=Usage)
 
 

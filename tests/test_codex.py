@@ -104,6 +104,7 @@ def test_catalog_keeps_listed_models_and_endpoint_facts():
                         "visibility": "list",
                         "priority": 20,
                         "context_window": 128000,
+                        "supports_reasoning_summary_parameter": False,
                     },
                     {
                         "slug": "gpt-default",
@@ -127,6 +128,8 @@ def test_catalog_keeps_listed_models_and_endpoint_facts():
     assert catalog[1].capabilities.supports_tools is True
     assert catalog[1].capabilities.effort_values == ["low", "high"]
     assert catalog[0].capabilities.supports_tools is None
+    assert catalog[0].supports_reasoning_summary is False
+    assert catalog[1].supports_reasoning_summary is True
     from ava.llm.codex import codex_default_model
 
     assert codex_default_model(catalog) == "gpt-default"
@@ -158,9 +161,10 @@ def test_request_body_replays_reasoning_only_for_the_same_model():
     assert (
         body["store"] is False and body["stream"] is True and body["parallel_tool_calls"] is False
     )
-    assert body["reasoning"] == {"effort": "high"} and body["include"] == [
-        "reasoning.encrypted_content"
-    ]
+    assert body["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert body["include"] == ["reasoning.encrypted_content"]
+    without_summary = json.loads(codex_request_body(context, selected, reasoning_summary=None))
+    assert without_summary["reasoning"] == {"effort": "high"}
     assert [item["type"] for item in body["input"]] == [
         "message",
         "message",
@@ -231,6 +235,12 @@ class _Codex(http.server.BaseHTTPRequestHandler):
                             "item": {
                                 "id": "rs-1",
                                 "type": "reasoning",
+                                "summary": [
+                                    {
+                                        "type": "summary_text",
+                                        "text": "**Inspecting**\n\nChecking the request.",
+                                    }
+                                ],
                                 "encrypted_content": "opaque-test",
                             },
                         }
@@ -375,8 +385,10 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
     assert json.loads(events[0].text) == {
         "id": "rs-1",
         "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "**Inspecting**\n\nChecking the request."}],
         "encrypted_content": "opaque-test",
     }
+    assert events[0].summary == "**Inspecting**\n\nChecking the request."
     assert "".join(
         e.text for e in events if e.kind == StreamEventKind.tool_call_delta
     ) == json.dumps({"path": "sample.txt", "offset": 1, "limit": 2}, separators=(",", ":"))
@@ -388,7 +400,7 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
         and sent["headers"]["ChatGPT-Account-Id"] == "acct-test"
     )
     assert (
-        sent["body"]["reasoning"] == {"effort": "high"}
+        sent["body"]["reasoning"] == {"effort": "high", "summary": "auto"}
         and sent["body"]["input"][0]["type"] == "message"
     )
 

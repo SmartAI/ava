@@ -312,7 +312,15 @@ class Registry:
 
         for candidate in candidates:
             project = projects_by_path[candidate.header.cwd]
-            log = Log.open(candidate.path, OpenMode.repair, project.path)
+            try:
+                log = Log.open(candidate.path, OpenMode.repair, project.path)
+            except AvaError as error:
+                # A single malformed historical chat must not make the entire Web UI
+                # unavailable. Explicit CLI resume remains strict, while discovery can
+                # continue restoring every healthy session in the store.
+                if error.kind == ErrorKind.parse:
+                    continue
+                raise
             durable_selection = _durable_selection(log)
             derived_title, attachment_bytes, image_attachments = _restored_chat_details(log)
             try:

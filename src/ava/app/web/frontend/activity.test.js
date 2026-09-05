@@ -32,6 +32,21 @@ test('groups consecutive tool calls but respects transcript boundaries', () => {
   ])
 })
 
+test('groups consecutive reasoning blocks into one disclosure', () => {
+  const user = { id: 1, type: 'user', blocks: [] }
+  const first = { id: 2, type: 'reasoning', text: 'First thought' }
+  const second = { id: 3, type: 'reasoning', text: 'Second thought' }
+  const assistant = { id: 4, type: 'assistant', text: 'Done' }
+  const third = { id: 5, type: 'reasoning', text: 'A later thought' }
+
+  assert.deepEqual(groupTranscriptEntries([user, first, second, assistant, third]), [
+    user,
+    { id: 'reasoning-2', type: 'reasoning-group', entries: [first, second] },
+    assistant,
+    { id: 'reasoning-5', type: 'reasoning-group', entries: [third] },
+  ])
+})
+
 test('uses active and completed command labels', () => {
   assert.equal(activityLabel([tool(1, 'bash')]), 'Run commands')
   assert.equal(

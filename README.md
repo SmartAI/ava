@@ -80,6 +80,9 @@ The UI supports streamed responses, file and image attachments, project-scoped c
 queued follow-ups, pause/resume/abort controls, session metrics, provider settings, and light/dark
 themes. It binds only to loopback and rejects mismatched `Host` and cross-origin `Origin` headers.
 
+Codex reasoning summaries appear as collapsed disclosures beside the response.
+Encrypted reasoning state remains model-only and never reaches the browser.
+
 ### One-shot CLI
 
 ```sh

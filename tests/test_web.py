@@ -11,8 +11,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from ava.app.web.events import blocks_json
 from ava.app.web.server import create_app
-from ava.llm import Selection
+from ava.llm import Item, Role, Selection, make_reasoning_block
+from ava.session import Log, StepStart, TurnStart
 from tests.conftest import ScriptedProvider, text_response, tool_call_response
 
 PNG_2X3 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD")
@@ -108,6 +110,15 @@ async def _events_until(
 
 def _kinds(events: list[dict], *, with_status: bool = False) -> list[str]:
     return [event["kind"] for event in events if with_status or event["kind"] != "status"]
+
+
+def test_reasoning_summary_crosses_the_web_boundary_without_opaque_state():
+    block = make_reasoning_block(
+        '{"type":"reasoning","encrypted_content":"secret"}', "Checked the parser"
+    )
+    assert blocks_json(Item(role=Role.assistant, blocks=[block])) == [
+        {"kind": "reasoning", "summary": "Checked the parser"}
+    ]
 
 
 async def test_fence_rejects_foreign_host_and_origin(client: httpx.AsyncClient):
@@ -345,6 +356,32 @@ async def test_historical_logs_recreate_projects_without_a_web_index(
         assert restored["chats"][0]["title"] == "history from logs"
         replay = await _events_until(second, restored["chats"][0]["id"], "turn/end")
         assert any(event["kind"] == "assistant/message" for event in replay)
+
+    assert all(provider.closed for provider in scripted)
+
+
+async def test_malformed_historical_chat_does_not_block_web_startup(
+    home: Path, project: Path, scripted
+):
+    healthy = Log.create_default(project, "scripted", "scripted-model")
+    healthy.close()
+    log = Log.create_default(project, "scripted", "scripted-model")
+    log.append_batch(
+        [
+            TurnStart(turn=1),
+            StepStart(turn=1, step=1),
+            TurnStart(turn=2),
+        ]
+    )
+    log.close()
+
+    async with _running_client(create_app(project)) as running:
+        response = await running.get("/api/projects")
+        assert response.status_code == 200
+        workspace = next(
+            item for item in response.json()["projects"] if item["path"] == str(project)
+        )
+        assert len(workspace["chats"]) == 1
 
     assert all(provider.closed for provider in scripted)
 

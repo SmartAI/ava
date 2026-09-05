@@ -1,7 +1,8 @@
 """The stable browser wire vocabulary: a JSON projection of session events.
 
 Model-only bytes (image data, file text, opaque reasoning state, prompt text, tool schemas) never
-reach the browser; the shell folds only this stream into DOM nodes.
+reach the browser. Provider-authored reasoning summaries are presentation-safe and cross this
+boundary separately from the opaque state; the shell folds only this stream into DOM nodes.
 """
 
 from __future__ import annotations
@@ -49,7 +50,8 @@ def blocks_json(item: Item) -> list[dict[str, Any]]:
                 block["media_type"] = source.media_type
                 block["byte_size"] = len(source.bytes)
             case ContentBlockKind.reasoning:
-                pass  # opaque provider state is model-visible but never presentation-visible
+                if source.text:
+                    block["summary"] = source.text
             case ContentBlockKind.tool_call:
                 block["call_id"] = source.call_id
                 block["tool_name"] = source.tool_name

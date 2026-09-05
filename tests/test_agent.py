@@ -98,6 +98,35 @@ async def test_one_turn_claims_input_and_closes_cleanly(home: Path, project: Pat
     await agent.aclose()
 
 
+async def test_reasoning_summary_is_kept_with_opaque_provider_state(home: Path, project: Path):
+    opaque = '{"type":"reasoning","encrypted_content":"secret"}'
+    provider = ScriptedProvider(
+        [
+            [
+                StreamEvent(
+                    kind=StreamEventKind.reasoning_item,
+                    text=opaque,
+                    summary="Checked the parser",
+                ),
+                StreamEvent(kind=StreamEventKind.text_delta, text="Ready"),
+            ]
+        ]
+    )
+    agent = Agent.create(provider, project)
+    await agent.followup(message("hi"))
+    await agent.drive()
+
+    completed = next(
+        event.payload
+        for event in agent.state.session.events
+        if isinstance(event.payload, AssistantMessage)
+    )
+    reasoning = completed.item.blocks[0]
+    assert reasoning.kind == ContentBlockKind.reasoning
+    assert reasoning.text == "Checked the parser" and reasoning.opaque_json == opaque
+    await agent.aclose()
+
+
 async def test_pending_messages_can_be_revised_deleted_and_promoted(home: Path, project: Path):
     agent = Agent.create(ScriptedProvider([]), project)
     with_attachment = message("revise me")

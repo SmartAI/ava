@@ -41,6 +41,10 @@ export const groupTranscriptEntries = entries => {
       previous.entries.push(entry)
     } else if (entry.type === 'tool') {
       grouped.push({ id: `activity-${entry.id}`, type: 'activity', entries: [entry] })
+    } else if (entry.type === 'reasoning' && previous?.type === 'reasoning-group') {
+      previous.entries.push(entry)
+    } else if (entry.type === 'reasoning') {
+      grouped.push({ id: `reasoning-${entry.id}`, type: 'reasoning-group', entries: [entry] })
     } else {
       grouped.push(entry)
     }
