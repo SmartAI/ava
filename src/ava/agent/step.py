@@ -176,7 +176,10 @@ async def step(
     selected = Selection(
         provider.selection.provider, provider.selection.model, provider.selection.effort
     )
-    validate_effort(provider, selected)
+    try:
+        validate_effort(provider, selected)
+    except AvaError as validation_error:
+        return StepResult(assistant=Item(role=Role.assistant), error=validation_error)
     assembly = _Assembly(selected)
     _record_selection(state, selected)
 

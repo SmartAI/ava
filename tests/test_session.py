@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ava.base import AvaError
+from ava.base import AvaError, ErrorKind
 from ava.llm.types import (
     Item,
     Origin,
@@ -21,6 +21,7 @@ from ava.llm.types import (
 from ava.session import (
     AssistantChunk,
     AssistantMessage,
+    DriveError,
     Event,
     InboxMessage,
     InboxSpliced,
@@ -215,6 +216,52 @@ def test_recovery_rejects_overlapping_turns_loudly():
     events = _balanced(TurnStart(turn=2))
     with pytest.raises(AvaError):
         plan_lifecycle_repair(events)
+
+
+@pytest.mark.parametrize("has_output", [False, True])
+def test_legacy_effort_failure_recovery_preserves_history(tmp_path: Path, has_output: bool):
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    path = tmp_path / "legacy.jsonl.zst"
+    log = Log.create_at(path, cwd, "codex", "old-model")
+    payloads = [
+        TurnStart(turn=1),
+        StepStart(turn=1, step=1),
+        StepClaimed(turn=1, step=1, target=None, claimed=[InboxMessage(id="", item=message("go"))]),
+    ]
+    if has_output:
+        payloads.append(AssistantMessage(attempt_id="a1", item=message("output")))
+    payloads.extend(
+        [
+            TurnEnd(turn=1, reason=TurnEndReason.provider_error),
+            DriveError(
+                turn=1,
+                error_kind=ErrorKind.invalid_argument,
+                message="provider 'codex' model 'new-model' does not advertise reasoning effort 'medium'",
+            ),
+        ]
+    )
+    log.append_batch(payloads)
+    log.close()
+    original = path.read_bytes()
+    if has_output:
+        with pytest.raises(AvaError, match="still open"):
+            Log.open(path, OpenMode.repair, cwd)
+    else:
+        reopened = Log.open(path, OpenMode.repair, cwd)
+        assert plan_lifecycle_repair(reopened.loaded_events) == []
+        reopened.append_batch(
+            [
+                TurnStart(turn=2),
+                StepStart(turn=2, step=1),
+                StepEnd(turn=2, step=1, reason=StepEndReason.completed),
+                TurnEnd(turn=2, reason=TurnEndReason.completed),
+            ]
+        )
+        reopened.close()
+        assert path.read_bytes().startswith(original)
+        reopened = Log.open(path, OpenMode.repair, cwd)
+        reopened.close()
 
 
 def test_reopen_repairs_legacy_error_closed_tool_call_after_later_turns(tmp_path: Path):
