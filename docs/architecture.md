@@ -115,3 +115,41 @@ Every architectural change must keep these gates green:
 - `ruff`, `mypy`, the Python 3.12 test suite, and the frontend build pass;
 - application code has no direct `agent.state` access;
 - provider clients close on agent replacement and shutdown.
+
+## Engineering foundations
+
+```text
+CLI / loopback Web UI / Python application
+                    │
+                    ▼
+                  Agent ─────► read · write · edit · bash
+                    │
+                    ├────────► Anthropic · OpenAI-compatible · Codex · mock
+                    │
+                    ▼
+          append-only session events
+                    │
+                    ├────────► model context and compaction
+                    ├────────► browser history and metrics
+                    └────────► resume and recovery
+```
+
+The session event stream is the source of truth for conversation state, queued input,
+and recovery. The optional I/O recording is a diagnostic artifact for offline replay.
+
+- **Recoverable sessions:** checksummed Zstandard frames preserve complete events;
+  recovery can replace an incomplete final frame.
+- **Explicit interruption behavior:** pause stops at a complete step boundary; abort
+  pairs partial tool calls with `interrupted` or `skipped` results. Provider failures
+  are contained at the drive boundary and pending input remains available.
+- **Bounded resources:** HTTP bodies, SSE frames, session records, tool output, and
+  decoded data have explicit limits; subprocesses have timeout escalation.
+- **Shared event history:** the browser consumes persisted events instead of keeping
+  a separate conversation store. The server binds to loopback and validates `Host`
+  and `Origin` headers.
+
+Input acknowledgement follows a write to the kernel; `fsync` occurs at separate turn
+boundaries. These are process-recovery guarantees, not exactly-once external command
+execution or a promise that every acknowledged input survives power loss.
+
+See the [port notes](port-notes.md) for differences from the original C++ runtime.
