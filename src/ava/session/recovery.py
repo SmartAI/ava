@@ -12,6 +12,7 @@ from ava.session.event import (
     AssistantChunk,
     AssistantMessage,
     CompactionSeed,
+    DriveError,
     Event,
     EventPayload,
     SessionStart,
@@ -248,6 +249,32 @@ def plan_lifecycle_repair(events: list[Event]) -> list[EventPayload]:
     if not events or not isinstance(events[0].payload, SessionStart):
         raise _lifecycle_error("session/start is missing")
     scan = _LifecycleScan()
-    for event in events[1:]:
+    for index, event in enumerate(events[1:], start=1):
+        # Older runtimes ended the turn directly when pre-request effort
+        # validation failed. Recognize only this output-free legacy sequence;
+        # preserve its records and keep rejecting other unbalanced histories.
+        ended = event.payload
+        if (
+            isinstance(ended, TurnEnd)
+            and ended.reason == TurnEndReason.provider_error
+            and scan.step is not None
+            and index >= 2
+            and index + 1 < len(events)
+        ):
+            started = events[index - 2].payload
+            claimed = events[index - 1].payload
+            error = events[index + 1].payload
+            if (
+                isinstance(started, StepStart)
+                and isinstance(claimed, StepClaimed)
+                and isinstance(error, DriveError)
+                and started.turn == claimed.turn == ended.turn == error.turn
+                and started.step == claimed.step == scan.step.step
+                and error.error_kind == ErrorKind.invalid_argument
+                and "does not advertise reasoning effort" in error.message
+            ):
+                scan._end_step(
+                    StepEnd(turn=ended.turn, step=started.step, reason=StepEndReason.provider_error)
+                )
         scan.consume(event)
     return scan.finish()

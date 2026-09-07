@@ -65,6 +65,25 @@ def step_ends(agent: Agent) -> list[StepEndReason]:
     ]
 
 
+async def test_invalid_effort_closes_step_and_allows_recovery(home: Path, project: Path):
+    from ava.session.recovery import plan_lifecycle_repair
+
+    provider = ScriptedProvider([text_response("OK")])
+    provider.selection.effort = "medium"
+    agent = Agent.create(provider, project)
+    await agent.followup(message("hello"))
+    with pytest.raises(AvaError, match="does not advertise"):
+        await agent.drive()
+    assert provider.calls == 0
+    assert step_ends(agent) == [StepEndReason.provider_error]
+    assert plan_lifecycle_repair(agent.state.session.events) == []
+    provider.model_overrides[provider.selection.model] = ModelCapabilities(effort_values=["medium"])
+    await agent.followup(message("try again"))
+    await agent.drive()
+    assert provider.calls == 1
+    await agent.aclose()
+
+
 async def test_one_turn_claims_input_and_closes_cleanly(home: Path, project: Path):
     provider = ScriptedProvider([text_response("Hel", "lo", usage=Usage(input=10, output=2))])
     agent = Agent.create(provider, project)
@@ -145,9 +164,7 @@ async def test_pending_messages_can_be_revised_deleted_and_promoted(home: Path, 
     assert inbox.next_turn == []
     assert [entry.id for entry in inbox.next_step] == ["m-3", "m-5"]
     assert inbox.next_step[1].source_id == "m-1"
-    assert inbox.next_step[1].item.blocks[0] == make_file_text_block(
-        "notes.txt", "attached fact"
-    )
+    assert inbox.next_step[1].item.blocks[0] == make_file_text_block("notes.txt", "attached fact")
     assert [
         block.text
         for entry in inbox.next_step
@@ -221,7 +238,9 @@ async def test_tool_failure_records_results_for_every_call(home: Path, project: 
         await agent.drive()
 
     result = next(
-        event.payload for event in agent.state.session.events if isinstance(event.payload, ToolResult)
+        event.payload
+        for event in agent.state.session.events
+        if isinstance(event.payload, ToolResult)
     )
     assert [(block.call_id, block.origin) for block in result.item.blocks] == [
         ("c1", Origin.none),
