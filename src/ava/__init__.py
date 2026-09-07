@@ -5,4 +5,6 @@ The headless layer (``ava.base``, ``ava.transport``, ``ava.llm``, ``ava.session`
 (``ava.app``) renders the session event stream and drives the ``Agent`` handle.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("ava")
