@@ -1,7 +1,7 @@
 [project]
 name = "ava"
 version = "0.1.0"
-description = "A durable, replayable coding-agent harness for Python."
+description = "A compact Python coding-agent runtime with durable sessions."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -25,10 +25,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SmartAI/ava-python"
-Repository = "https://github.com/SmartAI/ava-python.git"
-Issues = "https://github.com/SmartAI/ava-python/issues"
-Documentation = "https://github.com/SmartAI/ava-python/tree/main/docs"
+Homepage = "https://github.com/SmartAI/ava"
+Repository = "https://github.com/SmartAI/ava.git"
+Issues = "https://github.com/SmartAI/ava/issues"
+Documentation = "https://github.com/SmartAI/ava/tree/main/docs"
 
 [project.scripts]
 ava = "ava.app.cli:main"

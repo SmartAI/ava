@@ -28,6 +28,7 @@ from ava.llm import (
     sort_model_ids,
 )
 from ava.llm.anthropic import AnthropicProvider, AnthropicSettings, request_body
+from ava.llm.codex import codex_request_body
 from ava.llm.configuration import (
     load_provider_settings,
     load_saved_provider_settings,
@@ -35,6 +36,7 @@ from ava.llm.configuration import (
 )
 from ava.llm.openai import OpenAIProvider, openai_request_body
 from ava.llm.provider import resolve_model_alias
+from ava.tool import make_edit_tool
 
 ANTHROPIC_STREAM = (
     "event: message_start\n"
@@ -227,6 +229,24 @@ def test_request_bodies_serialize_blocks_in_order():
     assert openai["messages"][3] == {"role": "tool", "tool_call_id": "c1", "content": "out"}
 
 
+def test_batch_edit_schema_reaches_each_provider(project: Path):
+    context = Context(tools=[make_edit_tool(project).definition])
+    anthropic = json.loads(request_body(context, "claude", 100))
+    openai = json.loads(openai_request_body(context, "gpt", "low"))
+    codex = json.loads(codex_request_body(context, Selection(provider="codex", model="gpt")))
+    schemas = [
+        anthropic["tools"][0]["input_schema"],
+        openai["tools"][0]["function"]["parameters"],
+        codex["tools"][0]["parameters"],
+    ]
+    for schema in schemas:
+        assert schema["required"] == ["path", "edits"]
+        edits = schema["properties"]["edits"]
+        assert edits["type"] == "array"
+        assert edits["items"]["required"] == ["oldText", "newText"]
+        assert edits["items"]["properties"]["newText"]["type"] == "string"
+
+
 def test_model_ordering_and_alias_resolution():
     models = [
         "claude-sonnet-4-20250514",
@@ -310,14 +330,10 @@ def test_web_managed_settings_save_custom_and_builtin_defaults(
     assert load_saved_provider_settings().selection.provider == "my-gateway"
     assert load_provider_settings(SelectionOverride(), None).selection.provider == "anthropic"
 
-    built_in = save_basic_configuration(
-        Selection("openai", "gpt-5.4-mini"), custom=False
-    )
+    built_in = save_basic_configuration(Selection("openai", "gpt-5.4-mini"), custom=False)
     assert built_in.selection == Selection("openai", "gpt-5.4-mini")
     document = json.loads((home / "settings.json").read_text())
-    assert document["providers"]["my-gateway"]["base_url"] == (
-        "https://gateway.internal/v1"
-    )
+    assert document["providers"]["my-gateway"]["base_url"] == ("https://gateway.internal/v1")
     assert document["providers"]["openai"] == {}
     assert (home / "settings.json").stat().st_mode & 0o777 == 0o600
 

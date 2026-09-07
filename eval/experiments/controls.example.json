@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "evaluator-controls",
+  "suite": "eval/cache/local-suite.json",
+  "agents": [
+    {
+      "id": "reference",
+      "kind": "oracle"
+    },
+    {
+      "id": "unchanged",
+      "kind": "nop"
+    }
+  ],
+  "repetitions": 2,
+  "timeout_seconds": 180,
+  "schedule_seed": 42,
+  "max_trials": 40
+}

@@ -55,6 +55,7 @@ from ava.session.codec import validate_step_claimed_record
 from ava.session.compaction import estimate_context_tokens
 from ava.session.context_report import ContextReport, context_report
 from ava.session.log import Log, OpenMode
+from ava.tool import Tool
 
 
 class Agent:
@@ -64,18 +65,29 @@ class Agent:
         cwd: Path,
         options: CompactionOptions | None = None,
         log: Log | None = None,
+        *,
+        tools: list[Tool] | None = None,
+        system_prompt: str | None = None,
     ) -> None:
-        self._state = AgentState.create(provider, cwd, options or CompactionOptions(), log)
+        self._state = AgentState.create(
+            provider, cwd, options or CompactionOptions(), log,
+            tools=tools, system_prompt=system_prompt,
+        )
 
     # ---- construction ---------------------------------------------------------------------
 
     @classmethod
     def create(
-        cls, provider: Provider, cwd: Path, options: CompactionOptions | None = None
+        cls, provider: Provider, cwd: Path, options: CompactionOptions | None = None,
+        *, tools: list[Tool] | None = None, system_prompt: str | None = None,
     ) -> Agent:
         """Create and lock the default durable session before returning."""
         log = Log.create_default(cwd, provider.id, provider.selection.model)
-        return cls(provider, cwd, options, log)
+        try:
+            return cls(provider, cwd, options, log, tools=tools, system_prompt=system_prompt)
+        except BaseException:
+            log.close()
+            raise
 
     @classmethod
     def create_at(
@@ -84,9 +96,16 @@ class Agent:
         cwd: Path,
         session_path: Path,
         options: CompactionOptions | None = None,
+        *,
+        tools: list[Tool] | None = None,
+        system_prompt: str | None = None,
     ) -> Agent:
         log = Log.create_at(session_path, cwd, provider.id, provider.selection.model)
-        return cls(provider, cwd, options, log)
+        try:
+            return cls(provider, cwd, options, log, tools=tools, system_prompt=system_prompt)
+        except BaseException:
+            log.close()
+            raise
 
     @classmethod
     def reopen(

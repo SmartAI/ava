@@ -333,7 +333,8 @@ class AgentState:
 
     @classmethod
     def create(
-        cls, provider: Provider, cwd: Path, options: CompactionOptions, log: Log | None
+        cls, provider: Provider, cwd: Path, options: CompactionOptions, log: Log | None,
+        *, tools: list[Tool] | None = None, system_prompt: str | None = None,
     ) -> AgentState:
         from ava.agent.prompt import make_system_prompt
 
@@ -358,10 +359,10 @@ class AgentState:
                 newest_prompt = event.payload
             elif isinstance(event.payload, ToolsAdvertised):
                 newest_tools = event.payload
-        prompt = make_system_prompt(cwd, state.scratchpad)
+        prompt = system_prompt if system_prompt is not None else make_system_prompt(cwd, state.scratchpad)
         if newest_prompt is None or newest_prompt.system_prompt != prompt:
             state.startup.append(PromptResolved(system_prompt=prompt))
-        state.tools = [
+        state.tools = list(tools) if tools is not None else [
             make_read_tool(cwd),
             make_write_tool(cwd),
             make_edit_tool(cwd),

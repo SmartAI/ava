@@ -1,0 +1,53 @@
+{
+  "id": "provider-outage",
+  "provenance": "Ava-owned synthetic fixture; not a historical production incident or a model benchmark.",
+  "prompt": "Make mean([]) return None while preserving the mean of non-empty lists. Verify the change.",
+  "files": {
+    "stats.py": "def mean(values):\n    return sum(values) / len(values)\n"
+  },
+  "responses": [
+    {
+      "events": [
+        {
+          "kind": "tool_call_start",
+          "id": "r1",
+          "name": "read"
+        },
+        {
+          "kind": "tool_call_delta",
+          "id": "r1",
+          "text": "{\"path\": \"stats.py\"}"
+        },
+        {
+          "kind": "tool_call_end",
+          "id": "r1"
+        }
+      ],
+      "stop": "tool_use"
+    },
+    {
+      "events": [
+        {
+          "kind": "tool_call_start",
+          "id": "e1",
+          "name": "edit"
+        },
+        {
+          "kind": "tool_call_delta",
+          "id": "e1",
+          "text": "{\"path\": \"stats.py\", \"old_string\": \"return sum(values) / len(values)\", \"new_string\": \"return sum(values) / len(values) if values else None\"}"
+        },
+        {
+          "kind": "tool_call_end",
+          "id": "e1"
+        }
+      ],
+      "stop": "tool_use"
+    },
+    {
+      "error": "injected provider outage after edit"
+    }
+  ],
+  "check": "from stats import mean\nassert mean([]) is None\nassert mean([2, 4]) == 3\nassert mean([-4, 2]) == -1\n",
+  "expected_error": "injected provider outage after edit"
+}

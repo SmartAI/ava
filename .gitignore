@@ -10,4 +10,22 @@ build/
 node_modules/
 .playwright-cli/
 /fastapi_tutorial
-/tests
+/eval/results/
+/eval/cache/
+/.venv-eval/
+
+# Local research assets; publish only the distilled benchmark summary.
+/.local-eval/
+/eval/reports/
+/eval/study/
+/eval/candidates/
+/eval/notes/
+/eval/private/
+/eval/ITERATION.md
+/eval/incidents.json
+/eval/suites/
+/eval/tasks/
+/eval/experiments/*
+!/eval/experiments/*.example.json
+/docs/agent-engineering-insights.md
+/tests/test_benchmark_tasks.py

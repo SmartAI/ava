@@ -19,8 +19,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: uv sync --frozen
-      - run: uv run ruff check src tests
-      - run: uv run mypy src
+      - run: uv run ruff check src tests eval
+      - run: uv run mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
       - run: uv run pytest -q
       - run: npm ci
       - run: npm run check
+      - run: npm test

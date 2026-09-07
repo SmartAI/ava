@@ -1,7 +1,8 @@
 """Run a shell command in its own process group with a pinned environment.
 
-Stdout and stderr share one pipe so their observed order is preserved. The sink returns False when
-its output budget is full, which stops the process group. Timeout and cancellation escalate from
+Stdout and stderr share one pipe so their observed order is preserved. A sink returning False requests
+process-group termination. After process exit, inherited output handles receive a resettable
+100 ms idle grace; closing output alone never shortens the command deadline. Timeout and cancellation escalate from
 SIGTERM to SIGKILL after a short grace period.
 """
 
@@ -19,7 +20,7 @@ from ava.base.cancel import NEVER
 
 TERMINATE_GRACE_SECONDS = 0.25
 KILL_GRACE_SECONDS = 1.0
-READ_CHUNK_BYTES = 8192
+EXIT_STDIO_GRACE_SECONDS = 0.1
 
 ENVIRONMENT_OVERRIDES: dict[str, str] = {
     "LC_ALL": "C",
@@ -60,6 +61,65 @@ def _signal_group(pid: int, signum: int) -> None:
         pass
 
 
+class _CommandProtocol(asyncio.SubprocessProtocol):
+    """Observe process exit independently of inherited output handles."""
+
+    def __init__(self, output_sink: OutputSink) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.exited: asyncio.Future[None] = self.loop.create_future()
+        self.finished: asyncio.Future[None] = self.loop.create_future()
+        self.closed: asyncio.Future[None] = self.loop.create_future()
+        self.stop: asyncio.Future[None] = self.loop.create_future()
+        self.output_sink = output_sink
+        self.decoder = _incremental_decoder()
+        self.pipe_closed = False
+        self.idle_timer: asyncio.TimerHandle | None = None
+        self.error: Exception | None = None
+
+    def finish(self) -> None:
+        if self.idle_timer is not None:
+            self.idle_timer.cancel()
+        if not self.finished.done():
+            self.finished.set_result(None)
+
+    def arm_idle_timer(self) -> None:
+        if self.idle_timer is not None:
+            self.idle_timer.cancel()
+        self.idle_timer = self.loop.call_later(EXIT_STDIO_GRACE_SECONDS, self.finish)
+
+    def pipe_data_received(self, fd: int, data: bytes) -> None:
+        if self.finished.done() or self.stop.done():
+            return
+        try:
+            if not self.output_sink(self.decoder.decode(data)):
+                self.stop.set_result(None)
+        except Exception as error:
+            self.error = error
+            self.stop.set_result(None)
+        if self.exited.done():
+            self.arm_idle_timer()
+
+    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
+        self.pipe_closed = True
+        if exc is not None:
+            self.error = exc
+            if not self.stop.done():
+                self.stop.set_result(None)
+        if self.exited.done():
+            self.finish()
+
+    def process_exited(self) -> None:
+        self.exited.set_result(None)
+        if self.pipe_closed:
+            self.finish()
+        else:
+            self.arm_idle_timer()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if not self.closed.done():
+            self.closed.set_result(None)
+
+
 async def run(
     command: str,
     cwd: Path,
@@ -69,13 +129,16 @@ async def run(
 ) -> Completion:
     if cancel.cancelled:
         raise AvaError(ErrorKind.cancelled, "command cancelled")
-    use_bash = os.path.exists("/bin/bash")
-    if use_bash:
-        argv = ["/bin/bash", "--noprofile", "--norc", "-c", command]
-    else:
-        argv = ["/bin/sh", "-c", command]
+    argv = (
+        ["/bin/bash", "--noprofile", "--norc", "-c", command]
+        if os.path.exists("/bin/bash")
+        else ["/bin/sh", "-c", command]
+    )
+    loop = asyncio.get_running_loop()
+    protocol = _CommandProtocol(output_sink)
     try:
-        child = await asyncio.create_subprocess_exec(
+        transport, _ = await loop.subprocess_exec(
+            lambda: protocol,
             *argv,
             cwd=cwd,
             env=pinned_environment(),
@@ -86,80 +149,49 @@ async def run(
         )
     except OSError as error:
         raise AvaError(ErrorKind.io, f"cannot start command: {error}") from error
-    assert child.stdout is not None
-    pid = child.pid
+    pid = transport.get_pid()
     completion = Completion()
-    cancelled = False
-    stop_requested = False
-
-    async def terminate(timed_out: bool) -> None:
-        """SIGTERM the group, then SIGKILL after the grace period."""
-        completion.timed_out = completion.timed_out or timed_out
-        _signal_group(pid, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(child.wait(), TERMINATE_GRACE_SECONDS)
-        except TimeoutError:
-            _signal_group(pid, signal.SIGKILL)
-            try:
-                await asyncio.wait_for(child.wait(), KILL_GRACE_SECONDS)
-            except TimeoutError:
-                pass
 
     def on_cancel() -> None:
-        nonlocal cancelled
-        cancelled = True
-        _signal_group(pid, signal.SIGTERM)
+        if not protocol.stop.done():
+            protocol.stop.set_result(None)
 
     remove = cancel.on_cancel(on_cancel)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
-    decoder = _incremental_decoder()
+
+    async def terminate() -> None:
+        _signal_group(pid, signal.SIGTERM)
+        # Allow the whole process group a grace period, even if its leader has exited.
+        await asyncio.sleep(TERMINATE_GRACE_SECONDS)
+        _signal_group(pid, signal.SIGKILL)
+        await asyncio.wait_for(asyncio.shield(protocol.exited), KILL_GRACE_SECONDS)
+
     try:
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                await terminate(True)
-                break
-            try:
-                chunk = await asyncio.wait_for(child.stdout.read(READ_CHUNK_BYTES), remaining)
-            except TimeoutError:
-                await terminate(True)
-                break
-            if not chunk:
-                break
-            if not stop_requested and not output_sink(decoder.decode(chunk)):
-                stop_requested = True
-                await terminate(False)
-                break
-        # Drain whatever remains after a termination so the pipe closes and the child is reaped.
-        while True:
-            try:
-                chunk = await asyncio.wait_for(
-                    child.stdout.read(READ_CHUNK_BYTES), KILL_GRACE_SECONDS
-                )
-            except TimeoutError:
-                _signal_group(pid, signal.SIGKILL)
-                continue
-            if not chunk:
-                break
-            if not stop_requested and not completion.timed_out and not cancelled:
-                if not output_sink(decoder.decode(chunk)):
-                    stop_requested = True
-        tail = decoder.decode(b"", final=True)
-        if tail and not stop_requested and not completion.timed_out and not cancelled:
-            output_sink(tail)
-        try:
-            await asyncio.wait_for(child.wait(), KILL_GRACE_SECONDS)
-        except TimeoutError:
-            _signal_group(pid, signal.SIGKILL)
-            await child.wait()
+        done, _ = await asyncio.wait(
+            [protocol.finished, protocol.stop],
+            timeout=timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done or protocol.stop.done():
+            completion.timed_out = not done
+            if not protocol.stop.done():
+                protocol.stop.set_result(None)
+            await terminate()
+        else:
+            tail = protocol.decoder.decode(b"", final=True)
+            if tail:
+                output_sink(tail)
+        if protocol.error is not None:
+            raise protocol.error
     finally:
         remove()
-        if child.returncode is None:
+        protocol.finish()
+        if transport.get_returncode() is None:
             _signal_group(pid, signal.SIGKILL)
-    if cancelled:
+        transport.close()
+        await asyncio.wait_for(asyncio.shield(protocol.closed), KILL_GRACE_SECONDS)
+    if cancel.cancelled:
         raise AvaError(ErrorKind.cancelled, "command cancelled")
-    status = child.returncode
+    status = transport.get_returncode()
     if status is None:
         raise AvaError(ErrorKind.internal, "command ended without an exit code or signal")
     if status < 0:

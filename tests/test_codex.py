@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from ava.agent import Agent
 from ava.base import AvaError
 from ava.llm import (
     Context,
@@ -35,6 +36,8 @@ from ava.llm.types import (
     make_tool_call_block,
     make_tool_result_block,
 )
+from ava.session import Usage as SessionUsage
+from tests.conftest import message
 
 
 def _segment(value: dict) -> str:
@@ -158,9 +161,7 @@ def test_request_body_replays_reasoning_only_for_the_same_model():
     )
     body = json.loads(codex_request_body(context, selected))
     assert body["model"] == "gpt-default" and body["instructions"] == "sys"
-    assert (
-        body["store"] is False and body["stream"] is True and body["parallel_tool_calls"] is False
-    )
+    assert body["store"] is False and body["stream"] is True and body["parallel_tool_calls"] is True
     assert body["reasoning"] == {"effort": "high", "summary": "auto"}
     assert body["include"] == ["reasoning.encrypted_content"]
     without_summary = json.loads(codex_request_body(context, selected, reasoning_summary=None))
@@ -183,6 +184,7 @@ def _sse(payload: dict) -> str:
 class _Codex(http.server.BaseHTTPRequestHandler):
     posts: list[dict] = []
     gets: list[dict] = []
+    responses: list[list[dict]] = []
 
     def _send(self, body: str, content_type: str, status: int = 200) -> None:
         encoded = body.encode()
@@ -222,6 +224,9 @@ class _Codex(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         request = json.loads(self.rfile.read(length))
         _Codex.posts.append({"headers": dict(self.headers), "body": request})
+        if _Codex.responses:
+            self._send("".join(map(_sse, _Codex.responses.pop(0))), "text/event-stream")
+            return
         if len(_Codex.posts) == 1:
             arguments = json.dumps(
                 {"path": "sample.txt", "offset": 1, "limit": 2}, separators=(",", ":")
@@ -346,12 +351,197 @@ class _Codex(http.server.BaseHTTPRequestHandler):
 def codex_server():
     _Codex.posts = []
     _Codex.gets = []
+    _Codex.responses = []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Codex)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_port}"
     server.shutdown()
     server.server_close()
+
+
+def _two_tools(*, done_only: bool = False) -> list[dict]:
+    """Write then read; the read completes streaming first, but must execute second."""
+    items = [
+        {
+            "type": "function_call",
+            "id": "fc-write",
+            "call_id": "call-write",
+            "name": "write",
+            "arguments": json.dumps({"path": "ordered.txt", "content": "written first"}),
+        },
+        {
+            "type": "function_call",
+            "id": "fc-read",
+            "call_id": "call-read",
+            "name": "read",
+            "arguments": json.dumps({"path": "ordered.txt"}),
+        },
+    ]
+    if done_only:
+        return [
+            {
+                "type": "response.output_item.done",
+                "output_index": i,
+                "item": {key: value for key, value in item.items() if key != "id"},
+            }
+            for i, item in enumerate(items)
+        ]
+    events = [
+        {"type": "response.output_item.added", "output_index": i, "item": {**item, "arguments": ""}}
+        for i, item in enumerate(items)
+    ]
+    # Interleaving and reversed completion reproduce the real adapter/assembler boundary.
+    for i in (1, 0):
+        item = items[i]
+        split = len(item["arguments"]) // 2
+        events.append(
+            {
+                "type": "response.function_call_arguments.delta",
+                "output_index": i,
+                "item_id": item["id"],
+                "delta": item["arguments"][:split],
+            }
+        )
+    for i in (1, 0):
+        item = items[i]
+        split = len(item["arguments"]) // 2
+        events.extend(
+            [
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": i,
+                    "item_id": item["id"],
+                    "delta": item["arguments"][split:],
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    "output_index": i,
+                    "item_id": item["id"],
+                    "arguments": item["arguments"],
+                },
+                {"type": "response.output_item.done", "output_index": i, "item": item},
+            ]
+        )
+    return events
+
+
+def _completed() -> dict:
+    return {
+        "type": "response.completed",
+        "response": {"usage": {"input_tokens": 100, "output_tokens": 20}},
+    }
+
+
+@pytest.mark.parametrize("done_only", [False, True])
+async def test_codex_multiple_tools_through_agent(
+    codex_server: str, home: Path, project: Path, done_only: bool
+):
+    _Codex.responses = [
+        [*_two_tools(done_only=done_only), _completed()],
+        [{"type": "response.output_text.delta", "delta": "finished"}, _completed()],
+    ]
+    provider = CodexProvider(
+        Selection("codex", "gpt-default", "low"),
+        codex_server,
+        CodexCredential(access_token="access-test", account_id="acct-test"),
+    )
+    agent = Agent.create(provider, project)
+    try:
+        await agent.followup(message("Write ordered.txt, then read it."))
+        await agent.drive()
+        assert (project / "ordered.txt").read_text() == "written first"
+        assert len(_Codex.posts) == 2
+        first, second = [post["body"] for post in _Codex.posts]
+        assert first["parallel_tool_calls"] is True
+        calls = [item for item in second["input"] if item.get("type") == "function_call"]
+        results = [item for item in second["input"] if item.get("type") == "function_call_output"]
+        assert [item["call_id"] for item in calls] == ["call-write", "call-read"]
+        assert [item["call_id"] for item in results] == ["call-write", "call-read"]
+        assert results[1]["output"] == "written first"
+        assert json.loads(calls[0]["arguments"])["content"] == "written first"
+        assert first["prompt_cache_key"] == second["prompt_cache_key"]
+        assert all(
+            post["headers"].get("session-id") == first["prompt_cache_key"] for post in _Codex.posts
+        )
+    finally:
+        await agent.aclose()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "duplicate-call",
+        "duplicate-item",
+        "changed-index",
+        "changed-arguments",
+        "unknown-delta",
+        "repeated-done",
+        "unfinished",
+        "eof",
+        "incomplete",
+        "failed",
+    ],
+)
+async def test_codex_broken_batch_never_executes_tools(
+    codex_server: str, home: Path, project: Path, failure: str
+):
+    events = _two_tools()
+    terminal = _completed()
+    if failure == "duplicate-call":
+        events[1]["item"]["call_id"] = events[0]["item"]["call_id"]
+    elif failure == "duplicate-item":
+        events[1]["item"]["id"] = events[0]["item"]["id"]
+    elif failure == "changed-index":
+        events[2]["output_index"] = 99
+    elif failure == "changed-arguments":
+        # arguments.done is final: output_item.done cannot extend even the same prefix.
+        events[-1]["item"]["arguments"] += " "
+    elif failure == "unknown-delta":
+        events[2]["item_id"] = "unregistered"
+    elif failure == "repeated-done":
+        events.append(events[-1])
+    elif failure == "unfinished":
+        events.pop()
+    elif failure in ("incomplete", "failed"):
+        terminal["type"] = "response." + failure
+        terminal["response"]["incomplete_details"] = {"reason": "max_output_tokens"}
+    if failure != "eof":
+        events.append(terminal)
+    _Codex.responses = [events]
+    provider = CodexProvider(
+        Selection("codex", "gpt-default", "low"),
+        codex_server,
+        CodexCredential(access_token="access-test", account_id="acct-test"),
+    )
+    agent = Agent.create(provider, project)
+    try:
+        await agent.followup(message("Write ordered.txt, then read it."))
+        with pytest.raises(AvaError):
+            await agent.drive()
+        assert not (project / "ordered.txt").exists()
+        assert len(_Codex.posts) == 1
+        usages = [
+            event.payload
+            for event in agent.state.session.events
+            if isinstance(event.payload, SessionUsage)
+        ]
+        if failure != "eof":
+            assert len(usages) == 1
+            assert (usages[0].input, usages[0].output) == (100, 20)
+        # A failed batch must also leave a valid conversation for the user's next message.
+        _Codex.responses = [
+            [{"type": "response.output_text.delta", "delta": "recovered"}, _completed()]
+        ]
+        await agent.followup(message("Continue without changing any files."))
+        await agent.drive()
+        followup = _Codex.posts[-1]["body"]["input"]
+        assert not any(
+            item.get("type") in ("function_call", "function_call_output") for item in followup
+        )
+        assert not (project / "ordered.txt").exists()
+    finally:
+        await agent.aclose()
 
 
 async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: str):
@@ -362,6 +552,7 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
     assert provider.model_aliases["default"] == "gpt-default"
     assert _Codex.gets[0]["path"] == "/models?client_version=0.150.1"
     assert _Codex.gets[0]["headers"]["ChatGPT-Account-Id"] == "acct-test"
+    assert "session-id" not in _Codex.gets[0]["headers"]
     assert provider.capabilities("gpt-default").effort_values == ["low", "high"]
 
     events = []
@@ -376,7 +567,6 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
     assert kinds == [
         StreamEventKind.reasoning_item,
         StreamEventKind.tool_call_start,
-        StreamEventKind.tool_call_delta,
         StreamEventKind.tool_call_delta,
         StreamEventKind.tool_call_end,
         StreamEventKind.usage,
@@ -411,10 +601,19 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
     first_cache_key = _Codex.posts[0]["body"]["prompt_cache_key"]
     assert len(first_cache_key) == 32
     assert _Codex.posts[1]["body"]["prompt_cache_key"] == first_cache_key
+    assert [_Codex.posts[i]["headers"].get("session-id") for i in range(2)] == [
+        first_cache_key,
+        first_cache_key,
+    ]
+    for secret in (credential.access_token, credential.account_id):
+        assert secret not in first_cache_key
+        assert all(secret not in json.dumps(post["body"]) for post in _Codex.posts)
 
     other = CodexProvider(Selection("codex", "default"), codex_server, credential)
     await other.stream(Context(), selected, lambda _event: None)
-    assert _Codex.posts[2]["body"]["prompt_cache_key"] != first_cache_key
+    other_cache_key = _Codex.posts[2]["body"]["prompt_cache_key"]
+    assert other_cache_key != first_cache_key
+    assert _Codex.posts[2]["headers"].get("session-id") == other_cache_key
     await other.aclose()
     await provider.aclose()
 

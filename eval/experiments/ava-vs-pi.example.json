@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "ava-vs-pi",
+  "suite": "eval/cache/local-suite.json",
+  "agents": [
+    {
+      "id": "ava-baseline",
+      "kind": "ava",
+      "model": "openai/<model-id>",
+      "effort": "off",
+      "compaction": false,
+      "wheel": "eval/cache/wheels/ava-0.1.0-py3-none-any.whl"
+    },
+    {
+      "id": "pi-baseline",
+      "kind": "pi",
+      "model": "openai/<model-id>",
+      "effort": "off",
+      "compaction": false
+    }
+  ],
+  "repetitions": 2,
+  "timeout_seconds": 180,
+  "schedule_seed": 42,
+  "max_trials": 40
+}

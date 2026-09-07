@@ -73,6 +73,7 @@ def make_write_tool(cwd: Path) -> Tool:
     )
 
     async def run(arguments_json: str, cancel: CancelToken) -> Output:
+        cancel.raise_if_cancelled()
         return run_write(cwd, arguments_json)
 
     return Tool(definition=definition, run=run)

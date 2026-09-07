@@ -1,13 +1,14 @@
-"""Foreground shell execution with a head-plus-tail output cap enforced in memory.
+"""Shell execution with bounded display output and separately capped overflow logs.
 
-Three independent caps bound every command: total bytes, total lines, and bytes per line. The
-producer is stopped when a cap is reached, and truncation is always reported.
+Display truncation does not stop the command or override its actual exit status.
 """
 
 from __future__ import annotations
 
-from collections import deque
+import os
+import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 from ava.base import AvaError, CancelToken, ErrorKind
 from ava.llm.types import ToolDef, ToolParam, ToolParamType
@@ -16,21 +17,12 @@ from ava.tool.api import Output, Tool, error_output, optional_int, parse_argumen
 
 BASH_MAX_OUTPUT_BYTES = 50 * 1024
 BASH_MAX_OUTPUT_LINES = 2000
-MAX_BASH_LINE_BYTES = 500
 BASH_NOTICE_RESERVE = 1024
 BASH_BODY_BYTES = BASH_MAX_OUTPUT_BYTES - BASH_NOTICE_RESERVE
 BASH_BODY_LINES = BASH_MAX_OUTPUT_LINES - 4
-BASH_HEAD_BYTES = BASH_BODY_BYTES // 8
-BASH_HEAD_LINES = BASH_BODY_LINES // 8
-BASH_TAIL_BYTES = BASH_BODY_BYTES - BASH_HEAD_BYTES
-BASH_TAIL_LINES = BASH_BODY_LINES - BASH_HEAD_LINES
+BASH_MAX_LOG_BYTES = 64 * 1024 * 1024
 DEFAULT_BASH_TIMEOUT_SECONDS = 120
 MAX_BASH_TIMEOUT_SECONDS = 3600
-LINE_TRUNCATION_SUFFIX = "... [line exceeded 500 bytes]"
-TRUNCATION_NOTICE = (
-    "[Output truncated and the command was stopped after reaching the model-output budget of "
-    "50 KiB, 2000 lines, or 500 bytes per line. Narrow the command output and run it again.]\n"
-)
 
 BASH_PARAMS = [
     ToolParam(
@@ -49,87 +41,64 @@ BASH_PARAMS = [
 
 
 class BashOutput:
-    """A fixed head buffer and a fixed tail ring; everything between is counted and discarded."""
+    """Bounded display tail; overflow is archived without stopping the command."""
 
     def __init__(self) -> None:
-        self._head: list[str] = []
-        self._tail: deque[str] = deque()
-        self._current: list[str] = []
-        self._head_bytes = 0
-        self._tail_bytes = 0
-        self._total_bytes = 0
-        self._total_lines = 0
-        self._current_bytes = 0
-        self._head_complete = False
-        self._has_partial_line = False
-        self._line_truncated = False
-        self.limit_hit = False
+        self._tail = b""
+        self._log: BinaryIO | None = None
+        self._log_bytes = 0
+        self.log_path: Path | None = None
+        self.log_truncated = False
+        self.error: OSError | None = None
 
     def append(self, chunk: str) -> bool:
-        self._total_bytes += len(chunk.encode("utf-8"))
-        if self._total_bytes > BASH_BODY_BYTES:
-            self.limit_hit = True
-        for character in chunk:
-            if character == "\n":
-                self._finish_line(True)
-                continue
-            self._has_partial_line = True
-            if self._total_lines >= BASH_BODY_LINES:
-                self.limit_hit = True
-            self._current_bytes += len(character.encode("utf-8"))
-            if len("".join(self._current).encode("utf-8")) < MAX_BASH_LINE_BYTES:
-                self._current.append(character)
-            if self._current_bytes > MAX_BASH_LINE_BYTES:
-                self._line_truncated = True
-                self.limit_hit = True
-        return not self.limit_hit
+        data = chunk.encode("utf-8")
+        combined = self._tail + data
+        tail = combined[-BASH_BODY_BYTES:]
+        lines = tail.count(b"\n") + int(bool(tail) and not tail.endswith(b"\n"))
+        if lines > BASH_BODY_LINES:
+            tail = tail.split(b"\n", lines - BASH_BODY_LINES)[-1]
+        try:
+            if self._log is not None:
+                self._write_log(data)
+            elif len(tail) < len(combined):
+                descriptor, name = tempfile.mkstemp(prefix="ava-bash-", suffix=".log")
+                self.log_path = Path(name)
+                self._log = os.fdopen(descriptor, "wb")
+                self._write_log(combined)
+        except OSError as error:
+            self.error = error
+            # Use the runner's normal termination/drain path on storage failure.
+            return False
+        self._tail = tail
+        # Presentation limits must not interrupt a command's side effects.
+        return True
+
+    def _write_log(self, data: bytes) -> None:
+        assert self._log is not None
+        retained = data[: max(0, BASH_MAX_LOG_BYTES - self._log_bytes)]
+        self._log.write(retained)
+        self._log_bytes += len(retained)
+        self.log_truncated |= len(retained) < len(data)
+
+    def close(self) -> None:
+        if self._log is not None:
+            try:
+                self._log.close()
+            except OSError as error:
+                self.error = error
 
     def render(self) -> str:
-        if self._has_partial_line:
-            self._finish_line(False)
-        result = "".join(self._head)
-        if self.limit_hit:
-            if result and not result.endswith("\n"):
-                result += "\n"
-            result += TRUNCATION_NOTICE
-        result += "".join(self._tail)
-        return result
-
-    def _finish_line(self, had_newline: bool) -> None:
-        self._total_lines += 1
-        if self._total_lines > BASH_BODY_LINES:
-            self.limit_hit = True
-        line = "".join(self._current)
-        if self._line_truncated:
-            prefix_bytes = MAX_BASH_LINE_BYTES - len(LINE_TRUNCATION_SUFFIX)
-            line = (
-                line.encode("utf-8")[:prefix_bytes].decode("utf-8", "ignore")
-                + LINE_TRUNCATION_SUFFIX
+        # Byte truncation may start inside a UTF-8 character; omit that fragment.
+        text = self._tail.decode("utf-8", "ignore")
+        if self.log_path is not None:
+            archive = (
+                f"Log contains only the first {BASH_MAX_LOG_BYTES} bytes: {self.log_path}"
+                if self.log_truncated
+                else f"Full output: {self.log_path}"
             )
-        if had_newline:
-            line += "\n"
-        self._retain_line(line)
-        self._current = []
-        self._current_bytes = 0
-        self._has_partial_line = False
-        self._line_truncated = False
-
-    def _retain_line(self, line: str) -> None:
-        size = len(line.encode("utf-8"))
-        if (
-            not self._head_complete
-            and len(self._head) < BASH_HEAD_LINES
-            and self._head_bytes + size <= BASH_HEAD_BYTES
-        ):
-            self._head_bytes += size
-            self._head.append(line)
-            return
-        self._head_complete = True
-        self._tail_bytes += size
-        self._tail.append(line)
-        while len(self._tail) > BASH_TAIL_LINES or self._tail_bytes > BASH_TAIL_BYTES:
-            self._tail_bytes -= len(self._tail.popleft().encode("utf-8"))
-            self.limit_hit = True
+            text = _append_status(text, f"[Output truncated; showing trailing output. {archive}]")
+        return text
 
 
 def _append_status(text: str, status: str) -> str:
@@ -159,12 +128,18 @@ async def run_bash(cwd: Path, arguments_json: str, cancel: CancelToken) -> Outpu
         )
 
     captured = BashOutput()
-    completion = await run_process(command, cwd, float(timeout), captured.append, cancel)
+    try:
+        completion = await run_process(command, cwd, float(timeout), captured.append, cancel)
+    finally:
+        captured.close()
+    if captured.error is not None:
+        return error_output(
+            f"cannot retain command output: {captured.error.strerror}. "
+            "The command may have partially executed; inspect its effects before retrying."
+        )
     text = captured.render()
     is_error = False
-    if captured.limit_hit:
-        is_error = True
-    elif completion.timed_out:
+    if completion.timed_out:
         unit = "second" if timeout == 1 else "seconds"
         text = _append_status(
             text, f"[Command timed out after {timeout} {unit} and its process group was stopped.]"
@@ -187,10 +162,10 @@ def make_bash_tool(cwd: Path) -> Tool:
     definition = ToolDef(
         name="bash",
         description=(
-            "Run a foreground shell command in the invocation directory and return combined stdout "
-            "and stderr. The default timeout is 120 seconds. Output above 50 KiB, 2000 lines, or 500 "
-            "bytes per line is truncated and the process group is stopped; narrow verbose commands "
-            "before retrying."
+            "Run a shell command in the invocation directory and return combined stdout and stderr. "
+            "The default timeout is 120 seconds. Return the trailing output within 50 KiB and "
+            "2000 lines; truncation does not stop the command. Truncated output is saved to a "
+            "temporary log (up to 64 MiB per command); the result reports its path and any log cap."
         ),
         params=list(BASH_PARAMS),
     )
