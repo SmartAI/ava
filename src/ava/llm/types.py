@@ -60,9 +60,7 @@ def make_image_block(display_path: str, data: bytes, media_type: str) -> Content
 
 
 def make_reasoning_block(opaque_json: str, summary: str = "") -> ContentBlock:
-    return ContentBlock(
-        kind=ContentBlockKind.reasoning, text=summary, opaque_json=opaque_json
-    )
+    return ContentBlock(kind=ContentBlockKind.reasoning, text=summary, opaque_json=opaque_json)
 
 
 def make_tool_call_block(call_id: str, tool_name: str, arguments_json: str = "") -> ContentBlock:
@@ -84,6 +82,7 @@ class ToolParamType(StrEnum):
     string = "string"
     integer = "integer"
     boolean = "boolean"
+    array = "array"
 
 
 @dataclass(slots=True)
@@ -93,6 +92,7 @@ class ToolParam:
     type: ToolParamType = ToolParamType.string
     required: bool = False
     minimum: int | None = None
+    items: dict | None = None
 
 
 @dataclass(slots=True)

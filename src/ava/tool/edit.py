@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ava.base import CancelToken
@@ -18,21 +19,16 @@ EDIT_PARAMS = [
         True,
     ),
     ToolParam(
-        "old_string",
-        "Exact text to find. It must be unique unless replace_all is true.",
-        ToolParamType.string,
+        "edits",
+        "One or more targeted replacements against the original file. Each oldText must be unique; edits must not overlap. Merge nearby changes into one edit.",
+        ToolParamType.array,
         True,
-    ),
-    ToolParam(
-        "new_string",
-        "Exact replacement text. An empty string deletes the match.",
-        ToolParamType.string,
-        True,
-    ),
-    ToolParam(
-        "replace_all",
-        "Replace every non-overlapping match instead of requiring uniqueness.",
-        ToolParamType.boolean,
+        items={
+            "type": "object",
+            "properties": {"oldText": {"type": "string"}, "newText": {"type": "string"}},
+            "required": ["oldText", "newText"],
+            "additionalProperties": False,
+        },
     ),
 ]
 
@@ -41,26 +37,37 @@ def run_edit(cwd: Path, arguments_json: str) -> Output:
     arguments = parse_arguments(arguments_json)
     if isinstance(arguments, str):
         return error_output(
-            f"invalid edit arguments: {arguments}. Use path, old_string, new_string, and optional replace_all"
+            f"invalid edit arguments: {arguments}. Use path and edits: [{{oldText, newText}}]"
         )
     raw_path = arguments.get("path")
     if not isinstance(raw_path, str) or not raw_path:
         return error_output("missing 'path' argument; call edit with the file to change")
-    old = arguments.get("old_string")
-    if old is None:
-        return error_output("missing 'old_string' argument; provide exact text copied from read")
-    if not isinstance(old, str) or old == "":
-        return error_output("'old_string' must be non-empty; provide exact text copied from read")
-    new = arguments.get("new_string")
-    if new is None:
-        return error_output(
-            "missing 'new_string' argument; provide replacement text or an empty string to delete"
-        )
-    if not isinstance(new, str):
-        return error_output("invalid edit arguments: 'new_string' must be a string")
-    if old == new:
-        return error_output("'old_string' and 'new_string' are identical; no edit is needed")
-    replace_all = bool(arguments.get("replace_all", False))
+    edits = arguments.get("edits")
+    if isinstance(edits, str):
+        try:
+            edits = json.loads(edits)
+        except json.JSONDecodeError:
+            pass
+    if isinstance(edits, dict):
+        edits = [edits]
+    legacy = edits is None and "old_string" in arguments
+    if legacy:
+        edits = [{"oldText": arguments.get("old_string"), "newText": arguments.get("new_string")}]
+    if not isinstance(edits, list) or not edits:
+        return error_output("'edits' must be a non-empty array of {oldText, newText} replacements")
+    for edit_index, edit in enumerate(edits):
+        if (
+            not isinstance(edit, dict)
+            or not isinstance(edit.get("oldText"), str)
+            or not edit["oldText"]
+            or not isinstance(edit.get("newText"), str)
+        ):
+            return error_output(
+                f"edits[{edit_index}] requires non-empty oldText and string newText"
+            )
+        if edit["oldText"] == edit["newText"]:
+            return error_output("oldText and newText are identical; no edit is needed")
+    replace_all = legacy and bool(arguments.get("replace_all", False))
 
     path = resolve_path(cwd, raw_path)
     if not path.exists():
@@ -82,17 +89,33 @@ def run_edit(cwd: Path, arguments_json: str) -> Output:
     if b"\0" in data:
         return error_output(f"cannot edit '{path}' as text because it contains NUL bytes")
     original = data.decode("utf-8", "surrogateescape")
-    matches = original.count(old)
-    if matches == 0:
+    spans: list[tuple[int, int, str]] = []
+    for edit_index, edit in enumerate(edits):
+        old, new = edit["oldText"], edit["newText"]
+        positions = []
+        offset = 0
+        while (index := original.find(old, offset)) >= 0:
+            positions.append(index)
+            offset = index + len(old)
+        if not positions:
+            return error_output(
+                f"edits[{edit_index}].oldText was not found. Read the current file and copy exact text; no changes were written"
+            )
+        if len(positions) != 1 and not replace_all:
+            return error_output(
+                f"edits[{edit_index}].oldText is ambiguous. Include enough context to match once; no changes were written"
+            )
+        spans.extend((index, index + len(old), new) for index in positions)
+    spans.sort(key=lambda span: span[0])
+    if any(left[1] > right[0] for left, right in zip(spans, spans[1:], strict=False)):
         return error_output(
-            f"'old_string' was not found in '{path}'. Read the file again and copy its exact current text"
+            "Edits overlap in the original file. Merge them into one replacement; no changes were written"
         )
-    if matches > 1 and not replace_all:
-        return error_output(
-            f"'old_string' matches {matches} places in '{path}'. Include more surrounding text to make it "
-            "unique, or set replace_all to true"
-        )
-    updated = original.replace(old, new)
+    updated = original
+    for start, end, new in reversed(spans):
+        updated = updated[:start] + new + updated[end:]
+    matches = len(spans)
+
     try:
         path.write_bytes(updated.encode("utf-8", "surrogateescape"))
     except OSError:
@@ -107,13 +130,15 @@ def make_edit_tool(cwd: Path) -> Tool:
     definition = ToolDef(
         name="edit",
         description=(
-            "Replace exact text in a regular file. old_string must match exactly once unless "
-            "replace_all is true; failures explain how to correct a missing or ambiguous match."
+            "Edit one file with targeted exact replacements. Batch separate locations in one edits array. "
+            "Each oldText must match a unique, non-overlapping region of the original file. Keep it "
+            "as small as possible while unique; merge nearby or overlapping changes. Validate all edits before writing once."
         ),
         params=list(EDIT_PARAMS),
     )
 
     async def run(arguments_json: str, cancel: CancelToken) -> Output:
+        cancel.raise_if_cancelled()
         return run_edit(cwd, arguments_json)
 
     return Tool(definition=definition, run=run)

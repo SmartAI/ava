@@ -1,0 +1,9 @@
+{
+  "name": "ava-eval-pi-baseline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned Pi baseline for Ava's isolated task evaluations",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.0"
+  }
+}

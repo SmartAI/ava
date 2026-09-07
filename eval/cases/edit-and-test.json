@@ -1,0 +1,76 @@
+{
+  "id": "edit-and-test",
+  "provenance": "Ava-owned synthetic fixture; not a historical production incident or a model benchmark.",
+  "prompt": "Make mean([]) return None while preserving the mean of non-empty lists. Verify the change.",
+  "files": {
+    "stats.py": "def mean(values):\n    return sum(values) / len(values)\n"
+  },
+  "responses": [
+    {
+      "events": [
+        {
+          "kind": "tool_call_start",
+          "id": "r1",
+          "name": "read"
+        },
+        {
+          "kind": "tool_call_delta",
+          "id": "r1",
+          "text": "{\"path\": \"stats.py\"}"
+        },
+        {
+          "kind": "tool_call_end",
+          "id": "r1"
+        }
+      ],
+      "stop": "tool_use"
+    },
+    {
+      "events": [
+        {
+          "kind": "tool_call_start",
+          "id": "e1",
+          "name": "edit"
+        },
+        {
+          "kind": "tool_call_delta",
+          "id": "e1",
+          "text": "{\"path\": \"stats.py\", \"old_string\": \"return sum(values) / len(values)\", \"new_string\": \"return sum(values) / len(values) if values else None\"}"
+        },
+        {
+          "kind": "tool_call_end",
+          "id": "e1"
+        }
+      ],
+      "stop": "tool_use"
+    },
+    {
+      "events": [
+        {
+          "kind": "tool_call_start",
+          "id": "b1",
+          "name": "bash"
+        },
+        {
+          "kind": "tool_call_delta",
+          "id": "b1",
+          "text": "{\"command\": \"python3 -c \\\"from stats import mean; assert mean([]) is None; assert mean([2, 4]) == 3\\\"\"}"
+        },
+        {
+          "kind": "tool_call_end",
+          "id": "b1"
+        }
+      ],
+      "stop": "tool_use"
+    },
+    {
+      "events": [
+        {
+          "kind": "text_delta",
+          "text": "Implemented and verified empty-input handling."
+        }
+      ]
+    }
+  ],
+  "check": "from stats import mean\nassert mean([]) is None\nassert mean([2, 4]) == 3\nassert mean([-4, 2]) == -1\n"
+}

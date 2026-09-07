@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,9 +84,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session", metavar="PATH", help="create or resume this exact session log (-p only)"
     )
+    parser.add_argument(
+        "--record", metavar="PATH",
+        help="record a new one-shot drive for offline replay (requires a concrete --model)",
+    )
     parser.add_argument("--provider", metavar="NAME")
     parser.add_argument("--model", metavar="ID_OR_ALIAS")
     parser.add_argument("--effort", metavar="LEVEL")
+    parser.add_argument(
+        "--system-prompt-file", metavar="PATH",
+        help="replace the system prompt from a UTF-8 file (new -p sessions only)",
+    )
     parser.add_argument("--no-compact", action="store_true")
     parser.add_argument("--compact-threshold", type=int, metavar="PCT")
     parser.add_argument(
@@ -265,11 +274,20 @@ async def _serve(
 
 def run(argv: list[str]) -> int:
     if argv[:1] == ["session"]:
-        if len(argv) != 3 or argv[1] != "dump":
-            print("ava: usage: ava session dump FILE", file=sys.stderr)
+        if len(argv) != 3 or argv[1] not in ("dump", "inspect", "replay"):
+            print("ava: usage: ava session {dump|inspect|replay} FILE", file=sys.stderr)
             return EXIT_USAGE
         try:
-            return _session_dump(Path(argv[2]))
+            if argv[1] == "dump":
+                return _session_dump(Path(argv[2]))
+            if argv[1] == "inspect":
+                from ava.session.inspect import inspect_session
+                result = inspect_session(Path(argv[2]))
+            else:
+                from ava.agent.recording import replay_recording
+                result = asyncio.run(replay_recording(Path(argv[2])))
+            print(json.dumps(result, indent=2))
+            return EXIT_OK
         except AvaError as error:
             _print_error(error)
             return EXIT_ERROR
@@ -290,6 +308,14 @@ def run(argv: list[str]) -> int:
             print(f"ava: --{name} requires a non-empty value", file=sys.stderr)
             return EXIT_USAGE
     selection = SelectionOverride(provider=args.provider, model=args.model, effort=args.effort)
+    if args.system_prompt_file is not None and (
+        not args.print or args.continue_latest or args.resume is not None
+    ):
+        print("ava: --system-prompt-file requires a new -p session", file=sys.stderr)
+        return EXIT_USAGE
+    if args.record and (not args.print or not args.model or args.continue_latest or args.resume is not None):
+        print("ava: --record requires a new -p run and a concrete --model", file=sys.stderr)
+        return EXIT_USAGE
     resuming = args.continue_latest or args.resume is not None or args.session is not None
 
     serve_port: int | None = None
@@ -338,6 +364,23 @@ def run(argv: list[str]) -> int:
         _print_error(error)
         usage = args.session is None and error.kind == ErrorKind.invalid_argument
         return EXIT_USAGE if usage else EXIT_ERROR
+    if args.record and plan.resume is not None:
+        print("ava: --record requires a new session", file=sys.stderr)
+        return EXIT_USAGE
+    if args.system_prompt_file is not None and plan.resume is not None:
+        print("ava: --system-prompt-file requires a new session", file=sys.stderr)
+        return EXIT_USAGE
+    system_prompt = None
+    if args.system_prompt_file is not None:
+        try:
+            system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
+            if not system_prompt.strip():
+                raise ValueError("system prompt must not be empty")
+        except (OSError, UnicodeError, ValueError) as error:
+            print(f"ava: cannot load system prompt: {error}", file=sys.stderr)
+            return EXIT_USAGE
+    from ava.agent.recording import Recording
+    recording: Recording | None = None
     try:
         durable_selection: Selection | None = None
         resumed_log: Log | None = None
@@ -351,25 +394,60 @@ def run(argv: list[str]) -> int:
                     file=sys.stderr,
                 )
         provider = provider_from_environment(selection, durable_selection, AuthRequirement.required)
+        tools = None
+        if args.record:
+            from ava.tool import make_bash_tool, make_edit_tool, make_read_tool, make_write_tool
+            if provider.selection_model_may_be_alias:
+                raise AvaError(ErrorKind.invalid_argument, "--record requires a concrete model ID, not an alias")
+            recording = Recording(Path(args.record), provider, item, options)
+            provider = recording.provider()
+            tools = recording.tools([
+                make_read_tool(cwd), make_write_tool(cwd), make_edit_tool(cwd), make_bash_tool(cwd),
+            ])
         if resumed_log is not None:
             agent = Agent.reopen(provider, cwd, resumed_log, options)
         elif plan.create_path is not None:
-            agent = Agent.create_at(provider, cwd, plan.create_path, options)
+            agent = Agent.create_at(
+                provider, cwd, plan.create_path, options, tools=tools, system_prompt=system_prompt,
+            )
         else:
-            agent = Agent.create(provider, cwd, options)
-    except AvaError as error:
-        _print_error(error)
+            agent = Agent.create(provider, cwd, options, tools=tools, system_prompt=system_prompt)
+    except (AvaError, OSError) as error:
+        if recording:
+            recording.close()
+        print(f"ava: {error}", file=sys.stderr)
         return EXIT_ERROR
     session_path = agent.session_path
 
     async def run_and_close() -> int:
         try:
+            if recording:
+                failure: AvaError | None = None
+                with agent.subscribe(_render_one_shot):
+                    await agent.followup(item)
+                    try:
+                        await agent.drive()
+                    except AvaError as error:
+                        failure = error
+                recording.finish(failure)
+                print(flush=True)
+                if failure:
+                    _print_error(failure)
+                    return EXIT_ERROR
+                return EXIT_OK
             return await _run_one_shot(agent, item)
         finally:
-            await agent.aclose()
+            try:
+                await agent.aclose()
+            finally:
+                if recording:
+                    recording.close()
 
     try:
         return asyncio.run(run_and_close())
+    except (AvaError, OSError) as error:
+        print(f"ava: {error}", file=sys.stderr)
+        return EXIT_ERROR
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED
     finally:

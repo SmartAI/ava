@@ -5,6 +5,7 @@ Exact text with no injected line numbers, so it can be copied into ``edit`` unch
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from ava.base import CancelToken
@@ -70,10 +71,6 @@ def run_read(cwd: Path, arguments_json: str) -> Output:
     had_final_newline = data.endswith(b"\n")
     if had_final_newline:
         lines.pop()
-    for index, line in enumerate(lines, start=1):
-        if len(line) > READ_MAX_OUTPUT_BYTES - TRUNCATION_NOTICE_RESERVE:
-            if index < offset or index >= offset:
-                return error_output(f"line {index} in '{path}' exceeds the 50 KiB output limit")
     if offset > len(lines):
         if not lines and offset == 1:
             return Output(text="")
@@ -90,6 +87,12 @@ def run_read(cwd: Path, arguments_json: str) -> Output:
         if line_number < len(lines) or had_final_newline:
             rendered = rendered + b"\n"
         if len(rendered) > READ_MAX_OUTPUT_BYTES - TRUNCATION_NOTICE_RESERVE - len(output):
+            if returned == 0:
+                return error_output(
+                    f"line {line_number} in '{path}' exceeds the 50 KiB output limit. "
+                    f"Read a bounded prefix with bash: "
+                    f"sed -n '{line_number}p' {shlex.quote(str(path))} | head -c 51200"
+                )
             truncated = True
             break
         output += rendered
@@ -117,6 +120,7 @@ def make_read_tool(cwd: Path) -> Tool:
     )
 
     async def run(arguments_json: str, cancel: CancelToken) -> Output:
+        cancel.raise_if_cancelled()
         return run_read(cwd, arguments_json)
 
     return Tool(definition=definition, run=run)

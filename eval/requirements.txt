@@ -1,0 +1,3 @@
+# Optional benchmark tooling, installed in a separate environment.
+harbor==0.22.0
+swebench==4.1.0

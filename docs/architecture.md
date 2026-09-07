@@ -37,6 +37,28 @@ and tool output before it closes the turn.
 Only one driver may own an agent. The Web `DriveHandoff` compensates for a message acknowledged as
 the owning driver finishes, without starting a second driver.
 
+The Codex adapter accepts multiple function calls in one response. It buffers arguments by item
+ID, then emits complete calls to the core in their original order. Parameter completion order does
+not determine tool execution order; the driver still dispatches tools sequentially. A malformed or
+incomplete response does not execute its calls or commit unmatched calls to the next request.
+Terminal usage remains billable even when the response fails. Buffering moves the tool-only first
+content timestamp to a completed call, so that timestamp is not directly comparable to a provider
+that emits its tool-start event immediately.
+
+## Editing and progress feedback
+
+The model-facing `edit` contract uses `path` and an `edits` array of `oldText` /
+`newText` pairs. Each exact match is located in the original file. Missing,
+ambiguous, or overlapping matches reject the entire batch before writing.
+Successful replacements preserve untouched bytes and are written once. This
+prevalidation does not promise filesystem rollback after an I/O failure.
+Legacy `old_string`, `new_string`, and `replace_all` arguments remain accepted
+for existing callers; new model requests receive the batch schema.
+
+The default prompt does not require narration before tool calls. The browser
+derives activity labels from tool events; final outcomes, errors, and blockers
+still have to be reported faithfully.
+
 ## Session authority
 
 The append-only session event stream is the authority for model context, browser replay, pending
@@ -47,13 +69,87 @@ only after their bytes reach the kernel. Recovery may repair a torn final frame 
 The JSONL codec is intentionally explicit. Its event-by-event mapping is compatibility and
 validation code, not generic object serialization, and unknown future event kinds are preserved.
 
+## Session diagnostics and task evaluation
+
+`ava session inspect` derives a read-only report from the event log. It does not
+repair files or infer task correctness from a completed turn.
+
+`eval.diagnose` uses the same session authority to locate repeated tool arguments,
+error results and truncation clues. It reports evidence coordinates and character
+counts rather than inventing token measurements or declaring repeats wasteful.
+
+`eval.benchmark` freezes tasks, candidate wheels, adapter code and configuration,
+then runs fresh Harbor environments. Models see new tool observations and may take
+different trajectories. Independent deliverable grades are separate from process
+completion, resource measurements and infrastructure failures. Comparisons require
+complete compatible samples and verify recorded candidate identity.
+
+`eval.evolve` is a bounded prompt-search experiment. Ava receives selected development
+sessions and only evidence-reading/proposal tools. A candidate changes the baseline
+wheel's prompt and RECORD; it cannot change graders or accept itself. Candidate
+selection requires new task trials, with independent validation data supplied by
+the experiment owner. This is not model-weight training or an RL implementation.
+
+An opt-in one-shot recording captures provider streams and tool responses for
+offline replay. It is a diagnostic artifact, not another live conversation store:
+normal operation and recovery still use only the session log. Replay constructs
+the same `Agent` with recorded tools and a recorded initial prompt, checks each
+request, and refuses missing exchanges or a changed terminal outcome. No live
+provider or real tool is instantiated during replay.
+
+`Agent.create` and `Agent.create_at` accept explicit `tools` and `system_prompt`
+overrides for embedding and replay. The default coding tools and prompt are
+unchanged when these arguments are omitted. Evaluation tooling stays under
+`eval/`; its heavy benchmark dependencies are excluded from the Ava wheel.
+
+See [Evaluation and iteration](../eval/README.md) for datasets, upstream graders,
+measurement definitions, and reproducibility limits.
+
 ## Evaluation gates
 
 Every architectural change must keep these gates green:
 
 - durable input is acknowledged and claimed exactly once;
-- every model tool call has one result after completion, abort, or recovery;
+- every persisted model tool call has one result after completion, abort, or recovery;
 - pause/resume and provider failure leave replayable history;
 - `ruff`, `mypy`, the Python 3.12 test suite, and the frontend build pass;
 - application code has no direct `agent.state` access;
 - provider clients close on agent replacement and shutdown.
+
+## Engineering foundations
+
+```text
+CLI / loopback Web UI / Python application
+                    │
+                    ▼
+                  Agent ─────► read · write · edit · bash
+                    │
+                    ├────────► Anthropic · OpenAI-compatible · Codex · mock
+                    │
+                    ▼
+          append-only session events
+                    │
+                    ├────────► model context and compaction
+                    ├────────► browser history and metrics
+                    └────────► resume and recovery
+```
+
+The session event stream is the source of truth for conversation state, queued input,
+and recovery. The optional I/O recording is a diagnostic artifact for offline replay.
+
+- **Recoverable sessions:** checksummed Zstandard frames preserve complete events;
+  recovery can replace an incomplete final frame.
+- **Explicit interruption behavior:** pause stops at a complete step boundary; abort
+  pairs partial tool calls with `interrupted` or `skipped` results. Provider failures
+  are contained at the drive boundary and pending input remains available.
+- **Bounded resources:** HTTP bodies, SSE frames, session records, tool output, and
+  decoded data have explicit limits; subprocesses have timeout escalation.
+- **Shared event history:** the browser consumes persisted events instead of keeping
+  a separate conversation store. The server binds to loopback and validates `Host`
+  and `Origin` headers.
+
+Input acknowledgement follows a write to the kernel; `fsync` occurs at separate turn
+boundaries. These are process-recovery guarantees, not exactly-once external command
+execution or a promise that every acknowledged input survives power loss.
+
+See the [port notes](port-notes.md) for differences from the original C++ runtime.

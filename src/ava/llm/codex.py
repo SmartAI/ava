@@ -3,8 +3,9 @@
 Ava reuses a read-only snapshot of ``$CODEX_HOME/auth.json`` (default ``~/.codex/auth.json``): it
 never reads the refresh token, never writes the file, and never takes over login. Every malformed,
 missing, or expired case returns the same secret-free instruction to run ``codex login``.
-Requests are stateless (``store: false``) and carry only ``Authorization`` and
-``ChatGPT-Account-Id``; provider rejection bodies never enter returned errors.
+Responses requests are stateless (``store: false``); their ``session-id`` matches the provider's
+prompt cache key. Credentials travel only in ``Authorization`` and ``ChatGPT-Account-Id``;
+provider rejection bodies never enter returned errors.
 """
 
 from __future__ import annotations
@@ -254,6 +255,8 @@ def _tool_schema(tool: ToolDef) -> dict:
     required: list[str] = []
     for param in tool.params:
         schema: dict = {"type": request_schema_type(param.type), "description": param.description}
+        if param.items is not None:
+            schema["items"] = param.items
         if param.minimum is not None:
             schema["minimum"] = param.minimum
         properties[param.name] = schema
@@ -305,7 +308,7 @@ def codex_request_body(
     tail = {
         "tools": [_tool_schema(tool) for tool in context.tools],
         "tool_choice": "auto",
-        "parallel_tool_calls": False,
+        "parallel_tool_calls": True,
         "reasoning": reasoning,
         "store": False,
         "stream": True,
@@ -328,14 +331,21 @@ def codex_request_body(
 
 
 @dataclass(slots=True)
-class CodexStreamState:
-    item_id: str = ""
-    call_id: str = ""
-    name: str = ""
+class _ToolCall:
+    call_id: str
+    name: str
+    output_index: int | None
     arguments: str = ""
-    tool_started: bool = False
     arguments_done: bool = False
-    saw_tool_call: bool = False
+    finished: bool = False
+    emitted: bool = False
+
+
+@dataclass(slots=True)
+class CodexStreamState:
+    # Dict insertion order is the provider's call order, independent of completion order.
+    tools: dict[str, _ToolCall] = field(default_factory=dict)
+    call_ids: set[str] = field(default_factory=set)
 
 
 def _stream_error(message: str, kind: ErrorKind = ErrorKind.parse) -> AvaError:
@@ -380,73 +390,108 @@ def _emit_usage(source: dict, sink: StreamSink) -> None:
         sink(StreamEvent(kind=StreamEventKind.usage, usage=usage))
 
 
+def _output_index(value: dict) -> int | None:
+    index = value.get("output_index")
+    if index is not None and (_int_or_none(index) is None or index < 0):
+        raise _stream_error("Codex returned an invalid tool output index")
+    return index
+
+
 def _start_tool(
-    item: dict, sink: StreamSink, state: CodexStreamState, *, require_item_id: bool
-) -> None:
-    if state.tool_started or state.saw_tool_call:
-        raise _stream_error(
-            "Codex streamed multiple tool calls after Ava disabled them; retry or check endpoint compatibility",
-            ErrorKind.provider,
-        )
+    item: dict, state: CodexStreamState, index: int | None, *, require_item_id: bool
+) -> _ToolCall:
     call_id = item.get("call_id")
     name = item.get("name")
     item_id = item.get("id")
-    if not call_id or not name or (require_item_id and not item_id):
-        raise _stream_error(
-            "Codex tool call is missing its identity; retry or check endpoint compatibility"
-        )
-    state.item_id = item_id or call_id
-    state.call_id = call_id
-    state.name = name
-    state.tool_started = True
-    sink(StreamEvent(kind=StreamEventKind.tool_call_start, id=call_id, name=name))
-    arguments = item.get("arguments")
-    if isinstance(arguments, str) and arguments:
-        state.arguments = arguments
-        sink(StreamEvent(kind=StreamEventKind.tool_call_delta, text=arguments, id=call_id))
+    if (
+        not isinstance(call_id, str)
+        or not call_id
+        or not isinstance(name, str)
+        or not name
+        or (require_item_id and item_id is None)
+        or (item_id is not None and (not isinstance(item_id, str) or not item_id))
+    ):
+        raise _stream_error("Codex tool call is missing its identity")
+    item_id = item_id or call_id
+    if item_id in state.tools or call_id in state.call_ids:
+        raise _stream_error("Codex repeated a tool call identity")
+    if index is not None and any(
+        tool.output_index is not None and tool.output_index >= index
+        for tool in state.tools.values()
+    ):
+        raise _stream_error("Codex changed the tool call order")
+    arguments = item.get("arguments", "")
+    if not isinstance(arguments, str):
+        raise _stream_error("Codex returned invalid tool arguments")
+    tool = _ToolCall(call_id, name, index, arguments)
+    state.tools[item_id] = tool
+    state.call_ids.add(call_id)
+    return tool
 
 
-def _append_arguments(
-    state: CodexStreamState, item_id: str, sink: StreamSink, arguments: str
-) -> None:
-    if not state.tool_started or state.item_id != item_id:
-        raise _stream_error(
-            "Codex streamed tool arguments before the call identity; retry or check endpoint compatibility"
-        )
-    if not arguments.startswith(state.arguments):
-        raise _stream_error(
-            "Codex changed finalized tool arguments; retry or check endpoint compatibility"
-        )
-    suffix = arguments[len(state.arguments) :]
-    state.arguments = arguments
-    if suffix:
-        sink(StreamEvent(kind=StreamEventKind.tool_call_delta, text=suffix, id=state.call_id))
+def _check_tool_index(tool: _ToolCall, index: int | None) -> None:
+    if index is not None and tool.output_index != index:
+        raise _stream_error("Codex changed a tool output index")
 
 
-def _finish_tool(item: dict, sink: StreamSink, state: CodexStreamState) -> None:
+def _tool_for_event(state: CodexStreamState, value: dict) -> _ToolCall:
+    item_id = value.get("item_id")
+    tool = state.tools.get(item_id) if isinstance(item_id, str) else None
+    if tool is None:
+        raise _stream_error("Codex streamed tool arguments before the call identity")
+    _check_tool_index(tool, _output_index(value))
+    if tool.arguments_done or tool.finished:
+        raise _stream_error("Codex streamed tool arguments after finalizing them")
+    return tool
+
+
+def _append_arguments(tool: _ToolCall, arguments: object) -> None:
+    if not isinstance(arguments, str):
+        raise _stream_error("Codex returned invalid tool arguments")
+    if (tool.arguments_done and arguments != tool.arguments) or not arguments.startswith(
+        tool.arguments
+    ):
+        raise _stream_error("Codex changed finalized tool arguments")
+    tool.arguments = arguments
+
+
+def _finish_tool(item: dict, state: CodexStreamState, index: int | None) -> None:
     arguments = item.get("arguments")
     if not isinstance(arguments, str):
-        raise _stream_error(
-            "Codex completed a tool call without arguments; retry or check endpoint compatibility"
+        raise _stream_error("Codex completed a tool call without arguments")
+    item_id = item.get("id")
+    tool = state.tools.get(item_id) if isinstance(item_id, str) else None
+    if tool is None and item_id is None:
+        tool = next(
+            (tool for tool in state.tools.values() if tool.call_id == item.get("call_id")), None
         )
-    if not state.tool_started:
-        _start_tool(item, sink, state, require_item_id=False)
+    if tool is None:
+        tool = _start_tool(item, state, index, require_item_id=False)
     else:
-        item_id = item.get("id")
-        if (
-            (item_id is not None and item_id != state.item_id)
-            or item.get("call_id") != state.call_id
-            or item.get("name") != state.name
-        ):
-            raise _stream_error(
-                "Codex changed a completed tool call; retry or check endpoint compatibility"
+        _check_tool_index(tool, index)
+        if tool.finished or item.get("call_id") != tool.call_id or item.get("name") != tool.name:
+            raise _stream_error("Codex changed a completed tool call")
+        _append_arguments(tool, arguments)
+    tool.finished = True
+
+
+def _emit_finished_tools(state: CodexStreamState, sink: StreamSink) -> None:
+    # Core assembles and executes calls sequentially. Buffer interleaved arguments here,
+    # then emit each complete call once in request order, even if a later call ends first.
+    for tool in state.tools.values():
+        if not tool.finished:
+            break
+        if tool.emitted:
+            continue
+        sink(StreamEvent(kind=StreamEventKind.tool_call_start, id=tool.call_id, name=tool.name))
+        if tool.arguments:
+            sink(
+                StreamEvent(
+                    kind=StreamEventKind.tool_call_delta, id=tool.call_id, text=tool.arguments
+                )
             )
-        _append_arguments(state, state.item_id, sink, arguments)
-    sink(StreamEvent(kind=StreamEventKind.tool_call_end, id=state.call_id))
-    state.item_id = state.call_id = state.name = state.arguments = ""
-    state.tool_started = False
-    state.arguments_done = False
-    state.saw_tool_call = True
+        sink(StreamEvent(kind=StreamEventKind.tool_call_end, id=tool.call_id))
+        tool.emitted = True
 
 
 def _reasoning_summary(item: dict) -> str:
@@ -502,9 +547,10 @@ def consume_codex_event(
         item_type = item.get("type")
         if item_type == "function_call":
             if done:
-                _finish_tool(item, sink, state)
+                _finish_tool(item, state, _output_index(value))
+                _emit_finished_tools(state, sink)
             else:
-                _start_tool(item, sink, state, require_item_id=True)
+                _start_tool(item, state, _output_index(value), require_item_id=True)
         elif done and item_type == "reasoning":
             # Replay the complete item, but expose only its provider-designated summary to clients.
             sink(
@@ -520,34 +566,22 @@ def consume_codex_event(
                 ErrorKind.provider,
             )
     elif kind == "response.function_call_arguments.delta":
-        if state.arguments_done:
-            raise _stream_error(
-                "Codex streamed tool arguments after finalizing them; retry or check endpoint compatibility"
-            )
-        item_id = str(value.get("item_id", ""))
-        if not state.tool_started or state.item_id != item_id:
-            raise _stream_error(
-                "Codex streamed tool arguments before the call identity; retry or check endpoint compatibility"
-            )
-        delta = str(value.get("delta", ""))
-        state.arguments += delta
-        sink(StreamEvent(kind=StreamEventKind.tool_call_delta, text=delta, id=state.call_id))
+        tool = _tool_for_event(state, value)
+        delta = value.get("delta")
+        if not isinstance(delta, str):
+            raise _stream_error("Codex returned invalid tool arguments")
+        tool.arguments += delta
     elif kind == "response.function_call_arguments.done":
-        if state.arguments_done:
-            raise _stream_error(
-                "Codex finalized tool arguments more than once; retry or check endpoint compatibility"
-            )
-        _append_arguments(
-            state, str(value.get("item_id", "")), sink, str(value.get("arguments", ""))
-        )
-        state.arguments_done = True
+        tool = _tool_for_event(state, value)
+        _append_arguments(tool, value.get("arguments"))
+        tool.arguments_done = True
     elif kind in ("response.completed", "response.incomplete", "response.failed"):
         raw_response = value.get("response")
         response: dict = raw_response if isinstance(raw_response, dict) else {}
         usage = response.get("usage")
         if isinstance(usage, dict):
             _emit_usage(usage, sink)
-        if state.tool_started:
+        if any(not tool.finished for tool in state.tools.values()):
             raise _stream_error(
                 "Codex stopped before finishing a tool call; retry or check endpoint compatibility"
             )
@@ -561,7 +595,9 @@ def consume_codex_event(
         if kind == "response.incomplete":
             raw_details = response.get("incomplete_details")
             details: dict = raw_details if isinstance(raw_details, dict) else {}
-            if details.get("reason") != "max_output_tokens":
+            # An incomplete batch cannot be committed to history: none of its tools ran,
+            # so a later follow-up would otherwise replay calls without matching results.
+            if state.tools or details.get("reason") != "max_output_tokens":
                 raise _stream_error(
                     "Codex returned an incomplete response; retry or check provider status",
                     ErrorKind.provider,
@@ -569,7 +605,7 @@ def consume_codex_event(
             sink(StreamEvent(kind=StreamEventKind.done))
             return StopReason.max_tokens
         sink(StreamEvent(kind=StreamEventKind.done))
-        return StopReason.tool_use if state.saw_tool_call else StopReason.end_turn
+        return StopReason.tool_use if state.tools else StopReason.end_turn
     return None
 
 
@@ -696,7 +732,11 @@ class CodexProvider(Provider):
         )
         request = Request(
             url=self._base_url + "/responses",
-            headers=[("content-type", "application/json")] + self._headers("text/event-stream"),
+            headers=[
+                ("content-type", "application/json"),
+                ("session-id", self._prompt_cache_key),
+            ]
+            + self._headers("text/event-stream"),
             body=body,
         )
         state = CodexStreamState()
@@ -705,7 +745,22 @@ class CodexProvider(Provider):
 
         def on_event(event: SseEvent) -> None:
             nonlocal stream_error, stop_reason
-            if stream_error is not None or stop_reason is not None:
+            if stop_reason is not None:
+                return
+            if stream_error is not None:
+                # A malformed call must never execute, but its later terminal usage is billable.
+                try:
+                    value = json.loads(event.data)
+                except json.JSONDecodeError:
+                    return
+                if isinstance(value, dict) and value.get("type") in (
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                ):
+                    response = value.get("response")
+                    if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+                        _emit_usage(response["usage"], sink)
                 return
             try:
                 consumed = consume_codex_event(event, sink, state)

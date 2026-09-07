@@ -50,6 +50,8 @@ def _tool_schema(tool: ToolDef) -> dict:
     required: list[str] = []
     for param in tool.params:
         schema: dict = {"type": request_schema_type(param.type), "description": param.description}
+        if param.items is not None:
+            schema["items"] = param.items
         if param.minimum is not None:
             schema["minimum"] = param.minimum
         properties[param.name] = schema
