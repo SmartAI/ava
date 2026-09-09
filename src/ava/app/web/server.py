@@ -18,6 +18,7 @@ from ava.app.backend_state import BackendState
 from ava.base import AvaError, ErrorKind, ava_home
 from ava.llm import SelectionOverride, provider_from_environment
 
+from .automations import Automations, register_automation_routes
 from .mcp import register_mcp_routes
 from .registry import Registry, WebState
 from .routes import error_response, register_routes
@@ -62,10 +63,18 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
             registry.restore(compaction, selected, provider_from_environment)
+            await automations.start()
             yield
         finally:
             try:
-                await registry.aclose()
+                try:
+                    await automations.stop_dispatch()
+                finally:
+                    try:
+                        await registry.aclose()
+                    finally:
+                        if hasattr(automations, "store"):
+                            await automations.close()
             finally:
                 backend.close()
 
@@ -84,6 +93,9 @@ def create_app(
         selection=selected,
         provider_factory=provider_from_environment,
     )
+    automations = Automations(state, ava_home() / "automations.sqlite3")
+    app.state.automations = automations
+
     @app.middleware("http")
     async def fence(request: Request, call_next: Any):
         host = request.headers.get("host")
@@ -102,12 +114,13 @@ def create_app(
 
     register_routes(app, state, web_asset)
     register_workspace_routes(app, registry)
+    register_automation_routes(app, automations)
     register_skill_routes(app, registry)
     register_mcp_routes(app, registry)
 
     @app.get("/api/system")
     async def system_info() -> dict:
-        return {**backend.info, "navigation_revision": registry.revision, "skill_revision": skill_revision(), "mcp_revision": str(registry.mcp.generation) + ":" + skill_revision()}
+        return {**backend.info, "navigation_revision": registry.revision, "automation_revision": automations.store.revision, "automation_error": automations.error, "skill_revision": skill_revision(), "mcp_revision": str(registry.mcp.generation) + ":" + skill_revision()}
 
     return app
 

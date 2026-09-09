@@ -25,6 +25,7 @@ dependencies = [
     "psutil>=7,<8",
     "mcp>=2.2,<3",
     "pyyaml>=6,<7",
+    "tzdata>=2025.1",
 ]
 
 [project.optional-dependencies]
