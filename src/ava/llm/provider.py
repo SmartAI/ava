@@ -10,7 +10,8 @@ from enum import StrEnum
 
 from ava.base import AvaError, CancelToken, ErrorKind, ascii_lower
 from ava.base.cancel import NEVER
-from ava.llm.types import ContentBlock, Context, ToolParamType
+from ava.base.images import DeferredImage
+from ava.llm.types import ContentBlock, Context, ToolDef, ToolParamType
 
 
 class StreamEventKind(StrEnum):
@@ -179,12 +180,15 @@ class Provider:
     def discovered_capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities()
 
+    def validate_selection(self, selected: Selection) -> None:
+        validate_effort(self, selected)
+
     async def aclose(self) -> None:
         return None
 
 
-def encode_base64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
+def encode_base64(data: bytes | DeferredImage) -> str:
+    return base64.b64encode(bytes(data)).decode("ascii")
 
 
 @dataclass(slots=True)
@@ -234,6 +238,24 @@ def request_file_text(block: ContentBlock) -> str:
 
 def request_schema_type(param_type: ToolParamType) -> str:
     return param_type.value
+
+
+def tool_input_schema(tool: ToolDef) -> dict:
+    """Preserve external JSON schemas; synthesize the small built-in tool vocabulary."""
+    if tool.input_schema is not None:
+        return tool.input_schema
+    properties: dict[str, dict] = {}
+    required: list[str] = []
+    for param in tool.params:
+        schema: dict = {"type": request_schema_type(param.type), "description": param.description}
+        if param.items is not None:
+            schema["items"] = param.items
+        if param.minimum is not None:
+            schema["minimum"] = param.minimum
+        properties[param.name] = schema
+        if param.required:
+            required.append(param.name)
+    return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
 
 # ---- Model ordering and alias resolution -------------------------------------------------------
@@ -382,7 +404,7 @@ async def stream(
     selected = Selection(
         provider.selection.provider, provider.selection.model, provider.selection.effort
     )
-    validate_effort(provider, selected)
+    provider.validate_selection(selected)
     return await provider.stream(context, selected, sink, cancel)
 
 

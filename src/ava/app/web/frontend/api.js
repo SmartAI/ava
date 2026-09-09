@@ -18,6 +18,7 @@ export const api = {
   addProject: path => call('POST', '/api/projects', { path }),
   browse: path => call('GET', `/api/fs?path=${encodeURIComponent(path || '')}`),
   createChat: project => call('POST', '/api/chats', { project_id: project }),
+  deleteChat: id => call('DELETE', `/api/chats/${id}`),
   open: id => call('GET', `/api/chats/${id}`),
   message: (id, text, attachments, delivery) =>
     call('POST', `/api/chats/${id}/messages`, { text, attachments, delivery }),

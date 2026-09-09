@@ -18,15 +18,23 @@ from ava.base import AvaError, ErrorKind, ava_home
 from ava.llm import AuthRequirement, ContentBlockKind, Provider, SelectionOverride
 from ava.llm import Selection as ProviderSelection
 from ava.session import (
+    DriveError,
+    Event,
     InboxSpliced,
     Log,
     OpenMode,
     SessionStart,
+    Subscription,
+    TurnEnd,
+    TurnStart,
     UserMessage,
     default_session_root,
     discover_all_sessions_in,
 )
 from ava.session import Selection as SelectionEvent
+
+from . import worktrees
+from .models import CreateChatBody
 
 _WEB_STATE_VERSION = 1
 _PROJECT_ID = re.compile(r"^p([1-9][0-9]*)$")
@@ -81,8 +89,20 @@ class Chat:
     session_id: str
     title: str = ""
     archived: bool = False
+    worktree: str = ""
+    creation_key: str = ""
+    creation_base: str = "HEAD"
     attachment_bytes: int = 0
     image_attachments: int = 0
+    started_at: str = ""
+    completed_at: str = ""
+    completion_seq: int = -1
+    completion_reason: str = ""
+    reviewed_through: int = -1
+    automation_id: str = ""
+    automation_run: str = ""
+    activity_subscription: Subscription | None = None
+    activity_unwatch: Callable[[], None] | None = None
     drive: DriveHandoff = field(default_factory=DriveHandoff)
     task: asyncio.Task[None] | None = None
     status_watchers: list[Callable[[], None]] = field(default_factory=list)
@@ -103,6 +123,13 @@ class Chat:
             "title": self.title,
             "status": self.status,
             "archived": self.archived,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "completion_seq": self.completion_seq,
+            "completion_reason": self.completion_reason,
+            "reviewed_through": self.reviewed_through,
+            **({"automation_id": self.automation_id, "automation_run": self.automation_run} if self.automation_id else {}),
+            **({"worktree": self.worktree, "cwd": str(self.agent.cwd)} if self.worktree else {}),
         }
 
 
@@ -112,6 +139,7 @@ class Project:
     name: str
     path: Path
     chats: list[Chat] = field(default_factory=list)
+    hidden: bool = False
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -129,6 +157,10 @@ class _UnavailableProvider(Provider):
         super().__init__(selection)
         self.id = selection.provider
         self._error = error
+
+    def validate_selection(self, selected: ProviderSelection) -> None:
+        # Report the setup failure before reasoning-effort validation can obscure it.
+        raise self._error
 
     async def stream(self, *args: Any, **kwargs: Any) -> Any:
         raise self._error
@@ -202,15 +234,24 @@ def _restored_chat_details(log: Log) -> tuple[str, int, int]:
 
 
 class Registry:
-    def __init__(self, cwd: Path) -> None:
+    def __init__(self, cwd: Path | None) -> None:
+        from ava.tool.mcp import MCPServers
+
+        from .browser import BrowserTabs
+
+        self.mcp = MCPServers(ava_home())
+        self.browser = BrowserTabs()
         self._state_path = ava_home() / "web.json"
         self._stored_sessions: dict[str, dict[str, Any]] = {}
         self.projects: list[Project] = []
+        self.revision = 0
+        self.creations: dict[str, asyncio.Task] = {}
+        self.creation_locks: dict[str, asyncio.Lock] = {}
         self._next_project = 1
         self._next_chat = 1
         self._load(cwd)
 
-    def _load(self, cwd: Path) -> None:
+    def _load(self, cwd: Path | None) -> None:
         document: dict[str, Any] = {}
         if self._state_path.exists():
             try:
@@ -242,18 +283,21 @@ class Registry:
                 raise _parse_error(self._state_path)
             if not isinstance(value, str) or not value:
                 raise _parse_error(self._state_path)
+            hidden = raw.get("hidden", False)
+            if not isinstance(hidden, bool):
+                raise _parse_error(self._state_path)
             path = Path(value)
             try:
-                path = path.resolve(strict=True)
+                path = path.resolve(strict=not hidden)
             except OSError:
                 continue
-            if not path.is_dir():
+            if not hidden and not path.is_dir():
                 continue
             if project_id in project_ids or path in project_paths:
                 raise _parse_error(self._state_path)
             project_ids.add(project_id)
             project_paths.add(path)
-            self.projects.append(Project(id=project_id, name=name, path=path))
+            self.projects.append(Project(id=project_id, name=name, path=path, hidden=hidden))
 
         chat_ids: set[str] = set()
         for session_id, raw in raw_sessions.items():
@@ -265,6 +309,8 @@ class Registry:
                 or not raw["id"]
                 or not isinstance(raw.get("title", ""), str)
                 or not isinstance(raw.get("archived", False), bool)
+                or type(raw.get("reviewed_through", -1)) is not int
+                or raw.get("reviewed_through", -1) < -1
                 or raw["id"] in chat_ids
             ):
                 raise _parse_error(self._state_path)
@@ -273,10 +319,11 @@ class Registry:
                 "id": raw["id"],
                 "title": raw.get("title", ""),
                 "archived": raw.get("archived", False),
+                "reviewed_through": raw.get("reviewed_through", -1),
             }
 
         self._refresh_counters()
-        if cwd not in project_paths:
+        if cwd is not None and cwd not in project_paths:
             project_id = "workspace" if "workspace" not in project_ids else self.next_project_id()
             self.projects.insert(0, Project(id=project_id, name=cwd.name or str(cwd), path=cwd))
         self._refresh_counters()
@@ -301,19 +348,21 @@ class Registry:
         candidates = discover_all_sessions_in(default_session_root())
         projects_by_path = {str(project.path): project for project in self.projects}
         for candidate in candidates:
-            if candidate.header.cwd in projects_by_path:
+            project_path = candidate.header.labels.get("project_path", candidate.header.cwd)
+            if project_path in projects_by_path:
                 continue
-            path = Path(candidate.header.cwd)
+            path = Path(project_path)
             project = Project(
                 id=self.next_project_id(), name=path.name or str(path), path=path
             )
             self.projects.append(project)
-            projects_by_path[candidate.header.cwd] = project
+            projects_by_path[project_path] = project
 
         for candidate in candidates:
-            project = projects_by_path[candidate.header.cwd]
+            project = projects_by_path[candidate.header.labels.get("project_path", candidate.header.cwd)]
+            cwd = Path(candidate.header.cwd)
             try:
-                log = Log.open(candidate.path, OpenMode.repair, project.path)
+                log = Log.open(candidate.path, OpenMode.repair, cwd)
             except AvaError as error:
                 # A single malformed historical chat must not make the entire Web UI
                 # unavailable. Explicit CLI resume remains strict, while discovery can
@@ -330,7 +379,9 @@ class Registry:
             except BaseException:
                 log.close()
                 raise
-            agent = Agent.reopen(provider, project.path, log, options)
+            agent = Agent.reopen(provider, cwd, log, options)
+            agent.state.mcp = self.mcp
+            agent.state.owns_mcp = False
             stored = self._stored_sessions.get(candidate.header.id, {})
             chat_id = stored["id"] if "id" in stored else self.next_chat_id()
             chat = Chat(
@@ -339,11 +390,39 @@ class Registry:
                 session_id=candidate.header.id,
                 title=stored.get("title") or derived_title,
                 archived=stored.get("archived", False),
+                worktree=candidate.header.labels.get("worktree_branch", ""),
+                creation_key=candidate.header.labels.get("create_request_id", ""),
+                creation_base=candidate.header.labels.get("worktree_base", "HEAD"),
                 attachment_bytes=attachment_bytes,
                 image_attachments=image_attachments,
+                reviewed_through=stored.get("reviewed_through", -1),
+                automation_id=candidate.header.labels.get("automation_id", ""),
+                automation_run=candidate.header.labels.get("automation_run", ""),
             )
             project.chats.append(chat)
+            self.track_activity(chat)
         self.persist()
+
+    def track_activity(self, chat: Chat) -> None:
+        """Project result metadata once, then update only at execution boundaries."""
+        def changed(*_: object) -> None:
+            self.revision += 1
+
+        def event_received(event: Event) -> None:
+            payload = event.payload
+            if isinstance(payload, TurnStart):
+                chat.started_at = event.at.isoformat()
+            elif isinstance(payload, (TurnEnd, DriveError)):
+                chat.completion_seq = event.seq
+                chat.completed_at = event.at.isoformat()
+                chat.completion_reason = str(payload.reason) if isinstance(payload, TurnEnd) else "error"
+            else:
+                return
+            changed()
+
+        chat.activity_subscription = chat.agent.subscribe(event_received)
+        chat.activity_unwatch = chat.agent.watch_status(changed)
+        chat.status_watchers.append(changed)
 
     def persist(self) -> None:
         sessions = dict(self._stored_sessions)
@@ -353,11 +432,17 @@ class Registry:
                     "id": chat.id,
                     "title": chat.title,
                     "archived": chat.archived,
+                    "reviewed_through": chat.reviewed_through,
                 }
         document = {
             "version": _WEB_STATE_VERSION,
             "projects": [
-                {"id": project.id, "name": project.name, "path": str(project.path)}
+                {
+                    "id": project.id,
+                    "name": project.name,
+                    "path": str(project.path),
+                    "hidden": project.hidden,
+                }
                 for project in self.projects
             ],
             "sessions": sessions,
@@ -385,6 +470,18 @@ class Registry:
                 ErrorKind.io, f"cannot replace Web UI state file '{self._state_path}'", str(error)
             ) from error
         self._stored_sessions = sessions
+        self.revision += 1
+
+    def set_hidden(self, project: Project, hidden: bool) -> None:
+        if project.hidden == hidden:
+            return
+        previous = project.hidden
+        project.hidden = hidden
+        try:
+            self.persist()
+        except AvaError:
+            project.hidden = previous
+            raise
 
     def next_project_id(self) -> str:
         value, self._next_project = self._next_project, self._next_project + 1
@@ -404,7 +501,29 @@ class Registry:
                     return project, chat
         return None
 
+    def remove_chat(self, project: Project, chat: Chat) -> int:
+        """Remove a chat from the index, restoring memory if persistence fails."""
+        index = project.chats.index(chat)
+        stored = self._stored_sessions.pop(chat.session_id, None)
+        project.chats.pop(index)
+        try:
+            self.persist()
+        except AvaError:
+            project.chats.insert(index, chat)
+            if stored is not None:
+                self._stored_sessions[chat.session_id] = stored
+            raise
+        return index
+
+    def restore_chat(self, project: Project, chat: Chat, index: int) -> None:
+        """Restore a chat when its session file could not be removed."""
+        project.chats.insert(index, chat)
+        self.persist()
+
     async def aclose(self) -> None:
+        self.browser.close()
+        if self.creations:
+            await asyncio.gather(*list(self.creations.values()), return_exceptions=True)
         chats = [chat for project in self.projects for chat in project.chats]
         running = [chat.task for chat in chats if chat.task is not None and not chat.task.done()]
         for chat in chats:
@@ -412,10 +531,16 @@ class Registry:
                 chat.agent.cancel(CancelCause.user_abort)
         if running:
             await asyncio.gather(*running, return_exceptions=True)
+        for chat in chats:
+            if chat.activity_subscription:
+                chat.activity_subscription.close()
+            if chat.activity_unwatch:
+                chat.activity_unwatch()
         results = await asyncio.gather(
             *(chat.agent.aclose() for chat in chats), return_exceptions=True
         )
         failure = next((result for result in results if isinstance(result, BaseException)), None)
+        await self.mcp.aclose()
         if failure is not None:
             raise failure
 
@@ -426,3 +551,57 @@ class WebState:
     compaction: CompactionOptions
     selection: SelectionOverride
     provider_factory: ProviderFactory
+
+    async def create_chat(self, project: Project, body: CreateChatBody, key: str, labels: dict[str, str] | None = None) -> Chat:
+        """Create the same durable workspace/session for interactive and scheduled work."""
+        selected = SelectionOverride(
+            body.provider or self.selection.provider,
+            body.model or self.selection.model,
+            body.effort or self.selection.effort,
+        )
+        provider = self.provider_factory(selected, None, AuthRequirement.required)
+        record = None
+        agent = None
+        try:
+            if body.workspace == "worktree":
+                lock = self.registry.creation_locks.setdefault(project.id, asyncio.Lock())
+                async with lock:
+                    record = await worktrees.create(project.path, body.branch, body.base_ref, key)
+            cwd = Path(record["cwd"]) if record else project.path
+            metadata = {**(labels or {}), "project_path": str(project.path), "create_request_id": key}
+            if record:
+                metadata.update(worktree_branch=body.branch, worktree_root=record["root"], worktree_base=body.base_ref)
+            agent = Agent.create(provider, cwd, self.compaction, labels=metadata)
+            agent.state.mcp = self.registry.mcp
+            agent.state.owns_mcp = False
+            session_id = agent.session_id
+            if session_id is None:
+                raise ValueError("Cannot identify the new session.")
+            chat = Chat(id=self.registry.next_chat_id(), agent=agent, session_id=session_id,
+                        worktree=body.branch if record else "", creation_key=key, creation_base=body.base_ref,
+                        automation_id=metadata.get("automation_id", ""), automation_run=metadata.get("automation_run", ""))
+            project.chats.insert(0, chat)
+            self.registry.track_activity(chat)
+            try:
+                self.registry.persist()
+            except BaseException:
+                project.chats.remove(chat)
+                raise
+            return chat
+        except (AvaError, OSError, ValueError, TimeoutError) as error:
+            if agent:
+                path = agent.session_path
+                await agent.aclose()
+                if path:
+                    path.unlink(missing_ok=True)
+            else:
+                await provider.aclose()
+            if not record:
+                raise
+            message = error.message if isinstance(error, AvaError) else str(error)
+            message += f"\nWorkspace retained at {record['root']}. Retry to resume creation."
+            if isinstance(error, AvaError):
+                raise AvaError(error.kind, message) from error
+            if isinstance(error, OSError):
+                raise OSError(message) from error
+            raise ValueError(message) from error

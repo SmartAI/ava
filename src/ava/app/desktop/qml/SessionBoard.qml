@@ -1,0 +1,254 @@
+pragma ComponentBehavior: Bound
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+Pane {
+    id: board
+    objectName: "sessionBoard"
+    required property var backend
+    required property bool sidebarVisible
+    readonly property var summaries: backend.board
+    readonly property bool narrow: width < 800
+    property int selectedColumn: 1
+    signal openChat(string identity)
+    signal closeRequested
+    signal sidebarRequested
+    padding: narrow ? 16 : 24
+    background: Rectangle { color: board.palette.window }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 18
+        RowLayout {
+            Layout.fillWidth: true
+            NativeButton {
+                visible: !board.sidebarVisible
+                icon.source: "icons/left.svg"
+                quiet: true
+                tip: "Show sidebar"
+                onClicked: board.sidebarRequested()
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                Label { text: "Session board"; font.pixelSize: 23; font.weight: Font.DemiBold }
+                Label {
+                    Layout.fillWidth: true
+                    text: "Keep track of work across your projects."
+                    color: palette.placeholderText
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 12
+                }
+            }
+            NativeButton {
+                objectName: "closeSessionBoardButton"
+                text: "Back to chat"
+                onClicked: board.closeRequested()
+            }
+        }
+        GridLayout {
+            Layout.fillWidth: true
+            columns: board.narrow ? 2 : 4
+            columnSpacing: 10
+            rowSpacing: 10
+            NativeField {
+                id: search
+                objectName: "boardSearch"
+                Layout.fillWidth: true
+                Layout.minimumWidth: 100
+                Layout.columnSpan: board.narrow ? 2 : 1
+                placeholderText: "Search sessions"
+                Component.onCompleted: text = board.summaries.filters.search
+                onTextEdited: searchDelay.restart()
+                Timer { id: searchDelay; interval: 120; onTriggered: board.summaries.filter("search", search.text) }
+            }
+            NativeCombo {
+                id: machines
+                objectName: "boardMachineFilter"
+                Layout.fillWidth: true
+                Layout.minimumWidth: 100
+                model: board.summaries.machineOptions
+                currentIndex: model.findIndex(option => option.id === board.summaries.filters.machine)
+                textRole: "name"
+                valueRole: "id"
+                onActivated: board.summaries.filter("machine", currentValue)
+            }
+            NativeCombo {
+                id: projects
+                objectName: "boardProjectFilter"
+                Layout.fillWidth: true
+                Layout.minimumWidth: 100
+                model: board.summaries.projectOptions
+                currentIndex: model.findIndex(option => option.id === board.summaries.filters.project)
+                textRole: "name"
+                valueRole: "id"
+                onActivated: board.summaries.filter("project", currentValue)
+            }
+            NativeCombo {
+                objectName: "boardOutcomeFilter"
+                Layout.fillWidth: true
+                Layout.columnSpan: board.narrow ? 2 : 1
+                model: ["All outcomes", "Needs attention"]
+                currentIndex: board.summaries.filters.outcome === "attention" ? 1 : 0
+                onActivated: board.summaries.filter("outcome", currentIndex ? "attention" : "")
+            }
+        }
+        Label {
+            Layout.fillWidth: true
+            visible: !!board.summaries.error || !!board.summaries.notice
+            text: board.summaries.error || board.summaries.notice
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: palette.placeholderText
+            font.pixelSize: 12
+        }
+        RowLayout {
+            visible: board.narrow
+            Layout.fillWidth: true
+            Repeater {
+                model: ["In progress", "Needs review", "Reviewed"]
+                NativeButton {
+                    required property int index
+                    required property string modelData
+                    objectName: "boardColumnTab_" + index
+                    Layout.fillWidth: true
+                    text: modelData + " · " + board.summaries.totals[index]
+                    primary: board.selectedColumn === index
+                    onClicked: board.selectedColumn = index
+                }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 14
+            Repeater {
+                model: [
+                    {name: "In progress", key: "active", entries: board.summaries.activeSessions, color: "#4b9b70", empty: "No work in progress", note: "Running and paused sessions appear here."},
+                    {name: "Needs review", key: "review", entries: board.summaries.needsReview, color: "#ba884b", empty: "You're all caught up", note: "New results will wait here for your review."},
+                    {name: "Reviewed", key: "reviewed", entries: board.summaries.reviewedSessions, color: "#8a8a91", empty: "No reviewed results", note: "Mark a result reviewed after checking it."}
+                ]
+                Rectangle {
+                    id: column
+                    required property int index
+                    required property var modelData
+                    visible: !board.narrow || board.selectedColumn === index
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: 14
+                    color: board.palette.window.hslLightness < 0.5 ? "#242424" : "#f7f7f8"
+                    border.color: board.palette.mid
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Rectangle { implicitWidth: 7; implicitHeight: 7; radius: 4; color: column.modelData.color }
+                            Label { Layout.fillWidth: true; text: column.modelData.name; font.pixelSize: 13; font.weight: Font.DemiBold }
+                            Label { text: board.summaries.totals[column.index]; color: palette.placeholderText; font.pixelSize: 12 }
+                        }
+                        ListView {
+                            id: sessions
+                            objectName: "boardList_" + column.modelData.key
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            reuseItems: true
+                            cacheBuffer: 120
+                            spacing: 10
+                            model: column.visible ? column.modelData.entries : null
+                            ScrollBar.vertical: ScrollBar {}
+                            delegate: Pane {
+                                id: card
+                                required property var entry
+                                objectName: "boardCard_" + entry.id
+                                width: sessions.width
+                                implicitHeight: contents.implicitHeight + 24
+                                padding: 12
+                                background: Rectangle { radius: 11; color: board.palette.base; border.color: board.palette.mid }
+                                ColumnLayout {
+                                    id: contents
+                                    width: parent.width
+                                    spacing: 8
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: card.entry.title || "Untitled session"
+                                        textFormat: Text.PlainText
+                                        wrapMode: Text.WordWrap
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                        font.pixelSize: 14
+                                        font.weight: Font.Medium
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: card.entry.project + " · " + card.entry.machine
+                                        textFormat: Text.PlainText
+                                        elide: Text.ElideMiddle
+                                        font.pixelSize: 11
+                                        color: palette.placeholderText
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: card.entry.online ? card.entry.label : "Offline · last known: " + card.entry.label
+                                        color: card.entry.attention ? "#ba884b" : palette.placeholderText
+                                        font.pixelSize: 11
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        visible: !!card.entry.time
+                                        text: card.entry.time ? Qt.formatDateTime(new Date(card.entry.time), "MMM d, hh:mm") : ""
+                                        color: palette.placeholderText
+                                        font.pixelSize: 11
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        NativeButton {
+                                            objectName: "openBoardChat_" + column.modelData.key + "_" + card.entry.id
+                                            text: card.entry.label === "Paused" ? "Open to resume" : "Open"
+                                            enabled: card.entry.online
+                                            implicitHeight: 30
+                                            onClicked: board.openChat(card.entry.id)
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        NativeButton {
+                                            objectName: "reviewBoardChat_" + card.entry.id
+                                            visible: column.modelData.key === "review"
+                                            text: card.entry.saving ? "Saving…" : "Mark reviewed"
+                                            enabled: card.entry.online && !card.entry.saving
+                                            implicitHeight: 30
+                                            onClicked: board.summaries.review(card.entry.id, card.entry.completion_seq)
+                                        }
+                                    }
+                                }
+                            }
+                            footer: Item {
+                                width: sessions.width
+                                height: more.visible ? 46 : 0
+                                NativeButton {
+                                    id: more
+                                    objectName: "boardMore_" + column.modelData.key
+                                    anchors.centerIn: parent
+                                    visible: column.modelData.key !== "active" && sessions.count < board.summaries.totals[column.index]
+                                    text: "Review more · " + Math.max(0, board.summaries.totals[column.index] - sessions.count)
+                                    onClicked: board.summaries.more(column.modelData.key)
+                                }
+                            }
+                            ColumnLayout {
+                                anchors.centerIn: parent
+                                width: parent.width - 24
+                                visible: board.summaries.totals[column.index] === 0
+                                spacing: 8
+                                Label { Layout.fillWidth: true; text: column.modelData.empty; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 13 }
+                                Label { Layout.fillWidth: true; text: column.modelData.note; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 12; color: palette.placeholderText }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -10,8 +10,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ava.base import AvaError, CancelToken, ErrorKind
+
+if TYPE_CHECKING:
+    from ava.tool.mcp import MCPServers
 from ava.llm import Provider, Selection
 from ava.session import (
     AssistantMessage,
@@ -330,13 +334,18 @@ class AgentState:
     ordinals_recovered: bool = False
     initialized: bool = False
     pending_selection: Selection | None = None
+    skill_catalog: list | None = None
+    resolved_prompt: str = ""
+    mcp: MCPServers | None = None
+    owns_mcp: bool = False
+    mcp_tools: list[Tool] = field(default_factory=list)
 
     @classmethod
     def create(
         cls, provider: Provider, cwd: Path, options: CompactionOptions, log: Log | None,
         *, tools: list[Tool] | None = None, system_prompt: str | None = None,
     ) -> AgentState:
-        from ava.agent.prompt import make_system_prompt
+        from ava.agent.prompt import discover_skills, make_system_prompt
 
         if log is not None:
             session = Session(log.take_loaded_events())
@@ -359,7 +368,9 @@ class AgentState:
                 newest_prompt = event.payload
             elif isinstance(event.payload, ToolsAdvertised):
                 newest_tools = event.payload
-        prompt = system_prompt if system_prompt is not None else make_system_prompt(cwd, state.scratchpad)
+        state.skill_catalog = discover_skills(cwd) if system_prompt is None else None
+        prompt = system_prompt if system_prompt is not None else make_system_prompt(cwd, state.scratchpad, skills=state.skill_catalog)
+        state.resolved_prompt = prompt
         if newest_prompt is None or newest_prompt.system_prompt != prompt:
             state.startup.append(PromptResolved(system_prompt=prompt))
         state.tools = list(tools) if tools is not None else [
@@ -371,6 +382,12 @@ class AgentState:
         definitions = [tool.definition for tool in state.tools]
         if newest_tools is None or newest_tools.tools != definitions:
             state.startup.append(ToolsAdvertised(tools=definitions))
+        if tools is None:
+            from ava.base import ava_home
+            from ava.tool.mcp import MCPServers
+
+            state.mcp = MCPServers(ava_home())
+            state.owns_mcp = True
         return state
 
     def append(self, payload: EventPayload) -> None:
@@ -408,6 +425,34 @@ class AgentState:
         self.startup.clear()
         self.initialized = True
         self.drain()
+
+    async def refresh_skills(self) -> None:
+        if self.skill_catalog is None:
+            return
+        from ava.agent.prompt import discover_skills, make_system_prompt
+
+        catalog = await asyncio.to_thread(discover_skills, self.cwd)
+        if catalog == self.skill_catalog:
+            return
+        prompt = await asyncio.to_thread(make_system_prompt, self.cwd, self.scratchpad, skills=catalog)
+        if prompt != self.resolved_prompt:
+            self.append(PromptResolved(system_prompt=prompt))
+            self.drain()
+            self.resolved_prompt = prompt
+        self.skill_catalog = catalog
+
+    async def refresh_mcp(self, cancel: CancelToken) -> None:
+        if self.mcp is None:
+            return
+        external = await self.mcp.tools(self.cwd, cancel)
+        previous = {id(tool) for tool in self.mcp_tools}
+        tools = [tool for tool in self.tools if id(tool) not in previous] + external
+        definitions = [tool.definition for tool in tools]
+        if definitions != [tool.definition for tool in self.tools]:
+            self.append(ToolsAdvertised(tools=definitions))
+            self.drain()
+        self.tools = tools
+        self.mcp_tools = external
 
     def find_tool(self, name: str) -> Tool | None:
         return next((tool for tool in self.tools if tool.name == name), None)

@@ -151,6 +151,12 @@ class ToolDuration:
 
 
 @dataclass(slots=True)
+class SkillLoaded:
+    kind: ClassVar[str] = "skill/loaded"
+    name: str
+
+
+@dataclass(slots=True)
 class ToolResult:
     kind: ClassVar[str] = "tool/result"
     item: Item
@@ -233,6 +239,7 @@ EventPayload = (
     | CompactionSeed
     | CompactionFailed
     | ToolResult
+    | SkillLoaded
     | StepEnd
     | TurnEnd
     | DriveError
@@ -256,6 +263,7 @@ KNOWN_PAYLOAD_TYPES: tuple[type, ...] = (
     CompactionSeed,
     CompactionFailed,
     ToolResult,
+    SkillLoaded,
     StepEnd,
     TurnEnd,
     DriveError,

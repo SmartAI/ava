@@ -26,7 +26,7 @@ TEST_CONTEXT_WINDOW = 10_000
 
 
 @pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("AVA_HOME", str(home))
@@ -41,7 +41,11 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
-    return home
+    yield home
+    if (home / "backend.json").exists():
+        from ava.app.backend import stop
+
+        stop(home, force=True)
 
 
 @pytest.fixture

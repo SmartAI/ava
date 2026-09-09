@@ -5,8 +5,11 @@ Values only: no behavior, no I/O.
 
 from __future__ import annotations
 
+import builtins
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from ava.base.images import DeferredImage
 
 
 class Role(StrEnum):
@@ -36,13 +39,16 @@ class ContentBlock:
     origin: Origin = Origin.none
     text: str = ""
     display_path: str = ""
-    bytes: bytes = b""
+    bytes: builtins.bytes | DeferredImage = b""
     media_type: str = ""
     opaque_json: str = ""
     call_id: str = ""
     tool_name: str = ""
     arguments_json: str = ""
     is_error: bool = False
+    # Images in tool output stay associated with their originating call.
+    attachments: list[ContentBlock] = field(default_factory=list)
+    tool_title: str = ""
 
 
 def make_text_block(text: str) -> ContentBlock:
@@ -72,9 +78,12 @@ def make_tool_call_block(call_id: str, tool_name: str, arguments_json: str = "")
     )
 
 
-def make_tool_result_block(call_id: str, text: str, is_error: bool) -> ContentBlock:
+def make_tool_result_block(
+    call_id: str, text: str, is_error: bool, attachments: list[ContentBlock] | None = None
+) -> ContentBlock:
     return ContentBlock(
-        kind=ContentBlockKind.tool_result, call_id=call_id, text=text, is_error=is_error
+        kind=ContentBlockKind.tool_result, call_id=call_id, text=text, is_error=is_error,
+        attachments=list(attachments or []),
     )
 
 
@@ -100,6 +109,8 @@ class ToolDef:
     name: str
     description: str
     params: list[ToolParam] = field(default_factory=list)
+    input_schema: dict | None = None
+    display_name: str = ""
 
 
 @dataclass(slots=True)

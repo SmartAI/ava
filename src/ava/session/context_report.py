@@ -148,7 +148,7 @@ def _block_bytes(block) -> int:
         return len(block.bytes)
     if block.kind == ContentBlockKind.reasoning:
         return len(block.opaque_json.encode("utf-8"))
-    return len(
+    return sum(len(image.bytes) for image in block.attachments) + len(
         (block.text + block.arguments_json + block.display_path + block.tool_name).encode("utf-8")
     )
 

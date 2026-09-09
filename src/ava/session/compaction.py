@@ -195,6 +195,7 @@ def estimate_block_tokens(block: ContentBlock) -> int:
     tokens += estimate_text_tokens(block.tool_name)
     if block.kind == ContentBlockKind.image:
         tokens += IMAGE_BLOCK_TOKENS
+    tokens += sum(estimate_block_tokens(image) for image in block.attachments)
     return tokens
 
 

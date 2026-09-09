@@ -18,7 +18,6 @@ from ava.llm import (
     StreamEventKind,
     Usage,
     remember_selection,
-    validate_effort,
 )
 from ava.llm.types import (
     ContentBlockKind,
@@ -96,7 +95,11 @@ class _Assembly:
                         ErrorKind.parse,
                         "provider started a tool call before finishing the previous call",
                     )
-                blocks.append(make_tool_call_block(event.id, event.name))
+                block = make_tool_call_block(event.id, event.name)
+                tool = state.find_tool(event.name)
+                if tool is not None:
+                    block.tool_title = tool.definition.display_name
+                blocks.append(block)
                 self.open_tool_call = len(blocks) - 1
             case StreamEventKind.tool_call_delta:
                 if self.open_tool_call is None or blocks[self.open_tool_call].call_id != event.id:
@@ -177,7 +180,7 @@ async def step(
         provider.selection.provider, provider.selection.model, provider.selection.effort
     )
     try:
-        validate_effort(provider, selected)
+        provider.validate_selection(selected)
     except AvaError as validation_error:
         return StepResult(assistant=Item(role=Role.assistant), error=validation_error)
     assembly = _Assembly(selected)

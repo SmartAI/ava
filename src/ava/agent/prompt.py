@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import os
 import platform
-import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ava.agent.skills import Skill
+from ava.agent.skills import discover_skills as discover_skills
 from ava.base import find_project_root
 
 MAX_AGENTS_BYTES = 32 * 1024
-_SKILL_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +39,8 @@ def _read_prefix(path: Path, limit: int) -> str | None:
     if not path.is_file():
         return None
     try:
-        data = path.read_bytes()
+        with path.open("rb") as source:
+            data = source.read(limit + 1)
     except OSError:
         return None
     if b"\0" in data:
@@ -91,65 +92,8 @@ def _append_agent_instructions(prompt: list[str], cwd: Path) -> None:
         appender.append(prompt, directory / "AGENTS.md")
 
 
-def _skill_description(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return None
-    if not lines or lines[0].rstrip("\r") != "---":
-        return None
-    description: str | None = None
-    for line in lines[1:]:
-        if line.rstrip("\r") == "---":
-            return description
-        if description is not None or not line.startswith("description:"):
-            continue
-        value = line[len("description:") :].strip(" \t\r")
-        if not value:
-            return None
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        if not value or value in (">", "|"):
-            return None
-        description = value[:1024]
-    return None
-
-
-@dataclass(frozen=True, slots=True)
-class Skill:
-    name: str
-    description: str
-    scope: str
-    path: Path
-
-
-def _collect_skills(skills: dict[str, Skill], root: Path, scope: str) -> None:
-    try:
-        entries = sorted(root.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        path = entry / "SKILL.md"
-        name = entry.name
-        description = _skill_description(path)
-        if description and _SKILL_NAME.match(name) and name not in skills:
-            skills[name] = Skill(name=name, description=description, scope=scope, path=path)
-
-
-def discover_skills(cwd: Path) -> list[Skill]:
-    """The skill catalog for a working directory: project skills shadow same-named global ones."""
-    skills: dict[str, Skill] = {}
-    _collect_skills(skills, find_project_root(cwd) / ".agents/skills", "project")
-    home = os.environ.get("HOME")
-    if home:
-        _collect_skills(skills, Path(home) / ".codex/skills", "global")
-    return [skills[name] for name in sorted(skills)]
-
-
-def _append_skills(prompt: list[str], cwd: Path) -> None:
-    skills = discover_skills(cwd)
+def _append_skills(prompt: list[str], cwd: Path, skills: list[Skill] | None = None) -> None:
+    skills = discover_skills(cwd) if skills is None else skills
     if not skills:
         return
     prompt.append(
@@ -192,7 +136,7 @@ def today_date() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d")
 
 
-def make_system_prompt(cwd: Path, scratchpad: Path | None = None) -> str:
+def make_system_prompt(cwd: Path, scratchpad: Path | None = None, *, skills: list[Skill] | None = None) -> str:
     project_root = find_project_root(cwd)
     in_git_repository = (project_root / ".git").exists()
     template = load_system_prompt_template()
@@ -238,5 +182,5 @@ def make_system_prompt(cwd: Path, scratchpad: Path | None = None) -> str:
     prompt = _replace_field(prompt, "{{scratchpad}}", scratchpad_section)
     parts = [prompt]
     _append_agent_instructions(parts, cwd)
-    _append_skills(parts, cwd)
+    _append_skills(parts, cwd, skills)
     return "".join(parts)

@@ -58,6 +58,8 @@ export default function App() {
   const [fontSize, setFontSize] = useState(savedFontSize)
 
   const currentRef = useRef(null)
+  const projectsRef = useRef([])
+  const draftValueRef = useRef('')
   const selectionRef = useRef(0)
   const streamRef = useRef(null)
   const displayedInputsRef = useRef(new Set())
@@ -77,6 +79,8 @@ export default function App() {
   const pastedSequenceRef = useRef(0)
 
   currentRef.current = current
+  projectsRef.current = projects
+  draftValueRef.current = draft
   projectIdRef.current = projectId
   statusRef.current = status
   controllingRef.current = controlling
@@ -176,6 +180,7 @@ export default function App() {
         addTranscript(transcriptRow('tool', {
           callId: block.call_id,
           tool: block.tool_name,
+          toolTitle: block.tool_title,
           args: block.arguments_json,
           text: '',
           isError: false,
@@ -186,7 +191,8 @@ export default function App() {
       const durations = new Map((event.durations || []).map(item => [item.call_id, item.elapsed_ms]))
       setTranscript(items => items.map(item => {
         const block = (event.blocks || []).find(value => value.kind === 'tool_result' && value.call_id === item.callId)
-        return block ? { ...item, text: block.text || '(no output)', isError: Boolean(block.is_error), elapsed: durations.get(block.call_id) } : item
+        return block ? { ...item, text: block.text || '(no output)', isError: Boolean(block.is_error), elapsed: durations.get(block.call_id),
+          images: (block.attachments || []).filter(image => /^images\/\d+\/\d+\/\d+$/.test(image.path || '')).map(image => ({ ...image, url: `/api/chats/${currentRef.current}/${image.path}` })) } : item
       }))
     } else if (event.kind === 'step/end') closeTail()
     else if (event.kind === 'turn/end') {
@@ -217,7 +223,26 @@ export default function App() {
     streamRef.current = stream
   }
 
+  const discardEmptyChat = id => {
+    const chat = projectsRef.current
+      .flatMap(project => project.chats)
+      .find(item => item.id === id)
+    if (
+      !chat || chat.title || chat.archived || chat.status !== 'idle' ||
+      statusRef.current !== 'idle' || draftValueRef.current !== '' ||
+      stagedRef.current.length > 0 || submittingRef.current
+    ) return
+    api.deleteChat(id).then(() => {
+      setProjects(items => items.map(project => ({
+        ...project,
+        chats: project.chats.filter(item => item.id !== id),
+      })))
+    }).catch(error => console.error(`Could not remove unused chat: ${String(error?.message || error)}`))
+  }
+
   const selectChat = async id => {
+    const previous = currentRef.current
+    if (previous && previous !== id) discardEmptyChat(previous)
     setRailOpen(false)
     const selection = ++selectionRef.current
     currentRef.current = id

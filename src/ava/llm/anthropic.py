@@ -21,8 +21,8 @@ from ava.llm.provider import (
     encode_base64,
     parse_model_ids,
     request_file_text,
-    request_schema_type,
     response_error,
+    tool_input_schema,
 )
 from ava.llm.types import ContentBlockKind, Context, Role, ToolDef
 from ava.transport import Client, Request, SseEvent
@@ -46,27 +46,7 @@ def _object_or_empty(arguments_json: str) -> dict:
 
 
 def _tool_schema(tool: ToolDef) -> dict:
-    properties: dict[str, dict] = {}
-    required: list[str] = []
-    for param in tool.params:
-        schema: dict = {"type": request_schema_type(param.type), "description": param.description}
-        if param.items is not None:
-            schema["items"] = param.items
-        if param.minimum is not None:
-            schema["minimum"] = param.minimum
-        properties[param.name] = schema
-        if param.required:
-            required.append(param.name)
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "input_schema": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
-    }
+    return {"name": tool.name, "description": tool.description, "input_schema": tool_input_schema(tool)}
 
 
 def request_body(context: Context, model: str, max_tokens: int) -> str:
@@ -113,6 +93,13 @@ def request_body(context: Context, model: str, max_tokens: int) -> str:
                     }
                     if block.is_error:
                         result["is_error"] = True
+                    if block.attachments:
+                        images = [{"type": "image", "source": {
+                            "type": "base64", "media_type": image.media_type,
+                            "data": encode_base64(image.bytes),
+                        }} for image in block.attachments]
+                        image_count += len(images)
+                        result["content"] = ([{"type": "text", "text": block.text}] if block.text else []) + images
                     content.append(result)
         messages.append({"role": role, "content": content})
     body: dict = {"model": model, "max_tokens": max_tokens, "stream": True, "messages": messages}

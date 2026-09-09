@@ -29,11 +29,14 @@ function ToolResult({ entry }) {
       <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet">
         {entry.tool === 'bash' ? <BashIcon /> : <FileIcon />}
       </span>
-      <span className="shrink-0 leading-5">{TOOL_LABELS[entry.tool] || entry.tool}</span>
+      <span className="shrink-0 leading-5">{entry.toolTitle || TOOL_LABELS[entry.tool] || entry.tool}</span>
       <span className="min-w-0 flex-1 font-mono text-xs leading-5 break-words whitespace-pre-wrap text-faint">{summary || entry.args}</span>
       {duration && <span className="shrink-0 font-mono text-xs leading-5 text-faint">{duration}</span>}
     </div>
     <pre className={`m-0 max-h-90 overflow-auto px-3.5 py-2.5 font-mono text-xs leading-5 whitespace-pre ${entry.isError ? 'text-danger' : 'text-muted'}`}>{entry.text || '…'}</pre>
+    {entry.images?.length > 0 && <div className="flex flex-wrap gap-2 px-3.5 pb-3">
+      {entry.images.map(image => <a key={image.path} className="rounded-lg border border-line-strong px-3 py-2 text-sm text-muted hover:bg-hover" href={image.url} target="_blank" rel="noreferrer">View image · {image.display_path}</a>)}
+    </div>}
   </div>
 }
 

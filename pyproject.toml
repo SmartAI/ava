@@ -22,10 +22,18 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.10",
     "zstandard>=0.22",
+    "psutil>=7,<8",
+    "tzdata>=2025.1",
+    "pyyaml>=6,<7",
+    "mcp>=2.2,<3",
 ]
 
 [project.optional-dependencies]
-desktop = ["PySide6-Essentials>=6.8,<7"]
+desktop = [
+    "browser-cookie3>=0.20,<0.21",
+    "PySide6>=6.9,<7",
+    "Pygments>=2.19,<3",
+]
 
 [project.urls]
 Homepage = "https://github.com/SmartAI/ava"
@@ -36,6 +44,7 @@ Documentation = "https://github.com/SmartAI/ava/tree/main/docs"
 [project.scripts]
 ava = "ava.app.cli:main"
 ava-desktop = "ava.app.desktop:main"
+ava-backend = "ava.app.backend:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -51,6 +60,9 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-timeout>=2.4.0",
     "ruff>=0.6",
+    "types-psutil>=7.2.2.20260906",
+    "types-pygments>=2.21.0.20260819",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.pytest.ini_options]

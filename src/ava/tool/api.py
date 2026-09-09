@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ava.base import CancelToken
-from ava.llm.types import ToolDef
+from ava.llm.types import ContentBlock, ToolDef
 
 ToolRun = Callable[[str, CancelToken], Awaitable["Output"]]
 
@@ -20,6 +20,7 @@ ToolRun = Callable[[str, CancelToken], Awaitable["Output"]]
 class Output:
     text: str
     is_error: bool = False
+    attachments: list[ContentBlock] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -142,3 +142,41 @@ async def test_cli_inspection_and_replay_are_read_only(home: Path, project: Path
         assert completed.returncode == 0, completed.stderr
         assert json.loads(completed.stdout)["schema_version"] == 1
     assert (project / "session.jsonl").read_bytes() == before
+
+
+async def test_image_tool_recording_replays_without_capture_io(home, project):
+    import base64
+
+    from ava.llm import ToolDef, make_image_block
+    from ava.tool import Output, Tool
+    from tests.test_tool_images import PNG
+
+    calls = []
+    async def capture(arguments, cancel):
+        calls.append(arguments)
+        return Output("Captured", attachments=[make_image_block("capture.png", PNG, "image/png")])
+
+    provider = ScriptedProvider([tool_call_response("image", "capture", "{}"), text_response("Seen")])
+    options = CompactionOptions(enabled=False)
+    item = message("Inspect the screenshot")
+    path = project / "image-recording.jsonl"
+    recording = Recording(path, provider, item, options)
+    try:
+        async with Agent.create(recording.provider(), project, options,
+                                tools=recording.tools([Tool(ToolDef("capture", "Capture a page"), capture)])) as agent:
+            await agent.followup(item)
+            await agent.drive()
+        recording.finish()
+    finally:
+        recording.close()
+    replay = await replay_recording(path)
+    assert replay["matched"] and replay["exchanges"] == 3
+    assert calls == ["{}"]
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    result = next(row for row in records if row["kind"] == "tool")["output"]
+    assert base64.b64decode(result["attachments"][0]["base64"]) == PNG
+    assert "read" not in result["attachments"][0]
+    result["attachments"][0]["base64"] = "corrupt!"
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    with pytest.raises(AvaError, match="cannot read recording"):
+        await replay_recording(path)

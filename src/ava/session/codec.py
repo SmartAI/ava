@@ -40,6 +40,7 @@ from ava.session.event import (
     PromptResolved,
     Selection,
     SessionStart,
+    SkillLoaded,
     StepClaimed,
     StepEnd,
     StepEndReason,
@@ -132,7 +133,7 @@ def block_to_wire(block: ContentBlock) -> dict[str, Any]:
             if _present(block.media_type):
                 wire["media_type"] = block.media_type
             if block.bytes:
-                wire["base64"] = base64.b64encode(block.bytes).decode("ascii")
+                wire["base64"] = base64.b64encode(bytes(block.bytes)).decode("ascii")
         case ContentBlockKind.reasoning:
             if _present(block.opaque_json):
                 wire["opaque_json"] = block.opaque_json
@@ -143,6 +144,8 @@ def block_to_wire(block: ContentBlock) -> dict[str, Any]:
                 wire["call_id"] = block.call_id
             if _present(block.tool_name):
                 wire["name"] = block.tool_name
+            if block.tool_title:
+                wire["title"] = block.tool_title
             if _present(block.arguments_json):
                 wire["arguments"] = block.arguments_json
         case ContentBlockKind.tool_result:
@@ -152,6 +155,10 @@ def block_to_wire(block: ContentBlock) -> dict[str, Any]:
                 wire["text"] = block.text
             if block.is_error:
                 wire["is_error"] = True
+            if block.attachments:
+                if any(image.kind != ContentBlockKind.image or image.attachments for image in block.attachments):
+                    raise _fail("invalid tool attachments", "only image blocks are supported")
+                wire["attachments"] = [block_to_wire(image) for image in block.attachments]
     if block.origin != Origin.none:
         wire["origin"] = block.origin.value
     return wire
@@ -215,14 +222,22 @@ def block_from_wire(wire: dict[str, Any]) -> ContentBlock:
                 kind=kind,
                 call_id=_string(wire, "call_id"),
                 tool_name=_string(wire, "name"),
+                tool_title=_string(wire, "title"),
                 arguments_json=_string(wire, "arguments"),
             )
         case _:
+            images = wire.get("attachments", [])
+            if not isinstance(images, list) or any(
+                not isinstance(image, dict) or image.get("kind") != "image" or image.get("attachments")
+                for image in images
+            ):
+                raise _fail("invalid tool attachments", "expected a list of image blocks")
             block = ContentBlock(
                 kind=kind,
                 call_id=_string(wire, "call_id"),
                 text=_string(wire, "text"),
                 is_error=bool(wire.get("is_error", False)),
+                attachments=[block_from_wire(image) for image in images],
             )
     block.origin = origin
     return block
@@ -279,8 +294,12 @@ def _tool_to_wire(tool: ToolDef) -> dict[str, Any]:
             wire["required"] = True
         if param.minimum is not None:
             wire["minimum"] = param.minimum
+        if param.items is not None:
+            wire["items"] = param.items
         params.append(wire)
-    return {"name": tool.name, "description": tool.description, "params": params}
+    return {"name": tool.name, "description": tool.description, "params": params,
+            **({"display_name": tool.display_name} if tool.display_name else {}),
+            **({"input_schema": tool.input_schema} if tool.input_schema is not None else {})}
 
 
 def _tool_from_wire(wire: dict[str, Any]) -> ToolDef:
@@ -297,11 +316,14 @@ def _tool_from_wire(wire: dict[str, Any]) -> ToolDef:
                 type=param_type,
                 required=bool(param.get("required", False)),
                 minimum=param.get("minimum"),
+                items=param.get("items"),
             )
         )
-    return ToolDef(
-        name=_string(wire, "name"), description=_string(wire, "description"), params=params
-    )
+    schema = wire.get("input_schema")
+    if schema is not None and not isinstance(schema, dict):
+        raise _fail("invalid JSONL record", "tool input schema must be an object")
+    return ToolDef(name=_string(wire, "name"), description=_string(wire, "description"),
+                   params=params, input_schema=schema, display_name=_string(wire, "display_name"))
 
 
 # ---- Validation shared by encode and decode -----------------------------------------------------
@@ -451,6 +473,8 @@ def payload_to_wire(payload: EventPayload) -> dict[str, Any]:
                 ]
             if payload.truncated:
                 wire["truncated"] = True
+        case SkillLoaded():
+            wire["name"] = payload.name
         case StepEnd():
             wire.update(turn=payload.turn, step=payload.step, reason=payload.reason.value)
         case TurnEnd():
@@ -633,6 +657,8 @@ def decode_known(kind: str, wire: dict[str, Any]) -> EventPayload | None:
             return AssistantMessage(
                 attempt_id=_string(wire, "attempt_id"), item=item_from_wire(wire.get("item", {}))
             )
+        case "skill/loaded":
+            return SkillLoaded(name=_string(wire, "name"))
         case "usage":
             tokens = wire.get("tokens") or {}
             if not isinstance(tokens, dict):

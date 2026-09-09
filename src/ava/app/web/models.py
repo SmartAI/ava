@@ -15,14 +15,31 @@ class RequestBody(BaseModel):
 
 class AddProjectBody(RequestBody):
     path: str = Field(min_length=1)
+    restore: bool = True
 
 
 class CreateChatBody(RequestBody):
     project_id: str = Field(min_length=1)
+    provider: str | None = Field(default=None, min_length=1)
+    model: str | None = Field(default=None, min_length=1)
+    effort: str | None = Field(default=None, min_length=1)
+
+    workspace: Literal["current", "worktree"] = "current"
+    branch: str = ""
+    base_ref: str = "HEAD"
+    request_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+
+class RenameChatBody(RequestBody):
+    title: str = Field(min_length=1, max_length=200)
 
 
 class ArchiveBody(RequestBody):
     archived: bool
+
+
+class ReviewBody(RequestBody):
+    through: int = Field(ge=0)
 
 
 class MessageBody(RequestBody):
@@ -60,9 +77,7 @@ class SettingsBody(RequestBody):
     chat_id: str | None = None
 
 
-async def parse_body[Body: RequestBody](
-    request: Request, body_type: type[Body]
-) -> Body | None:
+async def parse_body[Body: RequestBody](request: Request, body_type: type[Body]) -> Body | None:
     try:
         raw = json.loads(await request.body() or b"null")
         return body_type.model_validate(raw)
