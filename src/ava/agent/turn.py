@@ -14,6 +14,7 @@ from ava.agent.compaction import CompactionOutcome, compact, select_compaction_e
 from ava.agent.state import AgentState, TurnOutcome
 from ava.agent.step import StepResult, append_accounting, step
 from ava.base import AvaError, CancelToken, ErrorKind
+from ava.base.images import IMAGE_BYTE_LIMIT
 from ava.llm import Item, Role, StopReason, is_context_overflow, resolve_selection_model
 from ava.llm.types import ContentBlockKind, Origin, make_tool_result_block
 from ava.session import (
@@ -308,10 +309,15 @@ class _Turn:
                     output = await tool.run(call.arguments_json, self.cancel)
                 except AvaError as error:
                     failure = error
+            if output is not None and output.attachments:
+                total = sum(len(image.bytes) for block in results.blocks for image in block.attachments)
+                total += sum(len(image.bytes) for image in output.attachments)
+                if total > IMAGE_BYTE_LIMIT:
+                    output = Output(output.text + "\n[Images omitted: this tool batch exceeds 7.5 MB. Request images in separate calls.]", True)
             if self.drive.abort_requested:
                 if output is not None:
                     results.blocks.append(
-                        make_tool_result_block(call.call_id, output.text, output.is_error)
+                        make_tool_result_block(call.call_id, output.text, output.is_error, output.attachments)
                     )
                     return await self.abort_tool_step(
                         assistant, calls, position + 1, False, results
@@ -340,7 +346,7 @@ class _Turn:
                 )
             )
             results.blocks.append(
-                make_tool_result_block(call.call_id, output.text, output.is_error)
+                make_tool_result_block(call.call_id, output.text, output.is_error, output.attachments)
             )
         self.state.append(ToolResult(item=results, durations=durations))
         self.drive.tool_results_owed = False
@@ -359,6 +365,7 @@ class _Turn:
             if self.drive.abort_requested:
                 return await self.finish_aborted_step()
             await self.apply_pending_selection()
+            await self.state.refresh_mcp(self.cancel)
             if self.drive.abort_requested:
                 return await self.finish_aborted_step()
             aborted = await self.maybe_compact_at_seam()

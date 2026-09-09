@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ava.base import AvaError, ErrorKind
+from ava.llm.provider import REQUEST_LIMITS
 from ava.llm.types import ContentBlockKind, Context, Item, Origin, Role
 from ava.session.event import (
     AssistantChunk,
@@ -253,6 +254,34 @@ class Session:
                         )
                 else:
                     context.items.append(payload.item)
+        # Preserve every screenshot in history, but retain only recent tool images
+        # in model requests. User attachments keep their existing lifetime budget.
+        user_images = sum(block.kind == ContentBlockKind.image for item in context.items
+                          if item.role == Role.user for block in item.blocks)
+        remaining = min(10, max(0, REQUEST_LIMITS.max_images - user_images))
+        image_bytes = 8 * 1024 * 1024
+        for index in range(len(context.items) - 1, -1, -1):
+            item = context.items[index]
+            if item.role != Role.tool:
+                continue
+            blocks = list(item.blocks)
+            changed = False
+            for position in range(len(blocks) - 1, -1, -1):
+                block = blocks[position]
+                count = len(block.attachments)
+                keep = []
+                for image in reversed(block.attachments):
+                    if remaining and len(image.bytes) <= image_bytes:
+                        keep.append(image)
+                        remaining -= 1
+                        image_bytes -= len(image.bytes)
+                if len(keep) < count:
+                    blocks[position] = replace(block, attachments=keep, text=block.text +
+                        f"\n[{count - len(keep)} older tool image(s) omitted from model context; retained in conversation history.]")
+                    blocks[position].attachments.reverse()
+                    changed = True
+            if changed:
+                context.items[index] = replace(item, blocks=blocks)
         return context
 
     def inbox(self) -> Inbox:

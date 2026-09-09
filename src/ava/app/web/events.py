@@ -55,11 +55,15 @@ def blocks_json(item: Item) -> list[dict[str, Any]]:
             case ContentBlockKind.tool_call:
                 block["call_id"] = source.call_id
                 block["tool_name"] = source.tool_name
+                if source.tool_title:
+                    block["tool_title"] = source.tool_title
                 block["arguments_json"] = source.arguments_json
             case ContentBlockKind.tool_result:
                 block["call_id"] = source.call_id
                 block["text"] = source.text
                 block["is_error"] = source.is_error
+                if source.attachments:
+                    block["attachments"] = blocks_json(Item(role=item.role, blocks=source.attachments))
         if source.origin != Origin.none:
             block["origin"] = source.origin.value
         blocks.append(block)
@@ -152,6 +156,9 @@ def event_dict(event: Event) -> dict[str, Any]:
             out["message"] = payload.message
         case ToolResult():
             out["blocks"] = blocks_json(payload.item)
+            for block_index, block in enumerate(out["blocks"]):
+                for image_index, image in enumerate(block.get("attachments", [])):
+                    image["path"] = f"images/{event.seq}/{block_index}/{image_index}"
             if payload.durations:
                 out["durations"] = [
                     {"call_id": duration.call_id, "elapsed_ms": duration.elapsed_ms}

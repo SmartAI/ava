@@ -12,19 +12,24 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import io
 import os
 import secrets
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 
 import zstandard
 
 from ava.base import AvaError, ErrorKind, ava_home
+from ava.base.images import DeferredImage
 from ava.session import codec
-from ava.session.event import Event, EventPayload, SessionStart, Unknown, now_ms
+from ava.session.event import Event, EventPayload, SessionStart, ToolResult, Unknown, now_ms
 from ava.session.recovery import plan_lifecycle_repair
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -227,6 +232,7 @@ class _PhysicalScan:
     unit_count: int = 0
     torn_offset: int | None = None
     retained_batch: bytes = b""
+    end_offset: int = 0
 
 
 def _split_records(batch: bytes, *, allow_partial_tail: bool) -> tuple[list[str], bytes]:
@@ -251,53 +257,84 @@ def _split_records(batch: bytes, *, allow_partial_tail: bool) -> tuple[list[str]
     return records, complete
 
 
-def _scan_plain(data: bytes, *, header_only: bool) -> _PhysicalScan:
-    if not data:
+def _scan_plain(
+    data: bytes | None, *, header_only: bool, fd: int = -1,
+    consume: Callable[[str, int, int, str], None] | None = None,
+    start_offset: int = 0, unit_limit: int | None = None,
+) -> _PhysicalScan:
+    scan = _PhysicalScan(end_offset=start_offset)
+    offset = start_offset
+    size = len(data) if data is not None else os.fstat(fd).st_size
+    with io.BytesIO(data) if data is not None else os.fdopen(os.dup(fd), "rb") as source:
+        source.seek(offset)
+        while offset < size:
+            line = source.readline(min(codec.MAX_RECORD_BYTES + 2, size - offset))
+            if not line:
+                raise AvaError(ErrorKind.io, "Session log changed while it was being read")
+            if not line.endswith(b"\n"):
+                # A long complete record is corruption; only an unfinished final
+                # record may be discarded. Scan that tail without accumulating it.
+                while source.tell() < size:
+                    tail = source.readline(min(64 * 1024, size - source.tell()))
+                    if not tail:
+                        raise AvaError(ErrorKind.io, "Session log changed while it was being read")
+                    if tail.endswith(b"\n"):
+                        raise AvaError(ErrorKind.parse, "invalid plain session log", "complete record exceeds the size limit")
+                scan.torn_offset = offset
+                break
+            if line == b"\n":
+                raise AvaError(ErrorKind.parse, "invalid plain session log", "session log contains an empty record")
+            if len(line) - 1 > codec.MAX_RECORD_BYTES:
+                raise AvaError(ErrorKind.parse, "invalid plain session log", "complete record exceeds the size limit")
+            record = line[:-1].decode("utf-8")
+            if consume is None:
+                scan.records.append(record)
+            else:
+                consume(record, offset, len(line), hashlib.sha256(line).hexdigest())
+            scan.unit_count += 1
+            offset += len(line)
+            scan.end_offset = offset
+            if header_only or (unit_limit is not None and scan.unit_count >= unit_limit):
+                return scan
+    if not offset and scan.torn_offset is None:
         raise AvaError(ErrorKind.parse, "invalid plain session log", "session file is empty")
-    scan = _PhysicalScan()
-    offset = 0
-    while offset < len(data):
-        newline = data.find(b"\n", offset)
-        if newline == -1:
-            scan.torn_offset = offset
-            break
-        line = data[offset:newline]
-        if not line:
-            raise AvaError(
-                ErrorKind.parse, "invalid plain session log", "session log contains an empty record"
-            )
-        if len(line) > codec.MAX_RECORD_BYTES:
-            raise AvaError(
-                ErrorKind.parse,
-                "invalid plain session log",
-                "complete record exceeds the size limit",
-            )
-        scan.records.append(line.decode("utf-8"))
-        scan.unit_count += 1
-        offset = newline + 1
-        if header_only:
-            return scan
     return scan
 
 
 _ZSTD_SCAN_CHUNK_BYTES = 64 * 1024
 
 
-def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
-    if not data:
+def _scan_zstd(
+    data: bytes | None, *, header_only: bool, fd: int = -1,
+    consume: Callable[[str, int, int, str], None] | None = None,
+    start_offset: int = 0, unit_limit: int | None = None,
+) -> _PhysicalScan:
+    size = len(data) if data is not None else os.fstat(fd).st_size
+    if not size:
         raise AvaError(ErrorKind.parse, "invalid session log", "session file is empty")
-    scan = _PhysicalScan()
+
+    def read(start: int, end: int) -> bytes:
+        if data is not None:
+            return data[start:end]
+        part = os.pread(fd, end - start, start)
+        if len(part) != end - start:
+            raise AvaError(ErrorKind.io, "Session log changed while it was being read")
+        return part
+    scan = _PhysicalScan(end_offset=start_offset)
     decompressor = zstandard.ZstdDecompressor(max_window_size=1 << MAX_WINDOW_LOG)
-    offset = 0
-    while offset < len(data):
+    offset = start_offset
+    while offset < size:
         frame_offset = offset
         decoder = decompressor.decompressobj()
+        fingerprint = hashlib.sha256()
         decoded_parts: list[bytes] = []
         decoded_size = 0
         try:
-            while offset < len(data) and not decoder.eof:
-                end = min(offset + _ZSTD_SCAN_CHUNK_BYTES, len(data))
-                part = decoder.decompress(data[offset:end])
+            while offset < size and not decoder.eof:
+                end = min(offset + _ZSTD_SCAN_CHUNK_BYTES, size)
+                encoded = read(offset, end)
+                part = decoder.decompress(encoded)
+                fingerprint.update(encoded[:-len(decoder.unused_data)] if decoder.unused_data else encoded)
                 decoded_parts.append(part)
                 decoded_size += len(part)
                 if decoded_size > MAX_DECODED_BATCH_BYTES:
@@ -312,7 +349,7 @@ def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
         except zstandard.ZstdError as error:
             # A frame that cannot be decoded at all is corruption, not an interruption, unless it
             # is the unfinished header of the final frame.
-            remaining = data[frame_offset:]
+            remaining = read(frame_offset, min(frame_offset + 18, size))
             if remaining[:4] == ZSTD_MAGIC and len(remaining) < 18 and _header_is_short(remaining):
                 scan.torn_offset = frame_offset
                 break
@@ -325,7 +362,7 @@ def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
             scan.torn_offset = frame_offset
             _, scan.retained_batch = _split_records(decoded, allow_partial_tail=True)
             break
-        parameters = zstandard.get_frame_parameters(data[frame_offset:min(frame_offset + 18, len(data))])
+        parameters = zstandard.get_frame_parameters(read(frame_offset, min(frame_offset + 18, size)))
         if not parameters.has_checksum or parameters.content_size == zstandard.CONTENTSIZE_UNKNOWN:
             raise AvaError(
                 ErrorKind.parse,
@@ -339,9 +376,14 @@ def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
                 "frame declares an excessive window",
             )
         records, _ = _split_records(decoded, allow_partial_tail=False)
-        scan.records.extend(records)
+        if consume is None:
+            scan.records.extend(records)
+        else:
+            for record in records:
+                consume(record, frame_offset, offset - frame_offset, fingerprint.hexdigest())
         scan.unit_count += 1
-        if header_only:
+        scan.end_offset = offset
+        if header_only or (unit_limit is not None and scan.unit_count >= unit_limit):
             return scan
     return scan
 
@@ -358,6 +400,90 @@ def _detect_encoding(data: bytes) -> PhysicalEncoding:
     if not data:
         raise AvaError(ErrorKind.parse, "invalid session log", "session file is empty")
     return PhysicalEncoding.zstd if data[:4] == ZSTD_MAGIC else PhysicalEncoding.plain
+
+
+_IMAGE_CACHE: OrderedDict[tuple, dict[tuple[int, int, int], bytes]] = OrderedDict()
+_IMAGE_CACHE_BYTES = 0
+_IMAGE_CACHE_LOCK = threading.Lock()
+_IMAGE_CACHE_LIMIT = 8 * 1024 * 1024
+
+
+def _image_frame(
+    path: Path, device: int, inode: int, offset: int, length: int, encoding: PhysicalEncoding, fingerprint: str,
+) -> dict[tuple[int, int, int], bytes]:
+    """An 8 MiB cache shares immutable image batches between model and preview requests."""
+    global _IMAGE_CACHE_BYTES
+    cache_key = path, device, inode, offset, length, encoding, fingerprint
+    with _IMAGE_CACHE_LOCK:
+        if cache_key in _IMAGE_CACHE:
+            _IMAGE_CACHE.move_to_end(cache_key)
+            return _IMAGE_CACHE[cache_key]
+    fd = _open_existing(path, OpenMode.read_only)
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != (device, inode):
+            raise AvaError(ErrorKind.io, "Saved image source was replaced; reopen the conversation")
+        data = os.pread(fd, length, offset)
+        if hashlib.sha256(data).hexdigest() != fingerprint:
+            raise AvaError(ErrorKind.io, "Saved image source changed; reopen the conversation")
+        if len(data) != length:
+            raise AvaError(ErrorKind.io, "Saved image source is incomplete; reopen the conversation")
+    finally:
+        os.close(fd)
+    scan = (_scan_zstd(data, header_only=False) if encoding == PhysicalEncoding.zstd
+            else _scan_plain(data, header_only=False))
+    if scan.torn_offset is not None:
+        raise AvaError(ErrorKind.io, "Saved image source is incomplete; reopen the conversation")
+    images = {}
+    for record in scan.records:
+        event = codec.decode_record(record)
+        if isinstance(event.payload, ToolResult):
+            for block_index, block in enumerate(event.payload.item.blocks):
+                for image_index, image in enumerate(block.attachments):
+                    images[event.seq, block_index, image_index] = bytes(image.bytes)
+    size = sum(len(image) for image in images.values())
+    if size <= _IMAGE_CACHE_LIMIT:
+        with _IMAGE_CACHE_LOCK:
+            if cache_key not in _IMAGE_CACHE:
+                while _IMAGE_CACHE and (_IMAGE_CACHE_BYTES + size > _IMAGE_CACHE_LIMIT or len(_IMAGE_CACHE) >= 16):
+                    _, removed = _IMAGE_CACHE.popitem(last=False)
+                    _IMAGE_CACHE_BYTES -= sum(len(image) for image in removed.values())
+                _IMAGE_CACHE[cache_key] = images
+                _IMAGE_CACHE_BYTES += size
+    return images
+
+
+def _read_saved_image(
+    path: Path, device: int, inode: int, offset: int, length: int, encoding: PhysicalEncoding,
+    key: tuple[int, int, int], fingerprint: str,
+) -> bytes:
+    try:
+        return _image_frame(path, device, inode, offset, length, encoding, fingerprint)[key]
+    except KeyError:
+        raise AvaError(ErrorKind.io, "Saved image is no longer available; reopen the conversation") from None
+    except OSError as error:
+        raise _io_error("Cannot read saved image", error) from error
+
+
+def _defer_tool_images(
+    event: Event, path: Path, info: os.stat_result, offset: int, length: int,
+    encoding: PhysicalEncoding, fingerprint: str,
+) -> Event:
+    payload = event.payload
+    if not isinstance(payload, ToolResult) or not any(block.attachments for block in payload.item.blocks):
+        return event
+    blocks = []
+    for block_index, block in enumerate(payload.item.blocks):
+        images = []
+        for image_index, image in enumerate(block.attachments):
+            digest = image.bytes.digest if isinstance(image.bytes, DeferredImage) else hashlib.sha256(image.bytes).hexdigest()
+            source = DeferredImage(len(image.bytes), digest, partial(
+                _read_saved_image, path, info.st_dev, info.st_ino, offset, length, encoding,
+                (event.seq, block_index, image_index), fingerprint,
+            ))
+            images.append(replace(image, bytes=source))
+        blocks.append(replace(block, attachments=images) if images else block)
+    return replace(event, payload=replace(payload, item=replace(payload.item, blocks=blocks)))
 
 
 # ---- The log ---------------------------------------------------------------------------------
@@ -452,20 +578,26 @@ class Log:
     ) -> Log:
         fd = _open_existing(path, mode)
         try:
-            data = _read_all(fd)
-            encoding = _detect_encoding(data)
+            encoding = _detect_encoding(os.pread(fd, 4, 0))
             if not _suffix_matches(path, encoding):
                 raise AvaError(
                     ErrorKind.parse,
                     "invalid session log",
                     "path suffix disagrees with detected encoding",
                 )
+            loaded: list[Event] = []
+            info = os.fstat(fd)
+            source_path = path.absolute()
+
+            def consume(record: str, offset: int, length: int, fingerprint: str) -> None:
+                event = _load_record(record, len(loaded))
+                loaded.append(_defer_tool_images(event, source_path, info, offset, length, encoding, fingerprint))
+
             scan = (
-                _scan_zstd(data, header_only=False)
+                _scan_zstd(None, header_only=False, fd=fd, consume=consume)
                 if encoding == PhysicalEncoding.zstd
-                else _scan_plain(data, header_only=False)
+                else _scan_plain(None, header_only=False, fd=fd, consume=consume)
             )
-            loaded = _cold_load(scan.records)
             if not loaded:
                 raise AvaError(
                     ErrorKind.parse, "invalid session log", "session has no complete header"
@@ -481,22 +613,19 @@ class Log:
                         "session belongs to a different working directory",
                         header.cwd,
                     )
+            retained: list[Event] = []
+            if scan.retained_batch:
+                for record in _split_records(scan.retained_batch, allow_partial_tail=False)[0]:
+                    retained.append(_load_record(record, len(loaded) + len(retained)))
             if scan.torn_offset is not None and mode == OpenMode.repair:
                 _repair_tail(fd, encoding, scan)
-                if encoding == PhysicalEncoding.zstd and scan.retained_batch:
-                    loaded = _cold_load(
-                        scan.records
-                        + _split_records(scan.retained_batch, allow_partial_tail=False)[0]
-                    )
-            elif (
-                scan.torn_offset is not None
-                and encoding == PhysicalEncoding.zstd
-                and scan.retained_batch
-            ):
-                # Read-only inspection still exposes the complete logical prefix of a torn frame.
-                loaded = _cold_load(
-                    scan.records + _split_records(scan.retained_batch, allow_partial_tail=False)[0]
-                )
+                length = os.fstat(fd).st_size - scan.torn_offset
+                fingerprint = hashlib.sha256(os.pread(fd, length, scan.torn_offset)).hexdigest()
+                retained = [_defer_tool_images(event, source_path, info, scan.torn_offset, length, encoding, fingerprint)
+                            for event in retained]
+            # A read-only torn suffix has no immutable frame location yet. Keep its
+            # bounded complete prefix in memory until the next reopen/repair.
+            loaded.extend(retained)
         except BaseException:
             os.close(fd)
             raise
@@ -517,21 +646,16 @@ class Log:
     def read_header(cls, path: Path) -> SessionStart:
         fd = _open_existing(path, OpenMode.read_only)
         try:
-            data = _read_all(fd)
+            encoding = _detect_encoding(os.pread(fd, 4, 0))
+            if not _suffix_matches(path, encoding):
+                raise AvaError(ErrorKind.parse, "invalid session log", "path suffix disagrees with detected encoding")
+            scan = (
+                _scan_zstd(None, header_only=True, fd=fd)
+                if encoding == PhysicalEncoding.zstd
+                else _scan_plain(None, header_only=True, fd=fd)
+            )
         finally:
             os.close(fd)
-        encoding = _detect_encoding(data)
-        if not _suffix_matches(path, encoding):
-            raise AvaError(
-                ErrorKind.parse,
-                "invalid session log",
-                "path suffix disagrees with detected encoding",
-            )
-        scan = (
-            _scan_zstd(data, header_only=True)
-            if encoding == PhysicalEncoding.zstd
-            else _scan_plain(data, header_only=True)
-        )
         if not scan.records:
             raise AvaError(
                 ErrorKind.parse, "invalid session log", "first record is not session/start"
@@ -587,7 +711,12 @@ class Log:
                 )
             batch += record + b"\n"
             events.append(event)
-        self._write_frame(_encode_physical(self._encoding, bytes(batch)))
+        frame = _encode_physical(self._encoding, bytes(batch))
+        info = os.fstat(self._fd)
+        fingerprint = hashlib.sha256(frame).hexdigest()
+        offset = self._write_frame(frame)
+        events = [_defer_tool_images(event, self._path.absolute(), info, offset, len(frame), self._encoding, fingerprint)
+                  for event in events]
         self._next_seq += len(events)
         return events
 
@@ -618,7 +747,12 @@ class Log:
                 "cannot append session event batch",
                 "encoded record exceeds its size limit",
             )
-        self._write_frame(_encode_physical(self._encoding, bytes(batch)))
+        frame = _encode_physical(self._encoding, bytes(batch))
+        info = os.fstat(self._fd)
+        fingerprint = hashlib.sha256(frame).hexdigest()
+        offset = self._write_frame(frame)
+        events = [_defer_tool_images(event, self._path.absolute(), info, offset, len(frame), self._encoding, fingerprint)
+                  for event in events]
         del payloads[:consumed]
         self._next_seq += len(events)
         return events
@@ -626,8 +760,8 @@ class Log:
     def append(self, payload: EventPayload) -> Event:
         return self.append_batch([payload])[0]
 
-    def _write_frame(self, frame: bytes) -> None:
-        _append_bytes_transactionally(self._fd, frame, self._poison)
+    def _write_frame(self, frame: bytes) -> int:
+        return _append_bytes_transactionally(self._fd, frame, self._poison)
 
     def _poison(self) -> None:
         self._poisoned = True
@@ -695,27 +829,15 @@ def _validate_format(header: SessionStart, path: Path) -> None:
         )
 
 
-def _cold_load(records: list[str]) -> list[Event]:
-    events: list[Event] = []
-    for record in records:
-        event = codec.decode_record(record)
-        expected = len(events)
-        if event.seq != expected:
-            raise AvaError(
-                ErrorKind.parse,
-                "invalid session sequence",
-                f"expected {expected}, found {event.seq}",
-            )
-        if expected == 0 and not isinstance(event.payload, SessionStart):
-            raise AvaError(
-                ErrorKind.parse, "invalid session log", "first record is not session/start"
-            )
-        if expected != 0 and isinstance(event.payload, SessionStart):
-            raise AvaError(
-                ErrorKind.parse, "invalid session log", "session/start appears after the header"
-            )
-        events.append(event)
-    return events
+def _load_record(record: str, expected: int) -> Event:
+    event = codec.decode_record(record)
+    if event.seq != expected:
+        raise AvaError(ErrorKind.parse, "invalid session sequence", f"expected {expected}, found {event.seq}")
+    if expected == 0 and not isinstance(event.payload, SessionStart):
+        raise AvaError(ErrorKind.parse, "invalid session log", "first record is not session/start")
+    if expected != 0 and isinstance(event.payload, SessionStart):
+        raise AvaError(ErrorKind.parse, "invalid session log", "session/start appears after the header")
+    return event
 
 
 def _acquire_lock(fd: int, path: Path) -> None:
@@ -756,20 +878,7 @@ def _open_existing(path: Path, mode: OpenMode) -> int:
     return fd
 
 
-def _read_all(fd: int) -> bytes:
-    size = os.fstat(fd).st_size
-    chunks: list[bytes] = []
-    offset = 0
-    while offset < size:
-        chunk = os.pread(fd, min(1 << 20, size - offset), offset)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        offset += len(chunk)
-    return b"".join(chunks)
-
-
-def _append_bytes_transactionally(fd: int, data: bytes, poison: Callable[[], None]) -> None:
+def _append_bytes_transactionally(fd: int, data: bytes, poison: Callable[[], None]) -> int:
     if not data:
         raise AvaError(ErrorKind.invalid_argument, "cannot append session frame", "frame is empty")
     original_end = os.lseek(fd, 0, os.SEEK_END)
@@ -787,6 +896,7 @@ def _append_bytes_transactionally(fd: int, data: bytes, poison: Callable[[], Non
             _rollback(fd, original_end, poison, write_stopped)
             raise _io_error("cannot append session frame", write_stopped) from write_stopped
         written += count
+    return original_end
 
 
 def _rollback(

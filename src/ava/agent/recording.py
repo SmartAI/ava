@@ -20,6 +20,7 @@ from pydantic import (
     Field,
     TypeAdapter,
     ValidationError,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -37,8 +38,15 @@ from ava.llm import (
     StopReason,
     StreamEvent,
     StreamSink,
+    make_tool_result_block,
 )
-from ava.session.codec import item_from_wire, item_to_wire, payload_to_wire
+from ava.session.codec import (
+    block_from_wire,
+    block_to_wire,
+    item_from_wire,
+    item_to_wire,
+    payload_to_wire,
+)
 from ava.session.event import ToolsAdvertised
 from ava.tool import Output, Tool
 
@@ -83,6 +91,28 @@ class _Exchange(_Record):
     stop: StopReason | None = None
     output: Output | None = None
     error: dict[str, Any] | None = None
+
+    @field_serializer("output")
+    def serialize_output(self, value: Output | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        wire = block_to_wire(make_tool_result_block("", value.text, value.is_error, value.attachments))
+        wire.pop("kind")
+        # Keep the original text-only recording shape. Images use the same portable
+        # base64 representation as session history, including deferred image data.
+        wire.update(text=value.text, is_error=value.is_error)
+        return wire
+
+    @field_validator("output", mode="before")
+    @classmethod
+    def deserialize_output(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "attachments" not in value:
+            return value
+        try:
+            block = block_from_wire({"kind": "tool_result", "attachments": value["attachments"]})
+        except AvaError as error:
+            raise ValueError(error.message) from error
+        return {**value, "attachments": block.attachments}
 
     @field_validator("error")
     @classmethod

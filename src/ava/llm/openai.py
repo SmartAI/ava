@@ -20,10 +20,18 @@ from ava.llm.provider import (
     encode_base64,
     parse_model_ids,
     request_file_text,
-    request_schema_type,
     response_error,
+    tool_input_schema,
 )
-from ava.llm.types import ContentBlockKind, Context, Item, Role, ToolDef
+from ava.llm.types import (
+    ContentBlock,
+    ContentBlockKind,
+    Context,
+    Item,
+    Role,
+    ToolDef,
+    make_text_block,
+)
 from ava.transport import Client, Request, SseEvent
 
 
@@ -102,30 +110,7 @@ def _tool_messages(item: Item) -> list[dict]:
 
 
 def _tool_schema(tool: ToolDef) -> dict:
-    properties: dict[str, dict] = {}
-    required: list[str] = []
-    for param in tool.params:
-        schema: dict = {"type": request_schema_type(param.type), "description": param.description}
-        if param.items is not None:
-            schema["items"] = param.items
-        if param.minimum is not None:
-            schema["minimum"] = param.minimum
-        properties[param.name] = schema
-        if param.required:
-            required.append(param.name)
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False,
-            },
-        },
-    }
+    return {"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool_input_schema(tool)}}
 
 
 def openai_request_body(context: Context, model: str, effort: str | None) -> str:
@@ -138,13 +123,25 @@ def openai_request_body(context: Context, model: str, effort: str | None) -> str
     if context.system_prompt:
         messages.append({"role": "system", "content": context.system_prompt})
     counter = [0]
+    images: list[ContentBlock] = []
     for item in context.items:
+        # Chat Completions accepts only text in a tool message. Attach its images
+        # after all consecutive tool replies, with explicit call provenance.
+        if item.role != Role.tool and images:
+            messages.append(_user_message(Item(role=Role.user, blocks=images), counter))
+            images = []
         if item.role == Role.user:
             messages.append(_user_message(item, counter))
         elif item.role == Role.assistant:
             messages.append(_assistant_message(item))
         else:
             messages.extend(_tool_messages(item))
+            for block in item.blocks:
+                if block.attachments:
+                    images.append(make_text_block(f"Images returned by tool call {block.call_id} (tool output):"))
+                    images.extend(block.attachments)
+    if images:
+        messages.append(_user_message(Item(role=Role.user, blocks=images), counter))
     body["messages"] = messages
     if context.tools:
         # Prefer single calls, but tolerate endpoints that ignore this hint.

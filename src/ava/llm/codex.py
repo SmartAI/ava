@@ -33,7 +33,7 @@ from ava.llm.provider import (
     check_request_limits,
     encode_base64,
     request_file_text,
-    request_schema_type,
+    tool_input_schema,
 )
 from ava.llm.types import ContentBlockKind, Context, Item, Role, ToolDef
 from ava.transport import Client, Request, SseEvent
@@ -236,7 +236,7 @@ def _assistant_items(item: Item, selected: Selection) -> list[str]:
     return encoded
 
 
-def _tool_items(item: Item) -> list[dict]:
+def _tool_items(item: Item, counter: list[int]) -> list[dict]:
     items: list[dict] = []
     for block in item.blocks:
         if block.kind != ContentBlockKind.tool_result:
@@ -244,36 +244,16 @@ def _tool_items(item: Item) -> list[dict]:
                 ErrorKind.internal,
                 "tool message contains a non-result block that Codex cannot serialize",
             )
-        items.append(
-            {"type": "function_call_output", "call_id": block.call_id, "output": block.text}
-        )
+        output: str | list[dict] = block.text
+        if block.attachments:
+            output = [_text_content("input_text", block.text)] if block.text else []
+            output.extend(_user_item(Item(role=Role.user, blocks=block.attachments), counter)["content"])
+        items.append({"type": "function_call_output", "call_id": block.call_id, "output": output})
     return items
 
 
 def _tool_schema(tool: ToolDef) -> dict:
-    properties: dict[str, dict] = {}
-    required: list[str] = []
-    for param in tool.params:
-        schema: dict = {"type": request_schema_type(param.type), "description": param.description}
-        if param.items is not None:
-            schema["items"] = param.items
-        if param.minimum is not None:
-            schema["minimum"] = param.minimum
-        properties[param.name] = schema
-        if param.required:
-            required.append(param.name)
-    return {
-        "type": "function",
-        "name": tool.name,
-        "description": tool.description,
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
-    }
+    return {"type": "function", "name": tool.name, "description": tool.description, "strict": False, "parameters": tool_input_schema(tool)}
 
 
 def codex_input_json(context: Context, selected: Selection) -> str:
@@ -285,7 +265,7 @@ def codex_input_json(context: Context, selected: Selection) -> str:
         elif item.role == Role.assistant:
             encoded.extend(_assistant_items(item, selected))
         else:
-            encoded.extend(_dumps(entry) for entry in _tool_items(item))
+            encoded.extend(_dumps(entry) for entry in _tool_items(item, counter))
     output = "[" + ",".join(encoded) + "]"
     check_request_limits(counter[0], len(output.encode("utf-8")))
     return output

@@ -80,13 +80,15 @@ class Agent:
     def create(
         cls, provider: Provider, cwd: Path, options: CompactionOptions | None = None,
         *, tools: list[Tool] | None = None, system_prompt: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> Agent:
         """Create and lock the default durable session before returning."""
-        log = Log.create_default(cwd, provider.id, provider.selection.model)
+        log = Log.create_default(cwd, provider.id, provider.selection.model, labels=labels)
         try:
             return cls(provider, cwd, options, log, tools=tools, system_prompt=system_prompt)
         except BaseException:
             log.close()
+            log.path.unlink(missing_ok=True)
             raise
 
     @classmethod
@@ -141,7 +143,11 @@ class Agent:
         try:
             await state.provider.aclose()
         finally:
-            state.close()
+            try:
+                if state.mcp is not None and state.owns_mcp:
+                    await state.mcp.aclose()
+            finally:
+                state.close()
 
     async def __aenter__(self) -> Agent:
         return self

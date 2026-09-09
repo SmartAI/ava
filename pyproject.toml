@@ -22,6 +22,8 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.10",
     "zstandard>=0.22",
+    "psutil>=7,<8",
+    "mcp>=2.2,<3",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +53,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-timeout>=2.4.0",
     "ruff>=0.6",
+    "types-psutil>=7.2.2.20260906",
 ]
 
 [tool.pytest.ini_options]

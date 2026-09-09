@@ -10,8 +10,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ava.base import AvaError, CancelToken, ErrorKind
+
+if TYPE_CHECKING:
+    from ava.tool.mcp import MCPServers
 from ava.llm import Provider, Selection
 from ava.session import (
     AssistantMessage,
@@ -330,6 +334,9 @@ class AgentState:
     ordinals_recovered: bool = False
     initialized: bool = False
     pending_selection: Selection | None = None
+    mcp: MCPServers | None = None
+    owns_mcp: bool = False
+    mcp_tools: list[Tool] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -371,6 +378,12 @@ class AgentState:
         definitions = [tool.definition for tool in state.tools]
         if newest_tools is None or newest_tools.tools != definitions:
             state.startup.append(ToolsAdvertised(tools=definitions))
+        if tools is None:
+            from ava.base import ava_home
+            from ava.tool.mcp import MCPServers
+
+            state.mcp = MCPServers(ava_home())
+            state.owns_mcp = True
         return state
 
     def append(self, payload: EventPayload) -> None:
@@ -408,6 +421,19 @@ class AgentState:
         self.startup.clear()
         self.initialized = True
         self.drain()
+
+    async def refresh_mcp(self, cancel: CancelToken) -> None:
+        if self.mcp is None:
+            return
+        external = await self.mcp.tools(self.cwd, cancel)
+        previous = {id(tool) for tool in self.mcp_tools}
+        tools = [tool for tool in self.tools if id(tool) not in previous] + external
+        definitions = [tool.definition for tool in tools]
+        if definitions != [tool.definition for tool in self.tools]:
+            self.append(ToolsAdvertised(tools=definitions))
+            self.drain()
+        self.tools = tools
+        self.mcp_tools = external
 
     def find_tool(self, name: str) -> Tool | None:
         return next((tool for tool in self.tools if tool.name == name), None)
