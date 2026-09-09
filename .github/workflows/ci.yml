@@ -29,6 +29,10 @@ jobs:
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
           uv version "${GITHUB_REF_NAME#v}"
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libopengl0
       - run: uv sync --frozen --extra desktop
       - run: uv run --extra desktop ruff check src tests eval
       - run: uv run --extra desktop mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
