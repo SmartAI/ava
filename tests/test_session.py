@@ -319,6 +319,48 @@ def test_zstd_log_round_trip_and_reopen_repairs(tmp_path: Path):
     assert not read_only.ready_for_resume
 
 
+def test_zstd_scan_feeds_bounded_chunks_instead_of_recopying_every_remaining_frame(monkeypatch):
+    import hashlib
+
+    import ava.session.log as log_module
+
+    payload = b"".join(
+        b'{"x":"' + hashlib.sha256(str(index).encode()).hexdigest().encode() + b'"}\n'
+        for index in range(4000)
+    )
+    data = b"".join(encode_frame(payload) for _ in range(20))
+    real_factory = log_module.zstandard.ZstdDecompressor
+    input_sizes: list[int] = []
+
+    class RecordingDecoder:
+        def __init__(self, decoder):
+            self.decoder = decoder
+
+        def decompress(self, value):
+            input_sizes.append(len(value))
+            return self.decoder.decompress(value)
+
+        @property
+        def eof(self):
+            return self.decoder.eof
+
+        @property
+        def unused_data(self):
+            return self.decoder.unused_data
+
+    class RecordingDecompressor:
+        def __init__(self, **kwargs):
+            self.decompressor = real_factory(**kwargs)
+
+        def decompressobj(self):
+            return RecordingDecoder(self.decompressor.decompressobj())
+
+    monkeypatch.setattr(log_module.zstandard, "ZstdDecompressor", RecordingDecompressor)
+    scan = log_module._scan_zstd(data, header_only=False)
+    assert scan.unit_count == 20
+    assert max(input_sizes) <= log_module._ZSTD_SCAN_CHUNK_BYTES
+
+
 def test_second_writer_is_refused(tmp_path: Path):
     cwd = tmp_path / "proj"
     cwd.mkdir()
