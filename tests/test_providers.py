@@ -184,6 +184,95 @@ async def test_openai_adapter_streams_and_normalizes_usage(fake_server: str):
     await provider.aclose()
 
 
+async def test_deepseek_interleaved_calls_execute_sequentially(
+    fake_server: str, home: Path, project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ava.agent import Agent
+    from tests.conftest import message
+
+    def chunk(calls):
+        return (
+            "data: "
+            + json.dumps({"choices": [{"index": 0, "delta": {"tool_calls": calls}}]})
+            + "\n\n"
+        )
+
+    _Fake.stream = (
+        chunk(
+            [
+                {
+                    "index": 0,
+                    "id": "write_1",
+                    "function": {"name": "write", "arguments": '{"path":"parallel.txt",'},
+                },
+                {"index": 1, "id": "read_1", "function": {"name": "read", "arguments": '{"path":'}},
+            ]
+        )
+        + chunk([{"index": 1, "function": {"arguments": '"parallel.txt"}'}}])
+        + chunk([{"index": 0, "function": {"arguments": '"content":"sequential success"}'}}])
+        + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        + "data: [DONE]\n\n"
+    )
+    original_post = _Fake.do_POST
+
+    def respond(handler):
+        if _Fake.requests:
+            _Fake.stream = (
+                'data: {"choices":[{"index":0,"delta":{"content":"Done"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            )
+        original_post(handler)
+
+    monkeypatch.setattr(_Fake, "do_POST", respond)
+    provider = OpenAIProvider(Selection("deepseek", "deepseek-v4-flash"), fake_server, "key")
+    agent = Agent.create(provider, project)
+    try:
+        await agent.followup(message("Write parallel.txt and read it back."))
+        await agent.drive()
+        assert (project / "parallel.txt").read_text() == "sequential success"
+        assert len(_Fake.requests) == 2
+        assert _Fake.requests[0]["body"]["parallel_tool_calls"] is False
+        messages = _Fake.requests[1]["body"]["messages"]
+        calls = next(m["tool_calls"] for m in messages if m.get("tool_calls"))
+        assert [(c["id"], c["function"]["name"]) for c in calls] == [
+            ("write_1", "write"),
+            ("read_1", "read"),
+        ]
+        results = [m for m in messages if m["role"] == "tool"]
+        assert [m["tool_call_id"] for m in results] == ["write_1", "read_1"]
+        assert "sequential success" in results[1]["content"]
+    finally:
+        await agent.aclose()
+
+
+@pytest.mark.parametrize(
+    ("second_call", "finish", "error"),
+    [
+        ({"index": 1, "id": "c2", "function": {"name": "read"}}, False, "before finishing"),
+        ({"index": 1, "id": "c2"}, True, "without a complete call identity"),
+        ({"index": 1, "id": "c1", "function": {"name": "read"}}, True, "duplicate tool call ids"),
+        ({"index": 0, "id": "changed"}, True, "changed a streamed tool call id"),
+    ],
+)
+async def test_openai_rejects_invalid_buffered_calls(fake_server, second_call, finish, error):
+    calls = [
+        {"index": 0, "id": "c1", "function": {"name": "read", "arguments": "{}"}},
+        second_call,
+    ]
+    _Fake.stream = "data: " + json.dumps({"choices": [{"delta": {"tool_calls": calls}}]}) + "\n\n"
+    if finish:
+        _Fake.stream += 'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
+    _Fake.stream += "data: [DONE]\n\n"
+    provider = OpenAIProvider(Selection("deepseek", "deepseek-v4-flash"), fake_server, "key")
+    events = []
+    try:
+        with pytest.raises(AvaError, match=error):
+            await provider.stream(Context(), provider.selection, _collect(events))
+        assert events == []
+    finally:
+        await provider.aclose()
+
+
 def _tool() -> ToolDef:
     return ToolDef(
         "read",
