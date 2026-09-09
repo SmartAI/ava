@@ -32,7 +32,7 @@ jobs:
       - name: Install Qt runtime libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libegl1 libopengl0
+          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libnss3 libxkbcommon0 libgbm1 libasound2t64 fonts-noto-cjk
       - run: uv sync --frozen --extra desktop
       - run: uv run --extra desktop ruff check src tests eval
       - run: uv run --extra desktop mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
@@ -40,7 +40,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           QT_QUICK_BACKEND: software
-      - run: uv run --extra desktop pyside6-qmllint --max-warnings 0 src/ava/app/desktop/qml/Main.qml
+      - run: uv run --extra desktop pyside6-qmllint --max-warnings 0 src/ava/app/desktop/qml/*.qml
       - run: npm ci
       - run: npm run check
       - run: npm test
@@ -76,6 +76,9 @@ jobs:
 
           assets = files("ava.app.web").joinpath("assets")
           assert files("ava.app.desktop").joinpath("qml/Main.qml").read_bytes()
+          terminal = files("ava.app.desktop").joinpath("terminal")
+          for name in ("index.html", "assets/terminal.js", "assets/terminal.css", "assets/xterm.LICENSE", "assets/addon-fit.LICENSE"):
+              assert terminal.joinpath(name).read_bytes(), name
           for name in ("app.min.js", "app.min.css", "ava-logo.svg"):
               assert assets.joinpath(name).read_bytes(), name
           PY
