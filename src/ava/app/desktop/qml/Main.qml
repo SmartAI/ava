@@ -9,374 +9,988 @@ ApplicationWindow {
     id: window
     objectName: "desktopWindow"
     required property var backend
-    width: 1160
-    height: 780
+    required property string codeFont
+    width: 1280
+    height: 820
     minimumWidth: 800
-    minimumHeight: 560
+    minimumHeight: 600
     visible: true
-    title: window.backend.chatId ? window.backend.chatTitle + " · Ava" : "Ava"
-    color: "#fcfcfa"
+    title: backend.chatId ? backend.chatTitle + " · Ava" : "Ava"
     font.pixelSize: 14
-    palette.highlight: "#386a59"
-    palette.highlightedText: "white"
-    palette.text: "#252a27"
-    palette.buttonText: "#252a27"
-    palette.windowText: "#252a27"
-    palette.base: "#ffffff"
-    palette.button: "#eeefeb"
+    color: palette.window
     property bool closing: false
-
-    onClosing: function(close) {
-        close.accepted = false
-        if (!closing) {
-            closing = true
-            window.backend.shutdown()
+    property bool leftOpen: backend.preference("leftSidebar", true)
+    property bool rightOpen: backend.preference("rightSidebar", false)
+    property bool terminalOpen: false
+    property string workspacePage: "chat"
+    Connections { target: window.backend; function onSkillsRequested() { window.workspacePage = "skills"; } }
+    readonly property bool boardOpen: workspacePage === "board"
+    onTerminalOpenChanged: {
+        if (!terminalOpen) {
+            conversationSplit.forceActiveFocus();
+            if (backend.chatId)
+                chatComposer.focusInput();
         }
     }
-
-    Shortcut { sequences: [StandardKey.New]; enabled: window.backend.online && !window.backend.busy; onActivated: window.backend.newChat() }
-    Shortcut { sequences: [StandardKey.Quit]; onActivated: window.close() }
-
+    property bool dark: backend.preference("dark", false)
+    palette.window: dark ? "#202020" : "#ffffff"
+    palette.base: dark ? "#262626" : "#ffffff"
+    palette.alternateBase: dark ? "#343434" : "#e9e9eb"
+    palette.button: dark ? "#303030" : "#ffffff"
+    palette.mid: dark ? "#414141" : "#e2e2e5"
+    palette.light: dark ? "#333333" : "#efeff1"
+    palette.text: dark ? "#ececec" : "#202123"
+    palette.buttonText: window.dark ? "#ececec" : "#202123"
+    palette.windowText: window.dark ? "#ececec" : "#202123"
+    palette.placeholderText: dark ? "#a2a2a8" : "#76767d"
+    palette.highlight: dark ? "#eeeeef" : "#252527"
+    palette.highlightedText: dark ? "#202123" : "#ffffff"
+    palette.link: dark ? "#8ab8ff" : "#0969da"
+    onLeftOpenChanged: backend.savePreference("leftSidebar", leftOpen)
+    onRightOpenChanged: backend.savePreference("rightSidebar", rightOpen)
+    onDarkChanged: backend.savePreference("dark", dark)
+    onClosing: function (close) {
+        close.accepted = closing;
+        if (!closing) {
+            closing = true;
+            window.backend.shutdown();
+        }
+    }
+    function showPanel(name) {
+        workspacePage = "chat";
+        if (name === "toggleTerminal") {
+            terminalOpen = !terminalOpen;
+            if (terminalOpen)
+                terminalDock.open();
+        } else if (name === "model")
+            modelDialog.open();
+        else if (name === "terminal") {
+            terminalOpen = true;
+            terminalDock.open();
+        } else {
+            rightOpen = true;
+            inspector.selectKind(name);
+        }
+    }
+    AttachmentDialog {
+        parent: Overlay.overlay
+        preview: window.backend ? window.backend.attachmentPreview : null
+    }
+    Connections {
+        target: window.backend
+        function onPanelRequested(name) {
+            window.showPanel(name);
+        }
+        function onFileRequested(root, path) {
+            window.rightOpen = true;
+            inspector.showFiles(root, path, window.backend.projectId);
+        }
+        function onBrowserRequested(url) {
+            window.rightOpen = true;
+            inspector.showBrowser(url);
+        }
+        function onThemeRequested() {
+            window.dark = !window.dark;
+        }
+        function onDialogRequested(title, note, rows) {
+            infoDialog.title = title;
+            infoDialog.note = note;
+            infoDialog.rows = rows;
+            infoDialog.open();
+        }
+        function onContextRequested(report) {
+            contextDialog.report = report;
+            contextDialog.open();
+        }
+        function onLoginRequested(provider) {
+            loginProvider.text = provider;
+            loginKey.text = "";
+            loginDialog.open();
+        }
+    }
+    Shortcut {
+        sequences: [StandardKey.New]
+        enabled: window.backend.online && !window.backend.busy
+        onActivated: {
+            window.workspacePage = "chat";
+            window.backend.newChat();
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+K"
+        onActivated: sidebar.openSearch()
+    }
+    Shortcut {
+        sequence: "Ctrl+,"
+        onActivated: settingsDialog.open()
+    }
+    Shortcut {
+        sequences: [StandardKey.Quit]
+        onActivated: window.close()
+    }
+    Shortcut {
+        sequence: "Ctrl+J"
+        enabled: !!window.backend.projectPath
+        onActivated: {
+            window.terminalOpen = !window.terminalOpen;
+            if (window.terminalOpen)
+                terminalDock.open();
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+B"
+        onActivated: window.leftOpen = !window.leftOpen
+    }
+    Shortcut {
+        sequence: "Ctrl+Alt+B"
+        onActivated: {
+            window.rightOpen = !window.rightOpen;
+            if (window.rightOpen && !window.backend.fileState.kind)
+                window.backend.browseFiles("");
+        }
+    }
     FolderDialog {
         id: folderDialog
         title: "Choose a project folder"
         onAccepted: window.backend.addProject(selectedFolder.toString())
     }
-
-    RowLayout {
-        anchors.fill: parent
-        spacing: 0
-        enabled: !window.closing
-
-        Rectangle {
-            Layout.preferredWidth: 250
-            Layout.fillHeight: true
-            color: "#f0f1ed"
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 18
-                spacing: 14
-                RowLayout {
-                    Layout.fillWidth: true
-                    Label { text: "ava"; font.pixelSize: 30; font.weight: Font.DemiBold; color: "#315a4b" }
-                    Item { Layout.fillWidth: true }
-                    ToolButton {
-                        text: "+"
-                        objectName: "addProjectButton"
-                        font.pixelSize: 24
-                        enabled: window.backend.online
-                        Accessible.name: "Add project"
-                        ToolTip.visible: hovered
-                        ToolTip.text: "Add project folder"
-                        onClicked: folderDialog.open()
+    WorktreeDialog { backend: window.backend }
+    MachinesDialog {
+        id: machinesDialog
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        backend: window.backend
+    }
+    HostKeyDialog { backend: window.backend; codeFont: window.codeFont }
+    NativeDialog {
+        id: remoteProjectDialog
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(500, parent.width - 40)
+        title: "Add project on " + window.backend.machineName
+        modal: true
+        focus: true
+        padding: 22
+        onOpened: remoteProjectPath.forceActiveFocus()
+        ColumnLayout {
+            width: parent.width
+            spacing: 16
+            NativeField {
+                id: remoteProjectPath
+                objectName: "remoteProjectPath"
+                Layout.fillWidth: true
+                placeholderText: "Remote folder path, e.g. ~/projects/ava"
+                onAccepted: { if (remoteProjectAdd.enabled) remoteProjectAdd.clicked(); }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                NativeButton { text: "Cancel"; onClicked: remoteProjectDialog.close() }
+                NativeButton {
+                    id: remoteProjectAdd
+                    objectName: "addRemoteProjectAction"
+                    text: "Add project"
+                    primary: true
+                    enabled: !!remoteProjectPath.text.trim() && window.backend.online
+                    onClicked: {
+                        window.backend.addProject(remoteProjectPath.text.trim());
+                        remoteProjectDialog.close();
                     }
-                }
-                Label { text: "WORKSPACE"; font.pixelSize: 10; font.letterSpacing: 1.5; color: "#70796f" }
-                ComboBox {
-                    id: projects
-                    objectName: "projectPicker"
-                    Layout.fillWidth: true
-                    model: window.backend.projects
-                    textRole: "name"
-                    valueRole: "id"
-                    displayText: window.backend.projectName
-                    enabled: window.backend.online
-                    Accessible.name: "Project"
-                    onActivated: window.backend.selectProject(currentValue)
-                    ToolTip.visible: hovered
-                    ToolTip.text: window.backend.projectPath
-                }
-                Button {
-                    objectName: "newChatButton"
-                    Layout.fillWidth: true
-                    text: "+  New conversation"
-                    enabled: window.backend.online && !!window.backend.projectId && !window.backend.busy
-                    onClicked: window.backend.newChat()
-                }
-                Label { text: "CONVERSATIONS"; font.pixelSize: 10; font.letterSpacing: 1.5; color: "#70796f" }
-                ListView {
-                    id: chats
-                    objectName: "chatList"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 5
-                    model: window.backend.chats
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: ItemDelegate {
-                        id: chatItem
-                        required property var modelData
-                        width: ListView.view.width
-                        text: chatItem.modelData.title || "New conversation"
-                        highlighted: chatItem.modelData.id === window.backend.chatId
-                        enabled: window.backend.online
-                        Accessible.name: text
-                        contentItem: Label {
-                            text: chatItem.text
-                            elide: Text.ElideRight
-                            verticalAlignment: Text.AlignVCenter
-                            color: chatItem.highlighted ? "#234b3e" : "#4c544d"
-                        }
-                        background: Rectangle {
-                            radius: 7
-                            color: chatItem.highlighted ? "#dce6dd" : chatItem.hovered ? "#e7e9e3" : "transparent"
-                        }
-                        onClicked: window.backend.openChat(chatItem.modelData.id)
-                    }
-                    Label {
-                        anchors.top: parent.top
-                        width: parent.width
-                        visible: chats.count === 0
-                        text: "Your conversations will appear here."
-                        wrapMode: Text.WordWrap
-                        color: "#7a8278"
-                        font.pixelSize: 12
-                    }
-                }
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#dfe2da" }
-                Label {
-                    Layout.fillWidth: true
-                    text: window.backend.connectionLabel
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 11
-                    color: window.backend.online ? "#496754" : "#8a5940"
-                    Accessible.name: text
-                }
-                Button {
-                    text: "Restart Ava"
-                    visible: !window.backend.online && window.backend.connectionLabel !== "Starting Ava…"
-                    onClicked: window.backend.start()
                 }
             }
         }
-        Rectangle { Layout.fillHeight: true; Layout.preferredWidth: 1; color: "#e4e6df" }
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            spacing: 0
-            Pane {
-                Layout.fillWidth: true
-                padding: 22
-                background: Rectangle { color: "#fcfcfa" }
-                RowLayout {
-                    width: parent.width
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-                        Label {
-                            Layout.fillWidth: true
-                            text: window.backend.chatId ? window.backend.chatTitle : window.backend.projectName
-                            font.pixelSize: 17
-                            font.weight: Font.DemiBold
-                            elide: Text.ElideRight
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: window.backend.modelName || window.backend.projectPath
-                            elide: Text.ElideMiddle
-                            color: "#778075"
-                            font.pixelSize: 11
-                        }
-                    }
-                    Label {
-                        objectName: "runStatus"
-                        text: window.backend.chatId ? (window.backend.connected ? window.backend.status : "connecting…") : ""
-                        color: "#386a59"
-                        font.pixelSize: 12
-                    }
-                    Button {
-                        text: window.backend.status === "paused" ? "Resume" : "Pause"
-                        visible: ["running", "paused"].indexOf(window.backend.status) >= 0
-                        enabled: window.backend.connected && !window.backend.busy
-                        onClicked: window.backend.control(window.backend.status === "paused" ? "resume" : "pause")
-                    }
-                    Button {
-                        objectName: "stopButton"
-                        text: "Stop"
-                        visible: ["running", "pausing", "paused", "aborting"].indexOf(window.backend.status) >= 0
-                        enabled: window.backend.connected && !window.backend.busy && window.backend.status !== "aborting"
-                        onClicked: window.backend.control("abort")
-                    }
-                }
-            }
-            Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#eaede5" }
+    }
+    FileDialog {
+        id: fileDialog
+        objectName: "attachmentDialog"
+        title: "Add files or images"
+        fileMode: FileDialog.OpenFiles
+        onAccepted: window.backend.addAttachments(selectedFiles.map(url => url.toString()))
+    }
+
+    SplitView {
+        id: splitView
+        objectName: "workspaceSplitView"
+        anchors.fill: parent
+        orientation: Qt.Horizontal
+        enabled: !window.closing
+        onResizingChanged: {
+            if (!resizing)
+                window.backend.savePanelWidths(window.leftOpen ? Math.round(sidebar.width) : -1, window.rightOpen ? Math.round(inspector.width) : -1);
+        }
+        handle: Rectangle {
+            id: divider
+            readonly property bool engaged: SplitHandle.hovered || SplitHandle.pressed
+            implicitWidth: 5
+            color: SplitHandle.pressed ? window.palette.alternateBase : "transparent"
             Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: errorLayout.implicitHeight + 24
-                visible: !!window.backend.error
-                color: "#fbede6"
-                RowLayout {
-                    id: errorLayout
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    Label { Layout.fillWidth: true; text: window.backend.error; wrapMode: Text.Wrap; color: "#8b3e2d" }
-                    ToolButton { text: "×"; Accessible.name: "Dismiss error"; onClicked: window.backend.dismissError() }
-                }
+                anchors.centerIn: parent
+                width: divider.engaged ? 3 : 1
+                height: parent.height
+                radius: 1
+                color: divider.engaged ? (window.dark ? "#eeeeef" : "#252527") : (window.dark ? "#414141" : "#e2e2e5")
             }
-            Item {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                ListView {
-                    id: conversation
-                    objectName: "transcriptView"
-                    anchors.fill: parent
-                    anchors.margins: 22
-                    spacing: 22
-                    clip: true
-                    reuseItems: true
-                    model: window.backend.transcript
-                    property bool follow: true
-                    onMovementEnded: follow = atYEnd
-                    onContentHeightChanged: { if (follow) Qt.callLater(positionViewAtEnd) }
-                    onCountChanged: { if (count === 0) follow = true }
-                    ScrollBar.vertical: ScrollBar { onPressedChanged: { if (!pressed) conversation.follow = conversation.atYEnd } }
-                    delegate: ColumnLayout {
-                        id: message
-                        required property string kind
-                        required property string heading
-                        required property string body
-                        required property string detail
-                        property bool expanded: false
-                        property string fontFamily: window.font.family
-                        readonly property bool compact: kind === "tool" || kind === "reasoning"
-                        width: Math.min(820, ListView.view.width - 20)
-                        x: (ListView.view.width - width) / 2
-                        spacing: 6
-                        ListView.onReused: expanded = false
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Label {
-                                text: message.heading
-                                color: message.kind === "error" ? "#a74c35" : message.kind === "user" ? "#747b71" : "#386a59"
-                                font.pixelSize: 12
-                                font.weight: Font.DemiBold
-                            }
-                            Item { Layout.fillWidth: true }
-                            ToolButton {
-                                text: message.expanded ? "Collapse" : "Expand"
-                                visible: message.compact
-                                font.pixelSize: 11
-                                onClicked: message.expanded = !message.expanded
-                            }
-                        }
-                        TextArea {
-                            Layout.fillWidth: true
-                            visible: message.expanded && !!message.detail
-                            text: message.detail
-                            readOnly: true
-                            selectByMouse: true
-                            wrapMode: TextEdit.WrapAnywhere
-                            textFormat: TextEdit.PlainText
-                            font.family: "monospace"
-                            font.pixelSize: 12
-                            color: "#657060"
-                            background: null
-                            padding: 0
-                        }
-                        TextArea {
-                            Layout.fillWidth: true
-                            text: message.compact && !message.expanded ? message.body.slice(0, 180) : message.body
-                            readOnly: true
-                            selectByMouse: true
-                            wrapMode: TextEdit.Wrap
-                            textFormat: TextEdit.PlainText
-                            font.family: message.kind === "tool" ? "monospace" : message.fontFamily
-                            font.pixelSize: message.kind === "tool" ? 12 : 15
-                            color: message.kind === "error" ? "#a74c35" : "#30372f"
-                            background: null
-                            padding: 0
-                            Accessible.name: message.heading + ": " + text
-                        }
-                    }
+            HoverHandler {
+                cursorShape: Qt.SplitHCursor
+            }
+        }
+        SessionSidebar {
+            id: sidebar
+            objectName: "leftSidebar"
+            visible: window.leftOpen
+            SplitView.preferredWidth: window.backend.panelWidth("left", 248)
+            SplitView.minimumWidth: 180
+            SplitView.maximumWidth: 380
+            backend: window.backend
+            onHideRequested: window.leftOpen = false
+            onAddProjectRequested: window.backend.remoteMachine ? remoteProjectDialog.open() : folderDialog.open()
+            onMachinesRequested: machinesDialog.open()
+            onSettingsRequested: settingsDialog.open()
+            onBoardRequested: window.workspacePage = "board"
+            onAutomationsRequested: window.workspacePage = "automations"
+            onSkillsRequested: window.workspacePage = "skills"
+            onMcpRequested: window.workspacePage = "mcp"
+            onAnalyticsRequested: window.workspacePage = "analytics"
+            onConversationRequested: window.workspacePage = "chat"
+        }
+        Loader {
+            id: boardLoader
+            visible: window.workspacePage !== "chat"
+            active: visible
+            SplitView.fillWidth: true
+            SplitView.minimumWidth: 330
+            sourceComponent: window.boardOpen ? boardComponent : window.workspacePage === "skills" ? skillsComponent : window.workspacePage === "mcp" ? mcpComponent : window.workspacePage === "analytics" ? analyticsComponent : automationsComponent
+        }
+        Component {
+            id: analyticsComponent
+            AnalyticsPane {
+                backend: window.backend
+                sidebarVisible: window.leftOpen
+                onCloseRequested: window.workspacePage = "chat"
+                onSidebarRequested: window.leftOpen = true
+            }
+        }
+        Component {
+            id: boardComponent
+            SessionBoard {
+                backend: window.backend
+                sidebarVisible: window.leftOpen
+                onOpenChat: function (identity) {
+                    window.workspacePage = "chat";
+                    window.backend.openChat(identity);
                 }
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    width: Math.min(420, parent.width - 60)
-                    visible: conversation.count === 0
-                    spacing: 14
-                    Label { Layout.alignment: Qt.AlignHCenter; text: "What shall we build?"; font.pixelSize: 28; color: "#354d3d" }
-                    Label {
-                        Layout.fillWidth: true
-                        text: window.backend.chatId ? "Ask Ava about your project, or describe a change."
-                                             : "Start a conversation in this project to work with Ava."
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.WordWrap
-                        color: "#7a8278"
-                    }
-                    Button {
-                        Layout.alignment: Qt.AlignHCenter
-                        text: "New conversation"
-                        visible: !window.backend.chatId
-                        enabled: window.backend.online && !!window.backend.projectId && !window.backend.busy
-                        onClicked: window.backend.newChat()
-                    }
+                onCloseRequested: window.workspacePage = "chat"
+                onSidebarRequested: window.leftOpen = true
+            }
+        }
+        Component {
+            id: mcpComponent
+            McpPane {
+                backend: window.backend
+                sidebarVisible: window.leftOpen
+                codeFont: window.codeFont
+                onCloseRequested: window.workspacePage = "chat"
+                onSidebarRequested: window.leftOpen = true
+            }
+        }
+        Component {
+            id: skillsComponent
+            SkillsPane {
+                backend: window.backend
+                sidebarVisible: window.leftOpen
+                onUseRequested: { window.workspacePage = "chat"; Qt.callLater(chatComposer.focusInputAtEnd); }
+                onCloseRequested: window.workspacePage = "chat"
+                onSidebarRequested: window.leftOpen = true
+            }
+        }
+        Component {
+            id: automationsComponent
+            AutomationsPane {
+                backend: window.backend
+                sidebarVisible: window.leftOpen
+                onOpenChat: function (identity) {
+                    window.workspacePage = "chat";
+                    window.backend.openChat(identity);
+                }
+                onCloseRequested: window.workspacePage = "chat"
+                onSidebarRequested: window.leftOpen = true
+            }
+        }
+        SplitView {
+            id: conversationSplit
+            visible: window.workspacePage === "chat"
+            orientation: Qt.Vertical
+            SplitView.fillWidth: true
+            SplitView.minimumWidth: 330
+            onResizingChanged: {
+                if (!resizing && window.terminalOpen)
+                    window.backend.saveTerminalHeight(Math.round(terminalDock.height));
+            }
+            handle: Rectangle {
+                objectName: "terminalDivider"
+                implicitHeight: 5
+                color: SplitHandle.hovered || SplitHandle.pressed ? (window.dark ? "#414141" : "#e2e2e5") : (window.dark ? "#333333" : "#efeff1")
+                HoverHandler {
+                    cursorShape: Qt.SplitVCursor
                 }
             }
             ColumnLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: 24
-                Layout.rightMargin: 24
-                Layout.bottomMargin: 18
-                spacing: 8
-                Label {
+                id: chatColumn
+                readonly property real contentWidth: Math.min(760, width - 48)
+                SplitView.fillHeight: true
+                SplitView.minimumHeight: 300
+                spacing: 0
+                Pane {
                     Layout.fillWidth: true
-                    visible: !!window.backend.pendingText
-                    text: "Queued: " + window.backend.pendingText
-                    maximumLineCount: 3
-                    elide: Text.ElideRight
-                    wrapMode: Text.Wrap
-                    color: "#6b775f"
-                    font.pixelSize: 12
-                }
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: inputLayout.implicitHeight + 20
-                    color: "#ffffff"
-                    border.color: input.activeFocus ? "#88a58d" : "#dce1d7"
-                    radius: 12
+                    verticalPadding: 8
+                    horizontalPadding: 16
+                    background: null
                     RowLayout {
-                        id: inputLayout
-                        anchors.fill: parent
-                        anchors.margins: 10
-                        spacing: 10
-                        ScrollView {
+                        width: parent.width
+                        spacing: 8
+                        NativeButton {
+                            objectName: "toggleLeftSidebar"
+                            visible: !window.leftOpen
+                            icon.source: "icons/left.svg"
+                            quiet: true
+                            tip: "Show sidebar"
+                            onClicked: window.leftOpen = true
+                        }
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: Math.min(140, Math.max(60, input.implicitHeight))
-                            clip: true
-                            TextArea {
-                                id: input
-                                objectName: "composer"
-                                text: window.backend.draft
-                                placeholderText: window.backend.chatId ? "Message Ava…" : "Create a conversation to begin"
-                                enabled: !!window.backend.chatId
-                                wrapMode: TextEdit.Wrap
-                                selectByMouse: true
-                                background: null
-                                Accessible.name: "Message Ava"
-                                onTextChanged: { if (window.backend.draft !== text) window.backend.draft = text }
-                                Keys.onPressed: function(event) {
-                                    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                                            && !(event.modifiers & Qt.ShiftModifier)) {
-                                        event.accepted = true
-                                        if (!input.inputMethodComposing) window.backend.send()
-                                    }
-                                }
+                            spacing: 3
+                            Label {
+                                Layout.fillWidth: true
+                                text: window.backend.chatId ? window.backend.chatTitle : "New conversation"
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: window.backend.projectName + (window.backend.workspaceBranch ? " · " + window.backend.workspaceBranch : "") + (window.backend.machines.length > 1 ? " · " + window.backend.machineName : "")
+                                font.pixelSize: 11
+                                color: palette.placeholderText
+                                elide: Text.ElideMiddle
                             }
                         }
-                        Button {
-                            objectName: "sendButton"
-                            text: window.backend.status === "running" ? "Queue" : "Send"
-                            Layout.alignment: Qt.AlignBottom
-                            enabled: window.backend.connected && !window.backend.busy && !!input.text.trim()
-                                     && ["paused", "pausing", "aborting"].indexOf(window.backend.status) < 0
-                            onClicked: window.backend.send()
+                        NativeButton {
+                            text: window.backend.status === "paused" ? "Resume" : "Pause"
+                            visible: ["running", "paused"].indexOf(window.backend.status) >= 0
+                            enabled: window.backend.connected && !window.backend.busy
+                            onClicked: window.backend.control(window.backend.status === "paused" ? "resume" : "pause")
+                        }
+                        NativeButton {
+                            objectName: "stopButton"
+                            text: "Stop"
+                            visible: ["running", "pausing", "paused", "aborting"].indexOf(window.backend.status) >= 0
+                            enabled: window.backend.connected && !window.backend.busy && window.backend.status !== "aborting"
+                            onClicked: window.backend.control("abort")
+                        }
+                        NativeButton {
+                            objectName: "toggleTerminalButton"
+                            icon.source: "icons/terminal.svg"
+                            quiet: !window.terminalOpen
+                            tip: "Toggle terminal · " + (Qt.platform.os === "osx" ? "⌘ J" : "Ctrl+J")
+                            enabled: !!window.backend.projectPath && window.backend.online
+                            onClicked: {
+                                window.terminalOpen = !window.terminalOpen;
+                                if (window.terminalOpen)
+                                    terminalDock.open();
+                            }
+                        }
+                        NativeButton {
+                            objectName: "reviewChangesButton"
+                            icon.source: "icons/changes.svg"
+                            quiet: true
+                            tip: "Review changes"
+                            enabled: !!window.backend.projectPath && window.backend.online
+                            onClicked: window.showPanel("changes")
+                        }
+                        NativeButton {
+                            objectName: "toggleRightSidebar"
+                            icon.source: "icons/right.svg"
+                            quiet: !window.rightOpen
+                            tip: window.rightOpen ? "Hide inspector" : "Show files and browser"
+                            onClicked: {
+                                window.rightOpen = !window.rightOpen;
+                                if (window.rightOpen && !window.backend.fileState.kind)
+                                    window.backend.browseFiles("");
+                            }
                         }
                     }
                 }
-                Label {
-                    text: "Enter to send · Shift+Enter for a new line"
-                    color: "#92988d"
-                    font.pixelSize: 10
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 1
+                    color: window.palette.mid
+                    opacity: 0.35
+                }
+                Pane {
+                    Layout.fillWidth: true
+                    visible: !!window.backend.error
+                    padding: 12
+                    background: Rectangle {
+                        color: window.dark ? "#49372f" : "#fbede6"
+                    }
+                    RowLayout {
+                        width: parent.width
+                        Label {
+                            Layout.fillWidth: true
+                            text: window.backend.error
+                            wrapMode: Text.Wrap
+                            color: window.dark ? "#ecc4b4" : "#8b3e2d"
+                            font.pixelSize: 12
+                        }
+                        NativeButton {
+                            icon.source: "icons/close.svg"
+                            quiet: true
+                            tip: "Dismiss error"
+                            onClicked: window.backend.dismissError()
+                        }
+                    }
+                }
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    ListView {
+                        id: conversation
+                        objectName: "transcriptView"
+                        anchors.fill: parent
+                        anchors.margins: 24
+                        spacing: 22
+                        clip: true
+                        reuseItems: true
+                        // Keep the tail alive while following: its measured bottom is stable
+                        // even when pooled messages change the estimated content height.
+                        currentIndex: follow ? count - 1 : -1
+                        model: window.backend.transcript
+                        footer: Item {
+                            id: runStatus
+                            objectName: "runStatus"
+                            width: conversation.width
+                            visible: !!runChat && (runState !== "idle" || !window.backend.connected)
+                            height: visible ? runStatusContent.implicitHeight + 18 : 0
+                            property string runChat: window.backend.chatId
+                            property string runState: window.backend.status
+                            property string previousState: "idle"
+                            property double accumulatedMs: 0
+                            property double segmentStartedAt: 0
+                            property int elapsedSeconds: 0
+                            readonly property string phase: !window.backend.connected ? (!window.backend.online && window.backend.error ? "Disconnected" : "Connecting")
+                                                            : runState === "running" ? (window.backend.transcript.activity || "Thinking")
+                                                            : runState === "pausing" ? "Finishing the current step"
+                                                            : runState === "paused" ? "Paused"
+                                                            : runState === "aborting" ? "Stopping"
+                                                            : ""
+                            function timed(state) {
+                                return ["running", "pausing", "aborting"].indexOf(state) >= 0;
+                            }
+                            function updateElapsed(now) {
+                                const activeMs = segmentStartedAt ? now - segmentStartedAt : 0;
+                                elapsedSeconds = Math.max(0, Math.floor((accumulatedMs + activeMs) / 1000));
+                            }
+                            function restart() {
+                                accumulatedMs = 0;
+                                elapsedSeconds = 0;
+                                previousState = runState;
+                                segmentStartedAt = timed(runState) ? Date.now() : 0;
+                                Qt.callLater(conversation.followLatest);
+                            }
+                            function syncState() {
+                                const now = Date.now();
+                                if (timed(previousState) && segmentStartedAt)
+                                    accumulatedMs += now - segmentStartedAt;
+                                segmentStartedAt = 0;
+                                if (runState === "idle") {
+                                    accumulatedMs = 0;
+                                    elapsedSeconds = 0;
+                                } else if (timed(runState)) {
+                                    segmentStartedAt = now;
+                                }
+                                previousState = runState;
+                                updateElapsed(now);
+                                Qt.callLater(conversation.followLatest);
+                            }
+                            function formatElapsed(total) {
+                                if (total < 60)
+                                    return total + "s";
+                                const seconds = total % 60;
+                                const paddedSeconds = seconds < 10 ? "0" + seconds : seconds;
+                                if (total < 3600)
+                                    return Math.floor(total / 60) + "m " + paddedSeconds + "s";
+                                const minutes = Math.floor(total / 60) % 60;
+                                const paddedMinutes = minutes < 10 ? "0" + minutes : minutes;
+                                return Math.floor(total / 3600) + "h " + paddedMinutes + "m " + paddedSeconds + "s";
+                            }
+                            onRunChatChanged: restart()
+                            onRunStateChanged: syncState()
+                            Component.onCompleted: restart()
+                            Timer {
+                                interval: 250
+                                repeat: true
+                                running: runStatus.visible && runStatus.timed(runStatus.runState)
+                                onTriggered: runStatus.updateElapsed(Date.now())
+                            }
+                            RowLayout {
+                                id: runStatusContent
+                                width: chatColumn.contentWidth
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.top: parent.top
+                                anchors.topMargin: 9
+                                spacing: 8
+                                Rectangle {
+                                    Layout.preferredWidth: 7
+                                    Layout.preferredHeight: 7
+                                    radius: 4
+                                    color: runStatus.runState === "paused" || runStatus.runState === "pausing"
+                                           ? "#d89000"
+                                           : runStatus.runState === "aborting" ? "#c45a5a"
+                                           : window.palette.highlight
+                                    SequentialAnimation on opacity {
+                                        running: runStatus.runState === "running"
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.35; duration: 700 }
+                                        NumberAnimation { to: 1; duration: 700 }
+                                    }
+                                }
+                                Label {
+                                    id: runPhase
+                                    objectName: "runPhase"
+                                    text: runStatus.phase
+                                    elide: Text.ElideRight
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    color: window.palette.text
+                                }
+                                Label {
+                                    id: runElapsed
+                                    objectName: "runElapsed"
+                                    Layout.fillWidth: true
+                                    text: !window.backend.connected ? (!window.backend.online && window.backend.error ? "" : window.backend.connectionLabel)
+                                          : runStatus.runState === "paused"
+                                            ? "(" + runStatus.formatElapsed(runStatus.elapsedSeconds) + " · waiting to resume)"
+                                          : runStatus.runState === "running"
+                                            ? "(" + runStatus.formatElapsed(runStatus.elapsedSeconds) + " · Esc to pause)"
+                                          : runStatus.runState === "pausing"
+                                            ? "(" + runStatus.formatElapsed(runStatus.elapsedSeconds) + " · Esc to stop)"
+                                            : "(" + runStatus.formatElapsed(runStatus.elapsedSeconds) + ")"
+                                    elide: Text.ElideRight
+                                    font.family: window.codeFont
+                                    font.pixelSize: 11
+                                    color: window.palette.placeholderText
+                                }
+                            }
+                        }
+                        property bool follow: true
+                        function followLatest() {
+                            if (!follow)
+                                return;
+                            const tail = footerItem && footerItem.visible ? footerItem : currentItem;
+                            if (tail) {
+                                forceLayout();
+                                contentY = Math.max(originY, tail.y + tail.height - height);
+                            }
+                        }
+                        onMovementStarted: follow = false
+                        onMovementEnded: follow = atYEnd
+                        onHeightChanged: Qt.callLater(followLatest)
+                        onWidthChanged: Qt.callLater(followLatest)
+                        onCurrentItemChanged: Qt.callLater(followLatest)
+                        onContentHeightChanged: Qt.callLater(followLatest)
+                        onCountChanged: {
+                            if (count === 0)
+                                follow = true;
+                            Qt.callLater(followLatest);
+                        }
+                        Connections {
+                            target: window.backend.transcript
+                            function onDataChanged() { Qt.callLater(conversation.followLatest); }
+                        }
+                        ScrollBar.vertical: ScrollBar {
+                            onPressedChanged: conversation.follow = !pressed && conversation.atYEnd
+                        }
+                        delegate: Item {
+                            id: transcriptRow
+                            required property string kind
+                            required property string heading
+                            required property string body
+                            required property string detail
+                            required property var attachments
+                            required property int sourceRow
+                            required property int groupCount
+                            required property bool groupExpanded
+                            required property int groupRunning
+                            required property int groupFailed
+                            required property bool outputExpanded
+                            property bool pooled: false
+                            width: conversation.width
+                            height: messageColumn.implicitHeight
+                            Column {
+                                id: messageColumn
+                                width: chatColumn.contentWidth
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                spacing: 8
+                                NativeButton {
+                                    id: groupToggle
+                                    objectName: "activityGroupToggle"
+                                    width: parent.width
+                                    visible: transcriptRow.groupCount > 1
+                                    quiet: true
+                                    text: transcriptRow.groupCount + " activities"
+                                    tip: transcriptRow.groupExpanded ? "Collapse activities" : "Show all activities"
+                                    contentItem: RowLayout {
+                                        spacing: 8
+                                        Image {
+                                            source: transcriptRow.groupExpanded ? "icons/down.svg" : "icons/chevron.svg"
+                                            sourceSize.width: 14
+                                            sourceSize.height: 14
+                                            opacity: 0.55
+                                        }
+                                        Label {
+                                            objectName: "activityGroupSummary"
+                                            Layout.fillWidth: true
+                                            text: groupToggle.text
+                                            font.pixelSize: 12
+                                            color: window.palette.placeholderText
+                                        }
+                                        Label {
+                                            objectName: "activityGroupRunning"
+                                            visible: transcriptRow.groupRunning > 0
+                                            text: transcriptRow.groupRunning + " running"
+                                            font.pixelSize: 11
+                                            color: window.palette.placeholderText
+                                        }
+                                        Label {
+                                            objectName: "activityGroupFailed"
+                                            visible: transcriptRow.groupFailed > 0
+                                            text: transcriptRow.groupFailed + " failed"
+                                            font.pixelSize: 11
+                                            color: window.dark ? "#ecc4b4" : "#8b3e2d"
+                                        }
+                                    }
+                                    onClicked: {
+                                        conversation.follow = false;
+                                        window.backend.transcript.toggleGroup(transcriptRow.sourceRow);
+                                    }
+                                }
+                                Loader {
+                                    id: messageLoader
+                                    width: parent.width
+                                    active: !transcriptRow.pooled && (transcriptRow.groupCount <= 1 || transcriptRow.groupExpanded)
+                                    visible: active
+                                    sourceComponent: TranscriptMessage {
+                                        kind: transcriptRow.kind
+                                        heading: transcriptRow.heading
+                                        body: transcriptRow.body
+                                        detail: transcriptRow.detail
+                                        attachments: transcriptRow.attachments
+                                        backend: window.backend
+                                        codeFont: window.codeFont
+                                        readingSize: window.backend.readingSize
+                                        expanded: transcriptRow.outputExpanded
+                                        onExpansionToggled: {
+                                            conversation.follow = false;
+                                            window.backend.transcript.toggleOutput(transcriptRow.sourceRow);
+                                        }
+                                    }
+                                }
+                            }
+                            ListView.onPooled: pooled = true
+                            ListView.onReused: pooled = false
+                        }
+                    }
+                    NativeButton {
+                        objectName: "jumpToLatest"
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 12
+                        visible: conversation.count > 0 && !conversation.atYEnd
+                        icon.source: "icons/down.svg"
+                        implicitWidth: 32
+                        tip: "Jump to latest message"
+                        onClicked: {
+                            conversation.follow = true;
+                            conversation.followLatest();
+                        }
+                    }
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        width: Math.min(420, parent.width - 60)
+                        visible: conversation.count === 0
+                        spacing: 12
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: "What would you like to work on?"
+                            font.pixelSize: window.rightOpen ? 21 : 26
+                            font.weight: Font.Medium
+                            color: window.palette.text
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: window.backend.chatId ? "Ask a question, share an idea, or describe a task." : window.backend.projectId ? "Start a chat in " + window.backend.projectName + "." : "Add a project folder to start a conversation."
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            color: palette.placeholderText
+                            font.pixelSize: 13
+                            lineHeight: 1.4
+                        }
+                        NativeButton {
+                            objectName: "emptyStateAction"
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.topMargin: 8
+                            text: window.backend.projectId ? "New conversation" : "Add project"
+                            icon.source: "icons/plus.svg"
+                            visible: !window.backend.chatId
+                            enabled: window.backend.online && !window.backend.busy
+                            onClicked: window.backend.projectId ? window.backend.newChat() : folderDialog.open()
+                        }
+                    }
+                }
+                ChatComposer {
+                    id: chatComposer
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: chatColumn.contentWidth
+                    Layout.maximumWidth: chatColumn.contentWidth
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                    Layout.bottomMargin: 16
+                    backend: window.backend
+                    onAttach: fileDialog.open()
+                    onModels: modelDialog.open()
+                }
+            }
+            TerminalDock {
+                id: terminalDock
+                visible: window.terminalOpen
+                SplitView.preferredHeight: window.backend.terminalHeight
+                SplitView.minimumHeight: 140
+                SplitView.maximumHeight: Math.max(140, conversationSplit.height - 305)
+                backend: window.backend
+                codeFont: window.codeFont
+                onHideRequested: window.terminalOpen = false
+            }
+        }
+        Inspector {
+            id: inspector
+            objectName: "rightSidebar"
+            visible: window.rightOpen && window.workspacePage === "chat"
+            SplitView.preferredWidth: window.backend.panelWidth("right", 520)
+            SplitView.minimumWidth: 280
+            SplitView.maximumWidth: Math.max(280, window.width - 340 - (window.leftOpen ? sidebar.width + 5 : 0))
+            backend: window.backend
+            codeFont: window.codeFont
+            onClosed: window.rightOpen = false
+        }
+    }
+
+    SettingsDialog {
+        id: settingsDialog
+        backend: window.backend
+        codeFont: window.codeFont
+        dark: window.dark
+        onDarkRequested: function (value) { window.dark = value; }
+        onArchivedRequested: sidebar.openSearch(true)
+    }
+
+    NativeDialog {
+        id: modelDialog
+        objectName: "modelDialog"
+        anchors.centerIn: parent
+        width: Math.min(480, window.width - 60)
+        modal: true
+        padding: 22
+        title: "Model & reasoning"
+        background: Rectangle {
+            radius: 20
+            color: window.palette.base
+            border.color: window.palette.mid
+        }
+        ColumnLayout {
+            width: parent.width
+            spacing: 14
+            Label {
+                Layout.fillWidth: true
+                text: "Changes apply at the next step."
+                color: palette.placeholderText
+                font.pixelSize: 12
+            }
+            Label {
+                text: window.backend.selection.provider || ""
+                font.weight: Font.Medium
+                font.pixelSize: 12
+            }
+            NativeCombo {
+                objectName: "modelPicker"
+                Layout.fillWidth: true
+                model: window.backend.modelChoices.models || []
+                displayText: window.backend.selection.model || "Loading models…"
+                enabled: !window.backend.selecting
+                onActivated: window.backend.selectModel(currentText)
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                NativeField {
+                    id: modelId
+                    objectName: "customModelField"
+                    Layout.fillWidth: true
+                    placeholderText: "Or enter a model ID"
+                    onAccepted: {
+                        if (text.trim())
+                            window.backend.selectModel(text.trim());
+                    }
+                }
+                NativeButton {
+                    text: "Use"
+                    enabled: !!modelId.text.trim() && !window.backend.selecting
+                    onClicked: window.backend.selectModel(modelId.text.trim())
+                }
+            }
+            Label {
+                text: "Reasoning effort"
+                font.pixelSize: 12
+            }
+            NativeCombo {
+                objectName: "effortPicker"
+                Layout.fillWidth: true
+                model: ["none"].concat(window.backend.modelChoices.effort_values || [])
+                displayText: window.backend.selection.effort || "none"
+                enabled: !window.backend.selecting
+                onActivated: window.backend.selectEffort(currentText)
+            }
+            Label {
+                Layout.fillWidth: true
+                text: window.backend.error
+                visible: !!text
+                color: "#b3664e"
+                wrapMode: Text.Wrap
+            }
+            NativeButton {
+                objectName: "closeModelButton"
+                Layout.alignment: Qt.AlignRight
+                text: "Done"
+                primary: true
+                onClicked: modelDialog.close()
+            }
+        }
+    }
+    ContextDialog {
+        id: contextDialog
+        dark: window.dark
+        onClosed: chatComposer.focusInput()
+    }
+    NativeDialog {
+        id: infoDialog
+        objectName: "infoDialog"
+        property string note: ""
+        property var rows: []
+        anchors.centerIn: parent
+        width: Math.min(540, window.width - 60)
+        modal: true
+        padding: 22
+        background: Rectangle {
+            radius: 20
+            color: window.palette.base
+            border.color: window.palette.mid
+        }
+        ColumnLayout {
+            width: parent.width
+            spacing: 14
+            Label {
+                Layout.fillWidth: true
+                text: infoDialog.note
+                wrapMode: Text.Wrap
+                font.pixelSize: 12
+                color: palette.placeholderText
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(380, contentHeight)
+                clip: true
+                model: infoDialog.rows
+                ScrollBar.vertical: ScrollBar {}
+                delegate: ItemDelegate {
+                    id: row
+                    required property var modelData
+                    objectName: "dialog_" + modelData.value
+                    width: ListView.view.width
+                    height: infoRow.implicitHeight + 18
+                    background: Rectangle {
+                        radius: 10
+                        color: row.hovered ? window.palette.light : "transparent"
+                    }
+                    contentItem: ColumnLayout {
+                        id: infoRow
+                        spacing: 4
+                        Label {
+                            text: row.modelData.label
+                            font.pixelSize: 13
+                            font.weight: Font.Medium
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: row.modelData.detail
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 12
+                            color: palette.placeholderText
+                        }
+                    }
+                    onClicked: {
+                        if (!modelData.action)
+                            return;
+                        infoDialog.close();
+                        if (modelData.action === "skill")
+                            window.backend.chooseCommand(modelData.value, "skill");
+                        else
+                            window.backend.runCommand("/" + modelData.value);
+                    }
+                }
+            }
+            NativeButton {
+                Layout.alignment: Qt.AlignRight
+                text: "Done"
+                onClicked: infoDialog.close()
+            }
+        }
+    }
+    NativeDialog {
+        id: loginDialog
+        anchors.centerIn: parent
+        width: 420
+        modal: true
+        padding: 22
+        title: "Provider credentials"
+        background: Rectangle {
+            radius: 20
+            color: window.palette.base
+            border.color: window.palette.mid
+        }
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+            NativeField {
+                id: loginProvider
+                Layout.fillWidth: true
+                placeholderText: "Provider"
+            }
+            NativeField {
+                id: loginKey
+                Layout.fillWidth: true
+                placeholderText: "API key"
+                echoMode: TextInput.Password
+            }
+            NativeButton {
+                Layout.alignment: Qt.AlignRight
+                primary: true
+                text: "Save key"
+                enabled: !!loginProvider.text && !!loginKey.text
+                onClicked: {
+                    window.backend.login(loginProvider.text, loginKey.text);
+                    loginKey.text = "";
+                    loginDialog.close();
                 }
             }
         }
@@ -384,7 +998,12 @@ ApplicationWindow {
     Rectangle {
         anchors.fill: parent
         visible: window.closing
-        color: "#e6fcfcfa"
-        Label { anchors.centerIn: parent; text: "Saving and closing…"; font.pixelSize: 20 }
+        color: window.palette.window
+        opacity: 0.95
+        Label {
+            anchors.centerIn: parent
+            text: "Saving and closing…"
+            font.pixelSize: 20
+        }
     }
 }
