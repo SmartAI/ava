@@ -21,6 +21,7 @@ from ava.session import (
     AssistantMessage,
     InboxMessage,
     InboxTarget,
+    SkillLoaded,
     StepClaimed,
     StepEnd,
     StepEndReason,
@@ -32,6 +33,7 @@ from ava.session import (
 )
 from ava.session import compaction as strategy
 from ava.tool import Output
+from ava.tool.api import parse_arguments, resolve_path
 
 INTERRUPTED_TOOL_TEXT = "[Tool call interrupted by user abort before it finished.]"
 SKIPPED_TOOL_TEXT = "[Tool call skipped: the turn was aborted before it started.]"
@@ -314,6 +316,14 @@ class _Turn:
                 total += sum(len(image.bytes) for image in output.attachments)
                 if total > IMAGE_BYTE_LIMIT:
                     output = Output(output.text + "\n[Images omitted: this tool batch exceeds 7.5 MB. Request images in separate calls.]", True)
+            if output is not None and not output.is_error and call.tool_name == "read" and self.state.skill_catalog:
+                arguments = parse_arguments(call.arguments_json)
+                if isinstance(arguments, dict) and isinstance(arguments.get("path"), str):
+                    path = resolve_path(self.state.cwd, arguments["path"]).resolve()
+                    for skill in self.state.skill_catalog:
+                        if path == skill.path.resolve():
+                            self.state.append(SkillLoaded(skill.name))
+                            break
             if self.drive.abort_requested:
                 if output is not None:
                     results.blocks.append(
@@ -365,6 +375,7 @@ class _Turn:
             if self.drive.abort_requested:
                 return await self.finish_aborted_step()
             await self.apply_pending_selection()
+            await self.state.refresh_skills()
             await self.state.refresh_mcp(self.cancel)
             if self.drive.abort_requested:
                 return await self.finish_aborted_step()

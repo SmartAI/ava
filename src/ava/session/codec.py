@@ -40,6 +40,7 @@ from ava.session.event import (
     PromptResolved,
     Selection,
     SessionStart,
+    SkillLoaded,
     StepClaimed,
     StepEnd,
     StepEndReason,
@@ -472,6 +473,8 @@ def payload_to_wire(payload: EventPayload) -> dict[str, Any]:
                 ]
             if payload.truncated:
                 wire["truncated"] = True
+        case SkillLoaded():
+            wire["name"] = payload.name
         case StepEnd():
             wire.update(turn=payload.turn, step=payload.step, reason=payload.reason.value)
         case TurnEnd():
@@ -654,6 +657,8 @@ def decode_known(kind: str, wire: dict[str, Any]) -> EventPayload | None:
             return AssistantMessage(
                 attempt_id=_string(wire, "attempt_id"), item=item_from_wire(wire.get("item", {}))
             )
+        case "skill/loaded":
+            return SkillLoaded(name=_string(wire, "name"))
         case "usage":
             tokens = wire.get("tokens") or {}
             if not isinstance(tokens, dict):
