@@ -459,7 +459,7 @@ async def test_hidden_projects_keep_history_and_restore_without_automatic_redisc
             assert failed.status_code == 503
             assert registry.projects[0].hidden
         restored = await second.post("/api/projects", json={"path": str(project)})
-        assert restored.json() == expected
+        assert restored.json() == {**expected, "revision": registry.revision}
         assert len((await second.get("/api/projects")).json()["projects"]) == 1
         with monkeypatch.context() as patch:
             patch.setattr(registry, "persist", failed_persist)

@@ -330,7 +330,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                     registry.set_hidden(existing, False)
                 except AvaError as error:
                     return error_response(503, error.message)
-            return JSONResponse(existing.summary())
+            return JSONResponse({**existing.summary(), "revision": registry.revision})
         project = Project(id=registry.next_project_id(), name=path.name or str(path), path=path)
         registry.projects.append(project)
         try:
@@ -338,7 +338,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         except AvaError as error:
             registry.projects.remove(project)
             return error_response(503, error.message)
-        return JSONResponse(project.summary(), status_code=201)
+        return JSONResponse({**project.summary(), "revision": registry.revision}, status_code=201)
 
     @app.post("/api/projects/{project_id}/hide")
     async def hide_project(project_id: str) -> Response:
@@ -370,7 +370,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                 if existing.creation_key == key:
                     if owner.id != project.id or existing.worktree != (body.branch if body.workspace == "worktree" else "") or existing.creation_base != body.base_ref:
                         return error_response(409, "This request already created a different workspace.")
-                    return JSONResponse(existing.summary())
+                    return JSONResponse({**existing.summary(), "revision": registry.revision})
         try:
             chat = await state.create_chat(project, body, key)
             return JSONResponse(chat.summary(), status_code=201)

@@ -1952,6 +1952,114 @@ def pdf_page_images(view):
 
 
 
+def test_desktop_remove_project_undo_and_other_client_keep_selection_and_drafts(
+    desktop, model_server, project, home, tmp_path
+):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    first, first_project = controller.chatId, controller.projectId
+    controller.renameChat(first, "Keep this conversation")
+    until(lambda: controller.chatTitle == "Keep this conversation", controller.changed)
+    other = tmp_path / "另一个项目：保持文件与全部会话历史"
+    other.mkdir()
+    controller.addProject(str(other))
+    until(lambda: controller.projectPath == str(other), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != first, controller.changed)
+    second, second_project = controller.chatId, controller.projectId
+    click(window, "sessionMenu_" + second)
+    click(window, "pinChatAction")
+    type_message(window, "Keep this unsent draft")
+    click(window, "projectMenu_" + first_project)
+    click(window, "removeProjectAction")
+    until(lambda: len(controller.projects) == 1, controller.navigationChanged)
+    assert controller.chatId == second
+    assert controller.draft == "Keep this unsent draft"
+    until(lambda: bool(find_item(window, "undoRemoveProject")), window.frameSwapped)
+    click(window, "undoRemoveProject")
+    until(lambda: controller.connected and controller.chatId == first, controller.changed)
+    click(window, "session_" + second)
+    until(lambda: controller.connected and controller.chatId == second, controller.changed)
+    assert controller.draft == "Keep this unsent draft"
+    window.setProperty("dark", True)
+    window.setWidth(800)
+    click(window, "projectMenu_" + second_project)
+    menu_action = find_item(window, "removeProjectAction")
+    menu_button = find_item(window, "projectMenu_" + second_project)
+    until(
+        lambda: visible_rect(window, menu_action).left() < visible_rect(window, menu_button).right() + 12,
+        window.frameSwapped,
+    )
+    save_screenshot(window, "project-menu-dark-narrow")
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    # Another desktop can hide the selected project. Its next heartbeat clears it.
+    with httpx.Client(
+        base_url=controller._connection._base,
+        headers={"Authorization": "Bearer " + controller._connection._token},
+        trust_env=False,
+    ) as client:
+        archived = client.post("/api/chats", json={"project_id": second_project}).json()["id"]
+        client.post(f"/api/chats/{archived}/archive", json={"archived": True})
+        before = {p: p.read_bytes() for p in home.rglob("*.jsonl*")}
+        assert before
+        client.post(f"/api/projects/{second_project}/hide")
+        until(
+            lambda: controller.connected and controller.chatId == first and len(controller.projects) == 1,
+            controller.changed,
+        )
+        assert not controller.searchChats(other.name, False)
+        assert not controller.searchChats(other.name, True)
+        assert all(row["id"] != second for row in controller.sessionRows)
+        assert {p: p.read_bytes() for p in before} == before
+        restored = client.post("/api/projects", json={"path": str(other)}).json()
+        assert {chat["id"] for chat in restored["chats"]} == {second, archived}
+        until(lambda: len(controller.projects) == 2, controller.navigationChanged)
+    click(window, "session_" + second)
+    until(lambda: controller.connected and controller.chatId == second, controller.changed)
+    assert controller.draft == "Keep this unsent draft"
+    assert {p: p.read_bytes() for p in before} == before
+    assert not model_server and not controller.error
+    save_screenshot(window, "project-undo-dark-narrow")
+
+    # A long sidebar still opens its last project's menu inside a small window.
+    with httpx.Client(
+        base_url=controller._connection._base,
+        headers={"Authorization": "Bearer " + controller._connection._token},
+        trust_env=False,
+    ) as client:
+        for index in range(12):
+            folder = tmp_path / f"Additional project {index}"
+            folder.mkdir()
+            last = client.post("/api/projects", json={"path": str(folder)}).json()["id"]
+    controller.refresh()
+    until(lambda: len(controller.projects) == 14, controller.navigationChanged)
+    window.setHeight(600)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    sessions = find_item(window, "sessionList")
+    # A queued frame can predate the resize's layout. Prepare the bottom-edge
+    # menu scenario only once the viewport fits the resized window.
+    until(lambda: visible_rect(window, sessions).height() >= sessions.height() - 1, window.frameSwapped)
+    QMetaObject.invokeMethod(sessions, "forceLayout")
+    QMetaObject.invokeMethod(sessions, "positionViewAtEnd")
+    until(
+        lambda: (item := find_item(window, "projectMenu_" + last)) is not None
+        and not visible_rect(window, item).isEmpty(),
+        window.frameSwapped,
+    )
+    click(window, "projectMenu_" + last)
+    action = find_item(window, "removeProjectAction")
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    rectangle = action.mapRectToScene(action.boundingRect())
+    assert QRectF(0, 0, window.width(), window.height()).contains(rectangle)
+    save_screenshot(window, "project-menu-bottom-edge")
+    QTest.keyClick(window, Qt.Key.Key_Escape)
 
 
 

@@ -1745,6 +1745,7 @@ class Controller(QObject):
             if error:
                 self._error = error
             else:
+                machine.revision = max(machine.revision, payload["revision"])
                 if not any(p["id"] == payload["id"] for p in machine.projects):
                     machine.projects.append({**payload, "machine": machine.id, "machine_name": machine.name})
                 self._rebuild_projects()
