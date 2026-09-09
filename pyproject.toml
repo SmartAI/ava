@@ -24,6 +24,9 @@ dependencies = [
     "zstandard>=0.22",
 ]
 
+[project.optional-dependencies]
+desktop = ["PySide6-Essentials>=6.8,<7"]
+
 [project.urls]
 Homepage = "https://github.com/SmartAI/ava"
 Repository = "https://github.com/SmartAI/ava.git"
@@ -32,6 +35,7 @@ Documentation = "https://github.com/SmartAI/ava/tree/main/docs"
 
 [project.scripts]
 ava = "ava.app.cli:main"
+ava-desktop = "ava.app.desktop:main"
 
 [build-system]
 requires = ["hatchling"]

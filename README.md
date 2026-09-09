@@ -46,6 +46,9 @@ level with `--model` and `--effort`.
 Ava is alpha software. Tools run with your local permissions and without per-call
 approval; session logs may contain sensitive content.
 
+For the optional Qt Quick desktop app, run `uv run --extra desktop ava-desktop --project .`.
+See the [desktop usage guide](docs/usage.md#qt-quick-desktop-app) for setup and current scope.
+
 ## Benchmark
 
 The latest iteration repaired Bash output truncation and process completion

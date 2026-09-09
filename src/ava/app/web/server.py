@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -37,7 +38,11 @@ def web_asset() -> str:
 
 
 def create_app(
-    cwd: Path, options: CompactionOptions | None = None, selection: SelectionOverride | None = None
+    cwd: Path,
+    options: CompactionOptions | None = None,
+    selection: SelectionOverride | None = None,
+    *,
+    access_token: str | None = None,
 ) -> FastAPI:
     compaction = options or CompactionOptions()
     selected = selection or SelectionOverride()
@@ -76,6 +81,10 @@ def create_app(
         origin = request.headers.get("origin")
         if not allowed_host or (origin is not None and origin != f"http://{host}"):
             return error_response(403, "forbidden request")
+        if access_token is not None and not secrets.compare_digest(
+            request.headers.get("authorization", "").encode(), f"Bearer {access_token}".encode()
+        ):
+            return error_response(401, "authentication required")
         return await call_next(request)
 
     register_routes(app, state, web_asset)
