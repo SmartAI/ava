@@ -20,8 +20,42 @@ from tests.conftest import ScriptedProvider, text_response, tool_call_response
 PNG_2X3 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD")
 
 
+async def test_analytics_dashboard_reports_durable_usage(client, scripted):
+    from ava.llm import Usage
+
+    response = await client.get('/api/analytics', params={'days': 7, 'timezone': 'UTC'})
+    assert response.status_code == 200, response.text
+    assert len(response.json()['days']) == 7
+    assert response.json()['totals']['tokens'] == 0
+    await client.post('/api/chats', json={'project_id': 'workspace'})
+    scripted[0].scripts = [text_response('Accounted', usage=Usage(input=300, cached_read=100, output=50))]
+    assert (await client.post('/api/chats/c1/messages', json={'text': 'Measure this request'})).status_code == 202
+    deadline = asyncio.get_running_loop().time() + 2
+    while True:
+        report = (await client.get('/api/analytics')).json()
+        if report['totals']['tokens'] == 450:
+            break
+        assert asyncio.get_running_loop().time() < deadline, report
+        await asyncio.sleep(.02)
+    assert report['totals']['responses'] == 1 and not report['totals']['missing_usage']
+    unchanged = (await client.get('/api/analytics', params={'revision': report['revision']})).json()
+    assert unchanged['unchanged'] and 'days' not in unchanged
+    assert (await client.get('/api/analytics', params={'timezone': 'not-a-zone'})).status_code == 400
+    assert (await client.get('/api/analytics', params={'days': 90})).status_code == 400
+    assert (await client.get('/api/analytics', headers={'origin':'https://untrusted.example'})).status_code == 403
+    await client.post('/api/projects/workspace/hide')
+    assert (await client.get('/api/analytics')).json()['totals']['tokens'] == 0
+    assert (await client.get('/api/analytics', params={'project':'workspace'})).status_code == 404
 
 
+async def test_damaged_analytics_cache_does_not_prevent_backend_startup(home, project, scripted):
+    cache = home/'analytics.sqlite3'
+    cache.write_bytes(b'An interrupted or damaged derived cache')
+    app = create_app(project)
+    async with app.router.lifespan_context(app):
+        assert app.state.analytics.index is not None
+        report = await app.state.analytics.run(app.state.analytics.index.query)
+        assert report['totals']['tokens'] == 0
 
 
 @pytest.fixture

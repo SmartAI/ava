@@ -18,6 +18,7 @@ from ava.app.backend_state import BackendState
 from ava.base import AvaError, ErrorKind, ava_home
 from ava.llm import SelectionOverride, provider_from_environment
 
+from .analytics import Analytics, register_analytics_routes
 from .automations import Automations, register_automation_routes
 from .mcp import register_mcp_routes
 from .registry import Registry, WebState
@@ -64,17 +65,21 @@ def create_app(
         try:
             registry.restore(compaction, selected, provider_from_environment)
             await automations.start()
+            await analytics.start()
             yield
         finally:
             try:
                 try:
-                    await automations.stop_dispatch()
+                    await analytics.close()
                 finally:
                     try:
-                        await registry.aclose()
+                        await automations.stop_dispatch()
                     finally:
-                        if hasattr(automations, "store"):
-                            await automations.close()
+                        try:
+                            await registry.aclose()
+                        finally:
+                            if hasattr(automations, "store"):
+                                await automations.close()
             finally:
                 backend.close()
 
@@ -95,6 +100,8 @@ def create_app(
     )
     automations = Automations(state, ava_home() / "automations.sqlite3")
     app.state.automations = automations
+    analytics = Analytics(registry, ava_home() / "analytics.sqlite3")
+    app.state.analytics = analytics
 
     @app.middleware("http")
     async def fence(request: Request, call_next: Any):
@@ -117,6 +124,7 @@ def create_app(
     register_automation_routes(app, automations)
     register_skill_routes(app, registry)
     register_mcp_routes(app, registry)
+    register_analytics_routes(app, analytics)
 
     @app.get("/api/system")
     async def system_info() -> dict:
