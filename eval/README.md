@@ -87,16 +87,34 @@ cp eval/experiments/ava-vs-pi.example.json eval/cache/ava-vs-pi.json
 
 Replace both `openai/<model-id>` placeholders with the same exact supported model
 and align reasoning effort. Placeholders deliberately fail validation. These
-generic adapters support `openai` and `anthropic` API credentials through
-`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; they do not use the Codex login route.
+adapters support `openai` and `anthropic` API credentials through
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, and `codex` through a local Codex OAuth login.
 The common Anthropic adapter currently requires `effort: "off"`. Verify model and
 effort support rather than assuming a model name implies compatible endpoints.
 
 Set Ava's `wheel` path, suite, repetitions, timeout, and `max_trials` explicitly.
 The schedule size is tasks × repetitions × agents. Both adapters expose
 read/edit/write/bash; prompts, tool implementations, and provider APIs may differ.
-Pi project resources are disabled while Ava retains native project instructions.
-Record these differences as part of the comparison.
+Both agents load native project instructions; Pi extensions, skills, and prompt templates are disabled.
+Record native instruction-discovery differences as part of the comparison.
+
+### Codex OAuth without an API key
+
+Set both agents' `model` to `codex/<exact-model-id>` and use the same explicit reasoning effort.
+The Pi adapter maps this provider to its native `openai-codex` provider.
+Its pinned catalog must support that exact model and effort; unsupported selections fail before inference.
+For longer tasks, explicitly enable `compaction` for both agents and use the dataset's task budget.
+
+The runner reads `$CODEX_HOME/auth.json`, or `~/.codex/auth.json`, without changing the login.
+It injects an access-only credential snapshot into a private temporary directory inside each task container and removes it afterward.
+Refresh tokens and API keys are excluded from the snapshot; credentials never enter frozen inputs or mounted agent logs.
+Each trial reads the current local login, so an expired credential requires refreshing Codex before continuing.
+There is no API-key fallback and no automatic refresh of the shared login.
+
+These runs use the ChatGPT/Codex service through the local login, not locally hosted model inference.
+Subscription limits still apply.
+Token counts and elapsed time are measured normally; catalog or configured token prices are estimates, not subscription charges.
+Leave `pricing` and `stop_after_estimated_usd` unset when no API-equivalent cost estimate is wanted.
 
 ```sh
 uv run python -m eval.benchmark plan eval/cache/ava-vs-pi.json
@@ -134,6 +152,17 @@ bytes are not provider tokens. Unknown measurements remain `null`.
 
 Each run preserves `experiment.json` (configuration, schedule, hashes), `inputs/`
 (frozen tasks and wheels), `trials.jsonl`, `summary.json`, and raw `jobs/` artifacts.
+On Alpine task images, Ava uses the image's Python 3.12 because the pinned
+standalone musl Python has an extension suffix incompatible with musl wheels.
+Older Alpine images get a checksum-pinned Python 3.12.11 source build under
+`/opt`, with temporary build dependencies removed afterward.
+Pi uses the checksum-pinned Node 22.19.0 musl build from Node's unofficial-builds
+project on Alpine x86_64; other supported images use the pinned glibc build.
+The musl Node binary uses private, checksum-pinned C++ runtime libraries under
+`/opt/pi-node/lib`, with its library search path set during installation.
+Both installers check CLI startup before model execution.
+The image digest, installer snapshot, and install logs record these runtime differences.
+
 Timing separates environment setup, installation, and execution. Keep detailed
 evidence locally; sessions and tool outputs can contain sensitive material.
 
@@ -169,6 +198,27 @@ uv run python -m eval.incidents --manifest eval/cache/incidents.json \
 For official dataset integrations, use the retained [adapters](integrations/) with
 your own pinned selection and downloaded task assets. Controls on a small selection
 are not full-benchmark results.
+
+The [SWE-bench Pro preparer](integrations/swebench_pro.py) derives tasks with separate agent and grading containers.
+The upstream images retain solution commits, so the agent image replaces Git history with a source-only baseline.
+After execution, Harbor transfers the generated patch to a fresh upstream image containing the original grader and gold test history.
+The preparer retains the original instructions, reference solution, and grading script, and records the adaptation and source hashes.
+Qualify each selected task with reference and unchanged-workspace controls before measuring agents.
+
+```sh
+uv run python -m eval.integrations.swebench_pro eval/cache/upstream-suite.json \
+  --image-digests eval/cache/image-digests.json \
+  --output eval/cache/isolated-suite
+```
+
+The image-digest file maps each upstream `jefzda/sweap-images:<tag>` to its `sha256:...` digest.
+Missing pins or source changes fail preparation; output directories must be new.
+Use the resulting `suite.json` in the controls and agent experiments, and disclose this adaptation with reported results.
+This isolates the grader from the agent's container; it does not establish immunity to public-data contamination or malicious submissions.
+
+On SELinux hosts, benchmark result directories must have a container-compatible label before Harbor creates bind-mounted logs.
+Harbor also requires Docker Compose options that some `podman-compose` releases do not implement.
+Record the actual engine and Compose versions alongside the experiment.
 
 Scripted runtime checks need no API key or Docker:
 

@@ -22,7 +22,7 @@ from eval.integrations.agent_config import (
 )
 
 
-def test_baseline_controls_are_explicit_and_do_not_load_project_resources():
+def test_baseline_controls_allow_project_instructions_but_not_extensions():
     assert model_parts("anthropic/claude-sonnet-4-6", "off") == ("anthropic", "claude-sonnet-4-6")
     with pytest.raises(ValueError, match="requires effort='off'"):
         model_parts("anthropic/claude-sonnet-4-6", "high")
@@ -38,8 +38,19 @@ def test_baseline_controls_are_explicit_and_do_not_load_project_resources():
             model_parts("openai/" + model, "high")
     pi = pi_arguments("openai", "gpt-5.4", "/logs/agent", effort="off")
     assert pi[pi.index("--tools") + 1] == "read,edit,write,bash"
-    for flag in ("--no-extensions", "--no-skills", "--no-context-files", "--no-approve", "--offline"):
+    assert "--no-context-files" not in pi
+    for flag in ("--no-extensions", "--no-skills", "--no-approve", "--offline"):
         assert flag in pi
+
+
+def test_codex_baseline_uses_native_oauth_provider_and_explicit_effort():
+    assert model_parts("codex/gpt-6-astra", "medium") == ("codex", "gpt-6-astra")
+    ava = ava_arguments("codex", "gpt-6-astra", "/logs", effort="medium", compaction=True)
+    pi = pi_arguments("codex", "gpt-6-astra", "/logs", effort="medium")
+    assert ava[ava.index("--provider") + 1] == "codex"
+    assert ava[ava.index("--effort") + 1] == "medium"
+    assert "--no-compact" not in ava
+    assert pi[pi.index("--provider") + 1] == "openai-codex"
 
 
 def test_usage_includes_cache_reasoning_and_compaction_without_double_counting():
@@ -80,10 +91,11 @@ def test_usage_includes_cache_reasoning_and_compaction_without_double_counting()
     assert not failed["completed"] and failed["cost_usd"] is None
 
 
-def test_inspection_restores_provider_totals_before_aggregating_optional_splits(project: Path):
+@pytest.mark.parametrize("provider", ["openai", "codex"])
+def test_inspection_restores_provider_totals_before_aggregating_optional_splits(project: Path, provider: str):
     for mixed in (False, True):
         path = project / f"usage-{mixed}.jsonl"
-        log = Log.create_at(path, project, "openai", "gpt-5.4")
+        log = Log.create_at(path, project, provider, "gpt-5.4")
         try:
             log.append(Usage(attempt_id="a", input=100, cached_read=40, output=30, reasoning=10))
             log.append(Usage(attempt_id="b", input=100, output=30))

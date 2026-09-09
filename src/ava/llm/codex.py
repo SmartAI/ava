@@ -40,7 +40,7 @@ from ava.transport import Client, Request, SseEvent
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 # Catalog filtering follows this audited Codex protocol contract, not Ava's release number.
-CODEX_CLIENT_VERSION = "0.150.1"
+CODEX_CLIENT_VERSION = "0.153.4"
 MAX_CODEX_AUTH_BYTES = 1 << 20
 _OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
 

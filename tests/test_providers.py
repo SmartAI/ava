@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ava.base import AvaError
+from ava.base import AvaError, ErrorKind
 from ava.llm import (
     Context,
     Item,
@@ -35,7 +35,7 @@ from ava.llm.configuration import (
     save_basic_configuration,
 )
 from ava.llm.openai import OpenAIProvider, openai_request_body
-from ava.llm.provider import resolve_model_alias
+from ava.llm.provider import Provider, resolve_model_alias, resolve_selection_model
 from ava.tool import make_edit_tool
 
 ANTHROPIC_STREAM = (
@@ -443,3 +443,22 @@ def test_web_managed_settings_reject_insecure_custom_endpoint(home: Path):
             family="anthropic",
             base_url="https://gateway.internal",
         )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "medium"])
+async def test_required_catalog_failure_is_not_reported_as_unsupported_effort(monkeypatch, effort):
+    provider = Provider(Selection("codex", "gpt-6-astra", effort))
+    provider.selection_model_may_be_alias = True
+    failure = AvaError(ErrorKind.timeout, "model catalog timed out")
+
+    async def unavailable(cancel):
+        raise failure
+
+    monkeypatch.setattr(provider, "list_models", unavailable)
+    if effort is None:
+        await resolve_selection_model(provider)
+        assert provider.selection.model == "gpt-6-astra"
+    else:
+        with pytest.raises(AvaError) as caught:
+            await resolve_selection_model(provider)
+        assert caught.value is failure

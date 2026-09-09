@@ -550,7 +550,7 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
     models = await provider.list_models()
     assert models == ["gpt-secondary", "gpt-default"]
     assert provider.model_aliases["default"] == "gpt-default"
-    assert _Codex.gets[0]["path"] == "/models?client_version=0.150.1"
+    assert _Codex.gets[0]["path"] == "/models?client_version=0.153.4"
     assert _Codex.gets[0]["headers"]["ChatGPT-Account-Id"] == "acct-test"
     assert "session-id" not in _Codex.gets[0]["headers"]
     assert provider.capabilities("gpt-default").effort_values == ["low", "high"]

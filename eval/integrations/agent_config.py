@@ -6,7 +6,7 @@ import json
 from collections import Counter
 from typing import Any, cast
 
-PI_VERSION = "0.84.0"
+PI_VERSION = "0.85.1"
 EFFORTS = {"off", "low", "medium", "high", "xhigh"}
 
 
@@ -18,8 +18,8 @@ def model_parts(model_name: str | None, effort: str, *, mock: bool = False) -> t
     if not model_name or "/" not in model_name:
         raise ValueError("Specify provider/<exact-model-id>")
     provider, model = model_name.split("/", 1)
-    if provider not in ({"openai", "anthropic", "mock"} if mock else {"openai", "anthropic"}):
-        raise ValueError("Supported benchmark providers: openai, anthropic (Ava also supports mock)")
+    if provider not in ({"openai", "anthropic", "codex", "mock"} if mock else {"openai", "anthropic", "codex"}):
+        raise ValueError("Supported benchmark providers: openai, anthropic, codex (Ava also supports mock)")
     if not model or "/" in model or ":" in model or not any(c.isdigit() for c in model):
         raise ValueError("Use an exact model ID, without aliases or thinking-level suffixes")
     if effort not in EFFORTS:
@@ -42,7 +42,7 @@ def ava_arguments(
     ]
     # The non-reasoning OpenAI model families reject a reasoning_effort argument,
     # including 'none'; omitting it is their explicit off configuration.
-    if provider == "openai" and not _nonreasoning_openai(model):
+    if provider == "codex" or (provider == "openai" and not _nonreasoning_openai(model)):
         args += ["--effort", "none" if effort == "off" else effort]
     if not compaction:
         args.append("--no-compact")
@@ -56,10 +56,11 @@ def ava_arguments(
 def pi_arguments(provider: str, model: str, remote: str, *, effort: str) -> list[str]:
     return [
         "/opt/pi-node/bin/node", "/opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
-        "--print", "--provider", provider, "--model", model, "--thinking", effort,
+        "--print", "--provider", "openai-codex" if provider == "codex" else provider,
+        "--model", model, "--thinking", effort,
         "--tools", "read,edit,write,bash", "--session", f"{remote}/session.jsonl",
         "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
-        "--no-context-files", "--no-approve", "--offline",
+        "--no-approve", "--offline",
     ]
 
 
@@ -72,7 +73,7 @@ def _sum_known(values: list[Any]) -> int | float | None:
 def ava_usage(summary: dict[str, Any]) -> dict[str, Any]:
     tokens = summary["tokens"]
     # cache_write_1h is a subset of cache_write, never an additional amount.
-    openai = summary["provider"] == "openai"
+    openai = summary["provider"] in {"openai", "codex"}
     input_parts = [tokens.get(key) for key in ("input", "cached_read")]
     if not openai:
         input_parts.append(tokens.get("cache_write"))
