@@ -280,6 +280,9 @@ def _scan_plain(data: bytes, *, header_only: bool) -> _PhysicalScan:
     return scan
 
 
+_ZSTD_SCAN_CHUNK_BYTES = 64 * 1024
+
+
 def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
     if not data:
         raise AvaError(ErrorKind.parse, "invalid session log", "session file is empty")
@@ -287,31 +290,42 @@ def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
     decompressor = zstandard.ZstdDecompressor(max_window_size=1 << MAX_WINDOW_LOG)
     offset = 0
     while offset < len(data):
-        remaining = data[offset:]
+        frame_offset = offset
         decoder = decompressor.decompressobj()
+        decoded_parts: list[bytes] = []
+        decoded_size = 0
         try:
-            decoded = decoder.decompress(remaining)
+            while offset < len(data) and not decoder.eof:
+                end = min(offset + _ZSTD_SCAN_CHUNK_BYTES, len(data))
+                part = decoder.decompress(data[offset:end])
+                decoded_parts.append(part)
+                decoded_size += len(part)
+                if decoded_size > MAX_DECODED_BATCH_BYTES:
+                    raise AvaError(
+                        ErrorKind.parse,
+                        "invalid Zstandard session frame",
+                        "frame exceeds the decoded batch limit",
+                    )
+                offset = end
+            if decoder.eof:
+                offset -= len(decoder.unused_data)
         except zstandard.ZstdError as error:
             # A frame that cannot be decoded at all is corruption, not an interruption, unless it
             # is the unfinished header of the final frame.
+            remaining = data[frame_offset:]
             if remaining[:4] == ZSTD_MAGIC and len(remaining) < 18 and _header_is_short(remaining):
-                scan.torn_offset = offset
+                scan.torn_offset = frame_offset
                 break
             raise AvaError(
                 ErrorKind.parse, "corrupt Zstandard session frame", str(error)
             ) from error
-        if len(decoded) > MAX_DECODED_BATCH_BYTES:
-            raise AvaError(
-                ErrorKind.parse,
-                "invalid Zstandard session frame",
-                "frame exceeds the decoded batch limit",
-            )
+        decoded = b"".join(decoded_parts)
         if not decoder.eof:
             # Only the final physical unit can be torn; keep its complete-record prefix.
-            scan.torn_offset = offset
+            scan.torn_offset = frame_offset
             _, scan.retained_batch = _split_records(decoded, allow_partial_tail=True)
             break
-        parameters = zstandard.get_frame_parameters(remaining)
+        parameters = zstandard.get_frame_parameters(data[frame_offset:min(frame_offset + 18, len(data))])
         if not parameters.has_checksum or parameters.content_size == zstandard.CONTENTSIZE_UNKNOWN:
             raise AvaError(
                 ErrorKind.parse,
@@ -327,7 +341,6 @@ def _scan_zstd(data: bytes, *, header_only: bool) -> _PhysicalScan:
         records, _ = _split_records(decoded, allow_partial_tail=False)
         scan.records.extend(records)
         scan.unit_count += 1
-        offset += len(remaining) - len(decoder.unused_data)
         if header_only:
             return scan
     return scan
