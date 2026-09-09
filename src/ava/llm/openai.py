@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ava.base import AvaError, CancelToken, ErrorKind
 from ava.base.cancel import NEVER
@@ -144,7 +144,7 @@ def openai_request_body(context: Context, model: str, effort: str | None) -> str
         messages.append(_user_message(Item(role=Role.user, blocks=images), counter))
     body["messages"] = messages
     if context.tools:
-        # The loop dispatches one streamed call at a time.
+        # Prefer single calls, but tolerate endpoints that ignore this hint.
         body["parallel_tool_calls"] = False
         body["tools"] = [_tool_schema(tool) for tool in context.tools]
     encoded = _dumps(body)
@@ -153,11 +153,15 @@ def openai_request_body(context: Context, model: str, effort: str | None) -> str
 
 
 @dataclass(slots=True)
+class _ToolCall:
+    id: str = ""
+    name: str = ""
+    arguments: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class OpenAIStreamState:
-    tool_index: int | None = None
-    tool_id: str = ""
-    tool_name: str = ""
-    tool_started: bool = False
+    tools: dict[int, _ToolCall] = field(default_factory=dict)
     stop_reason: StopReason | None = None
 
 
@@ -193,51 +197,39 @@ def _emit_openai_usage(source: dict, sink: StreamSink) -> None:
         sink(StreamEvent(kind=StreamEventKind.usage, usage=usage))
 
 
-def _consume_tool_delta(delta: dict, sink: StreamSink, state: OpenAIStreamState) -> None:
-    index = delta.get("index")
-    if not isinstance(index, int):
+def _consume_tool_delta(delta: dict, state: OpenAIStreamState) -> None:
+    index = _int_or_none(delta.get("index"))
+    if index is None or index < 0:
         raise AvaError(
             ErrorKind.parse,
             "OpenAI tool call delta is missing its index; check endpoint compatibility",
         )
-    if state.tool_index is not None and state.tool_index != index:
-        raise AvaError(
-            ErrorKind.provider,
-            "OpenAI streamed parallel tool calls after Ava disabled them; check endpoint compatibility",
-        )
-    state.tool_index = index
+    call = state.tools.setdefault(index, _ToolCall())
     streamed_id = delta.get("id") or ""
     if streamed_id:
-        if state.tool_id and state.tool_id != streamed_id:
+        if call.id and call.id != streamed_id:
             raise AvaError(
                 ErrorKind.parse,
                 "OpenAI changed a streamed tool call id; check endpoint compatibility",
             )
-        state.tool_id = streamed_id
+        call.id = streamed_id
     raw_function = delta.get("function")
     function: dict = raw_function if isinstance(raw_function, dict) else {}
     name = function.get("name")
     if isinstance(name, str) and name:
-        if state.tool_name and state.tool_name != name:
+        if call.name and call.name != name:
             raise AvaError(
                 ErrorKind.parse, "OpenAI changed a streamed tool name; check endpoint compatibility"
             )
-        state.tool_name = name
-    if not state.tool_started and state.tool_id and state.tool_name:
-        sink(
-            StreamEvent(
-                kind=StreamEventKind.tool_call_start, id=state.tool_id, name=state.tool_name
-            )
-        )
-        state.tool_started = True
+        call.name = name
     arguments = function.get("arguments")
     if isinstance(arguments, str) and arguments:
-        if not state.tool_started:
+        if not call.id or not call.name:
             raise AvaError(
                 ErrorKind.parse,
                 "OpenAI streamed tool arguments before the call identity; check endpoint compatibility",
             )
-        sink(StreamEvent(kind=StreamEventKind.tool_call_delta, text=arguments, id=state.tool_id))
+        call.arguments.append(arguments)
 
 
 def _apply_finish_reason(reason: str, sink: StreamSink, state: OpenAIStreamState) -> None:
@@ -246,13 +238,27 @@ def _apply_finish_reason(reason: str, sink: StreamSink, state: OpenAIStreamState
     elif reason == "length":
         state.stop_reason = StopReason.max_tokens
     elif reason == "tool_calls":
-        if not state.tool_started:
+        calls = [state.tools[index] for index in sorted(state.tools)]
+        if not calls or any(not call.id or not call.name for call in calls):
             raise AvaError(
                 ErrorKind.parse,
                 "OpenAI stopped for tool calls without a complete call identity; check endpoint compatibility",
             )
-        sink(StreamEvent(kind=StreamEventKind.tool_call_end, id=state.tool_id))
-        state.tool_started = False
+        if len({call.id for call in calls}) != len(calls):
+            raise AvaError(ErrorKind.parse, "OpenAI returned duplicate tool call ids")
+        # The assembler accepts one open call at a time, even for interleaved wire deltas.
+        for call in calls:
+            sink(StreamEvent(kind=StreamEventKind.tool_call_start, id=call.id, name=call.name))
+            if call.arguments:
+                sink(
+                    StreamEvent(
+                        kind=StreamEventKind.tool_call_delta,
+                        text="".join(call.arguments),
+                        id=call.id,
+                    )
+                )
+            sink(StreamEvent(kind=StreamEventKind.tool_call_end, id=call.id))
+        state.tools.clear()
         state.stop_reason = StopReason.tool_use
     else:
         raise AvaError(ErrorKind.provider, f"OpenAI stopped with unsupported reason '{reason}'")
@@ -262,7 +268,7 @@ def consume_openai_event(
     event: SseEvent, sink: StreamSink, state: OpenAIStreamState
 ) -> StopReason | None:
     if event.data == "[DONE]":
-        if state.tool_started:
+        if state.tools:
             raise AvaError(
                 ErrorKind.parse,
                 "OpenAI stopped before finishing a tool call; retry or check endpoint compatibility",
@@ -307,7 +313,7 @@ def consume_openai_event(
             if isinstance(calls, list):
                 for call in calls:
                     if isinstance(call, dict):
-                        _consume_tool_delta(call, sink, state)
+                        _consume_tool_delta(call, state)
         finish_reason = choice.get("finish_reason")
         if isinstance(finish_reason, str) and finish_reason:
             _apply_finish_reason(finish_reason, sink, state)
