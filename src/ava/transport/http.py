@@ -17,7 +17,7 @@ from ava.transport.sse import SseEvent, SseParser
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 CONNECT_TIMEOUT_SECONDS = 10.0
-MODEL_DISCOVERY_TIMEOUT_SECONDS = 5.0
+MODEL_DISCOVERY_TIMEOUT_SECONDS = 30.0
 
 SseSink = Callable[[SseEvent], None]
 

@@ -20,6 +20,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from eval.integrations.agent_config import PI_VERSION, model_parts
+
 ROOT = Path(__file__).resolve().parents[1]
 HARBOR_VERSION = "0.22.0"
 MAX_JSON_BYTES = 16_000_000
@@ -65,6 +67,8 @@ class AgentSpec(StrictModel):
             raise ValueError("use provider/concrete-model-id, not a placeholder or latest alias")
         elif not all(self.model.split("/", 1)):
             raise ValueError("model provider and ID must both be nonempty")
+        if self.kind in ("ava", "pi"):
+            model_parts(self.model, self.effort, mock=self.kind == "ava")
         if self.kind != "ava" and (self.wheel or self.system_prompt):
             raise ValueError("wheel and system_prompt are Ava candidate inputs")
         if self.kind in ("codex", "claude-code") and not self.version:
@@ -200,6 +204,8 @@ def plan(config: Experiment) -> dict[str, Any]:
 def agent_config(spec: AgentSpec, inputs: Path, timeout: int) -> dict[str, Any]:
     value: dict[str, Any] = {"model_name": spec.model, "override_timeout_sec": timeout}
     if spec.kind in ("ava", "pi"):
+        # Allow native runtime installation without consuming the model execution budget.
+        value["override_setup_timeout_sec"] = 1800
         module = "harbor_agent:AvaAgent" if spec.kind == "ava" else "pi_agent:PiAgent"
         value["import_path"] = f"eval.integrations.{module}"
         kwargs: dict[str, Any] = {"effort": spec.effort, "compaction": spec.compaction}
@@ -302,6 +308,11 @@ def verify_identity(row: dict[str, Any], spec: AgentSpec, inputs: dict[str, str]
             spec.model.split("/", 1)
         ):
             raise ValueError("Ava's session selected a different model")
+    if spec.kind == "pi":
+        if metadata.get("lock_sha256") != inputs.get("lock_sha256") or not inputs.get("lock_sha256"):
+            raise ValueError("Pi's recorded lockfile does not match the frozen baseline")
+        if metadata.get("version") != inputs.get("version") or info.get("version") != inputs.get("version"):
+            raise ValueError("Pi's recorded version does not match the frozen baseline")
     if spec.version and info.get("version") != spec.version:
         raise ValueError("recorded agent version differs from the pinned version")
 
@@ -367,6 +378,10 @@ def summarize(rows: list[dict[str, Any]], expected: int) -> dict[str, Any]:
 
 
 def run(config: Experiment, output: Path, harbor: Path) -> dict[str, Any]:
+    if any(a.model and a.model.startswith("codex/") for a in config.agents):
+        from eval.integrations.codex_auth import auth_documents
+
+        auth_documents()  # Fail before containers or output artifacts; never fall back to API keys.
     frozen = plan(config)
     output = output.resolve()
     harbor = harbor.absolute()
@@ -383,6 +398,11 @@ def run(config: Experiment, output: Path, harbor: Path) -> dict[str, Any]:
         folder = inputs / agent.id
         folder.mkdir()
         fingerprints[agent.id] = {}
+        if agent.kind == "pi":
+            fingerprints[agent.id] = {
+                "lock_sha256": file_hash(ROOT / "eval/integrations/pi/package-lock.json"),
+                "version": PI_VERSION,
+            }
         if agent.kind == "ava":
             wheel = ROOT / (agent.wheel or "eval/cache/wheels/ava-0.1.0-py3-none-any.whl")
             destination = folder / "ava-0.1.0-py3-none-any.whl"
@@ -472,6 +492,10 @@ def run(config: Experiment, output: Path, harbor: Path) -> dict[str, Any]:
             stop_reason = (
                 "missing grade or infrastructure failure; fix it before spending on more trials"
             )
+        elif spec.kind == "oracle" and row["correct"] is not True:
+            stop_reason = "reference solution failed; qualify the task and verifier before model runs"
+        elif spec.kind == "nop" and row["correct"] is not False:
+            stop_reason = "unchanged workspace passed; investigate the task before model runs"
         if (
             config.stop_after_estimated_usd is not None
             and spec.model

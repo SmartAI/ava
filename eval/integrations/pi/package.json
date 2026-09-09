@@ -4,6 +4,6 @@
   "private": true,
   "description": "Pinned Pi baseline for Ava's isolated task evaluations",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.0"
+    "@earendil-works/pi-coding-agent": "0.85.1"
   }
 }

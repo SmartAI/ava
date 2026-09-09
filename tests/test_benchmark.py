@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,9 @@ from eval.benchmark import (
     normalize,
     plan,
     price_row,
+    run,
     summarize,
+    verify_identity,
 )
 
 
@@ -56,6 +59,50 @@ def test_plan_hashes_inputs_and_rejects_unsafe_task_destinations(tmp_path: Path,
     with pytest.raises(ValueError):
         plan(_experiment())
     assert not (tmp_path / "outside-experiment").exists()
+
+
+def test_pi_identity_rejects_version_or_lockfile_drift():
+    spec = AgentSpec(id="pi", kind="pi", model="codex/gpt-6-astra", effort="medium")
+    row = {"agent_info": {"version": "0.85.1", "model_info": {"provider": "codex", "name": "gpt-6-astra"}},
+           "metadata": {"version": "0.85.1", "lock_sha256": "frozen-lock"}}
+    inputs = {"version": "0.85.1", "lock_sha256": "frozen-lock"}
+    verify_identity(row, spec, inputs)
+    row["metadata"]["lock_sha256"] = "changed-lock"
+    with pytest.raises(ValueError, match="lockfile"):
+        verify_identity(row, spec, inputs)
+    row["metadata"]["lock_sha256"] = "frozen-lock"
+    row["metadata"]["version"] = "0.84.0"
+    with pytest.raises(ValueError, match="version"):
+        verify_identity(row, spec, inputs)
+
+
+@pytest.mark.parametrize("kind,reward,reason", [("oracle", 0, "reference solution"), ("nop", 1, "unchanged workspace")])
+def test_bad_control_stops_before_remaining_trials(tmp_path, monkeypatch, kind, reward, reason):
+    _suite(tmp_path, monkeypatch)
+    package = tmp_path / "eval"
+    (package / "integrations").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "constraints.txt").write_text("")
+    (package / "integrations/__init__.py").write_text("")
+    calls = []
+
+    def execute(args, **kwargs):
+        if "--version" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="harbor 0.22.0")
+        job = json.loads(Path(args[-1]).read_text())
+        calls.append(job)
+        trial = Path(job["jobs_dir"]) / job["job_name"] / "task"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(json.dumps({"verifier_result": {"rewards": {"reward": reward}}}))
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr("eval.benchmark.subprocess.run", execute)
+    config = Experiment(name="controls", suite="suite.json", agents=[AgentSpec(id=kind, kind=kind)], repetitions=1)
+    report = run(config, tmp_path / "results", tmp_path / "harbor")
+    assert reason in report["stop_reason"]
+    assert len(calls) == 1
+    assert report["agents"][kind]["completed_trials"] == 1
+    assert report["agents"][kind]["expected_trials"] == 2
 
 
 def _row(correct: bool | None = False, *, task: dict | None = None) -> dict:

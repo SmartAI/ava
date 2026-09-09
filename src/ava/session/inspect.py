@@ -81,13 +81,13 @@ def inspect_session(path: Path) -> dict[str, Any]:
         inclusive: dict[str, int | None] = {"input": None, "output": None}
         # Mixed-provider sessions need per-attempt attribution, which the old log schema
         # does not guarantee. Never reinterpret the whole session using its final provider.
-        if len(providers) == 1 and header.provider in {"openai", "anthropic"}:
+        if len(providers) == 1 and header.provider in {"openai", "codex", "anthropic"}:
             amounts: dict[str, list[int | None]] = {"input": [], "output": []}
             for attempt in attempts:
                 item = usage.get(attempt)
                 input_total = output_total = None
                 if item is not None:
-                    if header.provider == "openai":
+                    if header.provider in {"openai", "codex"}:
                         if item.input is not None:
                             input_total = item.input + (item.cached_read or 0)
                         if item.output is not None:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shlex
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
 from eval.integrations.agent_config import ava_arguments, ava_usage, model_parts
+from eval.integrations.codex_auth import codex_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,69 +61,74 @@ class AvaAgent(BaseInstalledAgent):
         await environment.upload_file(self.wheel, "/tmp/ava-0.1.0-py3-none-any.whl")
         await environment.upload_file(ROOT / "constraints.txt", "/tmp/ava-constraints.txt")
         await environment.upload_file(ROOT / "integrations/install.sh", "/tmp/ava-install.sh")
-        await self.exec_as_root(environment, command="sh /tmp/ava-install.sh", timeout_sec=600)
+        await self.exec_as_root(environment, command="sh /tmp/ava-install.sh", timeout_sec=1800)
 
     @with_prompt_template
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext,
     ) -> None:
-        remote = str(self.environment_logs_dir)
-        env = {"AVA_HOME": f"{remote}/ava-home"}
-        if self.provider == "mock":
-            await self._upload_config_text(
-                environment, content="text Ava benchmark plumbing smoke test.\ndone\n",
-                remote_path="/tmp/ava-mock.txt", filename="mock.txt",
-            )
-            env["AVA_MOCK_SCRIPT"] = "/tmp/ava-mock.txt"
-        else:
-            key = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}[self.provider]
-            if not os.environ.get(key):
-                raise ValueError(f"{key} is required for a live benchmark run")
-            env[key] = os.environ[key]
-        await self._upload_config_text(
-            environment, content=instruction, remote_path="/tmp/ava-instruction.txt",
-            filename="instruction.txt",
-        )
-        args = ava_arguments(
-            self.provider, self.model, remote, effort=self.effort, compaction=self.compaction,
-            record_io=self.record_io, system_prompt=self.system_prompt is not None,
-        )
-        context.metadata = {
-            "wheel_sha256": self._wheel_sha256, "system_prompt_sha256": self._prompt_sha256,
-            "mode": "smoke" if self.provider == "mock" else "live",
-            "effort": self.effort, "compaction": self.compaction,
-            "record_io": self.record_io,
-            "agent_failed": False,
-            "provider_api": {"openai": "chat-completions", "anthropic": "messages"}.get(self.provider),
-            "tools": ["read", "edit", "write", "bash"],
-        }
-        failure = None
-        try:
-            await self.exec_as_agent(
-                environment, command=shlex.join(args) + " < /tmp/ava-instruction.txt", env=env,
-            )
-        except BaseException as error:
-            failure = error
-            context.metadata["agent_failed"] = True
-            raise
-        finally:
-            try:
-                result = await environment.exec(command=shlex.join([
-                    "/opt/ava-venv/bin/python", "-I", "-m", "ava.app.cli",
-                    "session", "inspect", f"{remote}/session.jsonl.zst",
-                ]))
-                if result.return_code != 0 or not result.stdout:
-                    raise ValueError("Ava did not leave a readable session summary")
-                summary = json.loads(result.stdout)
-                (self.logs_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-                usage = ava_usage(summary)
-                for field in ("n_input_tokens", "n_output_tokens", "n_cache_tokens", "cost_usd"):
-                    setattr(context, field, usage[field])
-                context.metadata.update(session=summary, usage_accounting=usage["usage_accounting"])
-                context.metadata["cache_write_tokens"] = (
-                    0 if self.provider == "openai" else summary["tokens"].get("cache_write")
+        async with AsyncExitStack() as stack:
+            remote = str(self.environment_logs_dir)
+            env = {"AVA_HOME": f"{remote}/ava-home"}
+            if self.provider == "codex":
+                env.update(await stack.enter_async_context(codex_environment(self, environment, kind="ava")))
+            elif self.provider == "mock":
+                await self._upload_config_text(
+                    environment, content="text Ava benchmark plumbing smoke test.\ndone\n",
+                    remote_path="/tmp/ava-mock.txt", filename="mock.txt",
                 )
-            except Exception as error:
-                context.metadata["harvest_error"] = str(error)
-                if failure is None:
-                    raise
+                env["AVA_MOCK_SCRIPT"] = "/tmp/ava-mock.txt"
+            else:
+                key = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}[self.provider]
+                if not os.environ.get(key):
+                    raise ValueError(f"{key} is required for a live benchmark run")
+                env[key] = os.environ[key]
+            await self._upload_config_text(
+                environment, content=instruction, remote_path="/tmp/ava-instruction.txt",
+                filename="instruction.txt",
+            )
+            args = ava_arguments(
+                self.provider, self.model, remote, effort=self.effort, compaction=self.compaction,
+                record_io=self.record_io, system_prompt=self.system_prompt is not None,
+            )
+            context.metadata = {
+                "wheel_sha256": self._wheel_sha256, "system_prompt_sha256": self._prompt_sha256,
+                "mode": "smoke" if self.provider == "mock" else "live",
+                "effort": self.effort, "compaction": self.compaction,
+                "record_io": self.record_io,
+                "authentication": "codex-oauth" if self.provider == "codex" else self.provider,
+                "project_instructions": True,
+                "agent_failed": False,
+                "provider_api": {"openai": "chat-completions", "anthropic": "messages", "codex": "codex-responses"}.get(self.provider),
+                "tools": ["read", "edit", "write", "bash"],
+            }
+            failure = None
+            try:
+                await self.exec_as_agent(
+                    environment, command=shlex.join(args) + " < /tmp/ava-instruction.txt", env=env,
+                )
+            except BaseException as error:
+                failure = error
+                context.metadata["agent_failed"] = True
+                raise
+            finally:
+                try:
+                    result = await environment.exec(command=shlex.join([
+                        "/opt/ava-venv/bin/python", "-I", "-m", "ava.app.cli",
+                        "session", "inspect", f"{remote}/session.jsonl.zst",
+                    ]))
+                    if result.return_code != 0 or not result.stdout:
+                        raise ValueError("Ava did not leave a readable session summary")
+                    summary = json.loads(result.stdout)
+                    (self.logs_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+                    usage = ava_usage(summary)
+                    for field in ("n_input_tokens", "n_output_tokens", "n_cache_tokens", "cost_usd"):
+                        setattr(context, field, usage[field])
+                    context.metadata.update(session=summary, usage_accounting=usage["usage_accounting"])
+                    context.metadata["cache_write_tokens"] = (
+                        0 if self.provider in {"openai", "codex"} else summary["tokens"].get("cache_write")
+                    )
+                except Exception as error:
+                    context.metadata["harvest_error"] = str(error)
+                    if failure is None:
+                        raise

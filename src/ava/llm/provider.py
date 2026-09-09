@@ -341,6 +341,10 @@ async def resolve_selection_model(provider: Provider, cancel: CancelToken = NEVE
         except AvaError as error:
             if error.kind == ErrorKind.cancelled:
                 return
+            if effort_needs_catalog and error.kind in {
+                ErrorKind.timeout, ErrorKind.network, ErrorKind.auth, ErrorKind.rate_limited,
+            }:
+                raise
         else:
             provider.selection.model = resolve_model_alias(
                 provider.selection.model, models, provider.model_aliases
