@@ -237,8 +237,10 @@ class Registry:
     def __init__(self, cwd: Path | None) -> None:
         from ava.tool.mcp import MCPServers
 
+        from .browser import BrowserTabs
 
         self.mcp = MCPServers(ava_home())
+        self.browser = BrowserTabs()
         self._state_path = ava_home() / "web.json"
         self._stored_sessions: dict[str, dict[str, Any]] = {}
         self.projects: list[Project] = []
@@ -519,6 +521,7 @@ class Registry:
         self.persist()
 
     async def aclose(self) -> None:
+        self.browser.close()
         if self.creations:
             await asyncio.gather(*list(self.creations.values()), return_exceptions=True)
         chats = [chat for project in self.projects for chat in project.chats]

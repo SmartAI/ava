@@ -20,6 +20,7 @@ from ava.llm import SelectionOverride, provider_from_environment
 
 from .analytics import Analytics, register_analytics_routes
 from .automations import Automations, register_automation_routes
+from .browser import register_browser_routes
 from .mcp import register_mcp_routes
 from .registry import Registry, WebState
 from .routes import error_response, register_routes
@@ -124,6 +125,7 @@ def create_app(
     register_automation_routes(app, automations)
     register_skill_routes(app, registry)
     register_mcp_routes(app, registry)
+    register_browser_routes(app, registry)
     register_analytics_routes(app, analytics)
 
     @app.get("/api/system")

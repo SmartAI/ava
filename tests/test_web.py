@@ -1220,3 +1220,38 @@ async def test_worktree_creation_failures_are_retryable_without_orphan_sessions(
         assert len(registry.projects[0].chats) == 1
         assert (retained / "hook-output").read_text() == "kept"
     assert all(provider.closed for provider in scripted)
+
+
+async def test_browser_handoff_routes_deliver_once_and_cancel_inflight_actions(client, scripted):
+    project_id = (await client.get('/api/projects')).json()['projects'][0]['id']
+    chat = (await client.post('/api/chats', json={'project_id': project_id})).json()['id']
+    provider = scripted[-1]
+    provider.scripts = [tool_call_response('browser-one', 'browser', '{"action":"snapshot"}'), text_response('Inspected')]
+    prefix = f'/api/chats/{chat}/browser'
+    lease = (await client.post(prefix, json={})).json()['id']
+    path = prefix + '/' + lease
+    assert (await client.post(f'/api/chats/{chat}/messages', json={'text': 'Inspect the shared page'})).status_code == 202
+    command = (await client.get(path)).json()['command']
+    assert command['action'] == 'snapshot'
+    duplicate_poll = asyncio.create_task(client.get(path))
+    await asyncio.sleep(0.02)
+    assert not duplicate_poll.done(), 'A delivered action must never be replayed by a later poll'
+    assert (await client.post(path, json={'id': 'stale', 'text': 'Wrong result'})).status_code == 409
+    assert (await client.post(path, json={'id': command['id'], 'text': 'Shared page text'})).status_code == 200
+    assert (await duplicate_poll).json()['command'] is None
+    events = await _events_until(client, chat, 'turn/end')
+    assert any(event['kind'] == 'tool/result' for event in events)
+    assert any(block.text == 'Shared page text' for item in provider.contexts[-1].items for block in item.blocks)
+    assert (await client.post(path, json={'id': command['id'], 'text': 'Repeated'})).status_code == 409
+
+    provider.scripts = [tool_call_response('browser-two', 'browser', '{"action":"click","ref":"old"}'), text_response('Taken over')]
+    provider.calls = 0
+    assert (await client.post(f'/api/chats/{chat}/messages', json={'text': 'Continue'})).status_code == 202
+    pending = (await client.get(path)).json()['command']
+    replacement = (await client.post(prefix, json={})).json()['id']
+    assert replacement != lease
+    assert (await client.post(path, json={'id': pending['id'], 'text': 'Late result'})).status_code == 410
+    await _events_until(client, chat, lambda event: event['kind'] == 'turn/end' and event.get('turn') == 2)
+    assert any(block.is_error and 'different browser tab' in block.text for item in provider.contexts[-1].items for block in item.blocks)
+    assert (await client.delete(prefix + '/' + replacement)).status_code == 200
+    assert (await client.get(prefix + '/' + replacement)).status_code == 410
