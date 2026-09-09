@@ -23,13 +23,17 @@ dependencies = [
     "pydantic>=2.10",
     "zstandard>=0.22",
     "psutil>=7,<8",
-    "mcp>=2.2,<3",
-    "pyyaml>=6,<7",
     "tzdata>=2025.1",
+    "pyyaml>=6,<7",
+    "mcp>=2.2,<3",
 ]
 
 [project.optional-dependencies]
-desktop = ["PySide6-Essentials>=6.8,<7"]
+desktop = [
+    "browser-cookie3>=0.20,<0.21",
+    "PySide6>=6.9,<7",
+    "Pygments>=2.19,<3",
+]
 
 [project.urls]
 Homepage = "https://github.com/SmartAI/ava"
@@ -57,6 +61,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "ruff>=0.6",
     "types-psutil>=7.2.2.20260906",
+    "types-pygments>=2.21.0.20260819",
     "types-pyyaml>=6.0.12.20260906",
 ]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QUrl, Signal
@@ -20,27 +21,53 @@ class Connection(QObject):
     status = Signal(dict)
     disconnected = Signal(str)
 
-    def __init__(self, port: int, token: str, parent: QObject | None = None) -> None:
+    def __init__(self, port: int, token: str, parent: QObject | None = None, *, authority: str = "", prefix: str = "") -> None:
         super().__init__(parent)
         self._base = f"http://127.0.0.1:{port}"
         self._token = token
+        self.prefix = prefix
+        self._authority = authority
         self._network = QNetworkAccessManager(self)
         self._stream: QNetworkReply | None = None
         self._requests: set[QNetworkReply] = set()
 
     def _request(self, path: str) -> QNetworkRequest:
+        if self.prefix:
+            path = path.replace("/" + self.prefix, "/")
         request = QNetworkRequest(QUrl(self._base + path))
         request.setRawHeader(b"Authorization", f"Bearer {self._token}".encode())
+        if self._authority:
+            request.setRawHeader(b"Host", self._authority.encode("ascii"))
         request.setAttribute(
             QNetworkRequest.Attribute.RedirectPolicyAttribute,
             QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
         )
         return request
 
+    def _identifiers(self, path: str, value: Any) -> Any:
+        # Only API resource identities are scoped. Tool IDs, events and text remain untouched.
+        if not self.prefix or not isinstance(value, dict):
+            return value
+        if path.startswith("/api/automations"):
+            scoped = {**value, **{key: self.prefix + value[key] for key in ("id", "project_id", "chat_id", "automation_id") if value.get(key)}}
+            for key in ("automations", "runs"):
+                if key in scoped:
+                    scoped[key] = [self._identifiers("/api/automations", row) for row in scoped[key]]
+            return scoped
+        if path == "/api/projects" and "projects" in value:
+            return {**value, "projects": [self._identifiers("/api/projects", p) for p in value["projects"]]}
+        if path == "/api/projects" and "id" in value:
+            return {**value, "id": self.prefix + value["id"], "chats": [self._identifiers("/api/chats", c) for c in value["chats"]]}
+        if path == "/api/chats" or (path.startswith("/api/chats/") and (path.count("/") == 3 or path.endswith("/review"))):
+            return {**value, **{key: self.prefix + value[key] for key in ("id", "project_id", "automation_id", "automation_run") if key in value}}
+        return value
+
     def call(
         self, method: str, path: str, body: dict[str, Any] | None, done: Callable[[Any, str], None]
     ) -> None:
         request = self._request(path)
+        if body is not None and self.prefix:
+            body = {**body, **{key: body[key].removeprefix(self.prefix) for key in ("project_id", "chat_id") if isinstance(body.get(key), str)}}
         request.setTransferTimeout(30_000)
         request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
         reply = self._network.sendCustomRequest(
@@ -50,6 +77,8 @@ class Connection(QObject):
         data = bytearray()
 
         def read() -> None:
+            if not reply.isOpen():
+                return
             data.extend(reply.readAll().data())
             if len(data) > MAX_REPLY_BYTES:
                 reply.abort()
@@ -73,13 +102,69 @@ class Connection(QObject):
                 )
             except (ValueError, UnicodeError):
                 payload, error = None, "Ava returned an unreadable response."
+            # Success headers can arrive before the socket closes mid-response.
+            if not error and reply.error() != QNetworkReply.NetworkError.NoError:
+                error = reply.errorString()
+            if not error and payload is None and code != 204:
+                error = "Ava returned an empty response. Reconnect and retry."
             if len(data) > MAX_REPLY_BYTES:
                 error = "Ava returned a response larger than 16 MiB."
             reply.deleteLater()
-            done(payload, error)
+            done(self._identifiers(path, payload), error)
 
         reply.readyRead.connect(read)
         reply.finished.connect(finished)
+
+    def download(self, path: str, destination: Path, size: int, done: Callable[[str], None], progress: Callable[[int], None]) -> Callable[[], None]:
+        """Stream into a private temporary file; never accumulate PDF bytes in RAM."""
+        stream = destination.open("wb", buffering=0)
+        request = self._request(path)
+        request.setTransferTimeout(30_000)
+        reply = self._network.get(request)
+        reply.setReadBufferSize(256 * 1024)
+        self._requests.add(reply)
+        received = 0
+        failure = ""
+        last_percent = -1
+
+        def read() -> None:
+            nonlocal received, failure, last_percent
+            if failure or not reply.isOpen():
+                return
+            code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            if code != 200:
+                reply.readAll()
+                return
+            try:
+                data = bytes(reply.readAll().data())
+                received += len(data)
+                if received > size:
+                    raise ValueError("File changed. Reload the preview.")
+                stream.write(data)
+                percent = round(received * 100 / max(1, size))
+                if percent != last_percent:
+                    last_percent = percent
+                    progress(percent)
+            except (OSError, ValueError) as error:
+                failure = str(error)
+                reply.abort()
+
+        def finished() -> None:
+            read()
+            self._requests.discard(reply)
+            stream.close()
+            code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            error = failure
+            if not error and (code != 200 or reply.error() != QNetworkReply.NetworkError.NoError or received != size):
+                error = "File changed. Reload the preview." if code == 409 else "Download interrupted. Reconnect and retry."
+            if error:
+                destination.unlink(missing_ok=True)
+            reply.deleteLater()
+            done(error)
+
+        reply.readyRead.connect(read)
+        reply.finished.connect(finished)
+        return reply.abort
 
     def stream(self, chat_id: str, last_seq: int) -> None:
         self.close_stream()
