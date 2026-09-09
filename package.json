@@ -3,11 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tailwindcss -i src/ava/app/web/frontend/styles.css -o src/ava/app/web/assets/app.min.css --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --minify --format=iife --target=es2022 --outfile=src/ava/app/web/assets/app.min.js",
-    "check": "tailwindcss -i src/ava/app/web/frontend/styles.css -o /dev/null --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --format=iife --target=es2022 --outfile=/dev/null",
-    "test": "node --test src/ava/app/web/frontend/*.test.js"
+    "build": "tailwindcss -i src/ava/app/web/frontend/styles.css -o src/ava/app/web/assets/app.min.css --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --minify --format=iife --target=es2022 --outfile=src/ava/app/web/assets/app.min.js && npm run build:terminal",
+    "check": "tailwindcss -i src/ava/app/web/frontend/styles.css -o /dev/null --minify && esbuild src/ava/app/web/frontend/main.jsx --bundle --format=iife --target=es2022 --outfile=/dev/null && npm run check:terminal",
+    "test": "node --test src/ava/app/web/frontend/*.test.js",
+    "build:terminal": "esbuild src/ava/app/desktop/terminal/terminal.js --bundle --minify --target=es2022 --outfile=src/ava/app/desktop/terminal/assets/terminal.js",
+    "check:terminal": "esbuild src/ava/app/desktop/terminal/terminal.js --bundle --target=es2022 --outfile=/dev/null --loader:.css=empty"
   },
   "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
