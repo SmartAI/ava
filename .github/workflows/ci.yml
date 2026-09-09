@@ -29,10 +29,14 @@ jobs:
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
           uv version "${GITHUB_REF_NAME#v}"
-      - run: uv sync --frozen
-      - run: uv run ruff check src tests eval
-      - run: uv run mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
-      - run: uv run pytest -q
+      - run: uv sync --frozen --extra desktop
+      - run: uv run --extra desktop ruff check src tests eval
+      - run: uv run --extra desktop mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
+      - run: uv run --extra desktop pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+      - run: uv run --extra desktop pyside6-qmllint --max-warnings 0 src/ava/app/desktop/qml/Main.qml
       - run: npm ci
       - run: npm run check
       - run: npm test
@@ -67,6 +71,7 @@ jobs:
           from importlib.resources import files
 
           assets = files("ava.app.web").joinpath("assets")
+          assert files("ava.app.desktop").joinpath("qml/Main.qml").read_bytes()
           for name in ("app.min.js", "app.min.css", "ava-logo.svg"):
               assert assets.joinpath(name).read_bytes(), name
           PY

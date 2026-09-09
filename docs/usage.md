@@ -18,6 +18,45 @@ uv run ava session dump review.jsonl.zst
 `-c` continues the latest session. Explicit session paths make a run easy to locate
 and inspect later.
 
+### Qt Quick desktop app
+
+The desktop app uses QML and starts its own local Ava backend.
+Install the optional Qt dependencies and launch it from a terminal:
+
+```sh
+uv sync --extra desktop
+uv run --extra desktop ava-desktop --project .
+```
+
+`--provider`, `--model`, and `--effort` use the same selection rules as the CLI.
+For example, an existing Codex CLI login can be used with `--provider codex`.
+Configure credentials and providers through the existing settings file or Web UI before creating a conversation.
+
+Choose a project folder, create or reopen a conversation, and send a message.
+Enter sends; Shift+Enter inserts a newline.
+While Ava runs, further messages queue for a subsequent turn.
+Pause waits for a step boundary; Stop cancels the run; Resume continues a paused conversation.
+Drafts are kept separately for each conversation while the app remains open.
+
+The app shares durable history under `$AVA_HOME` and remembers the last selected project and conversation.
+Closing the window stops the backend and cancels active work before exiting.
+Only one desktop instance may use an Ava home at a time.
+Use a separate `AVA_HOME` when running an independent Ava server or CLI against the same project; do not open the same session with concurrent writers.
+
+This first desktop version displays selectable plain text and expandable tool output.
+Attachments, Markdown formatting, code diff, browser panels, and desktop installers are not yet included.
+macOS and Linux are the initial targets; platform-specific packaging and native input-method testing remain necessary.
+
+Run the desktop acceptance scenarios with a deterministic local model server:
+
+```sh
+uv run --extra desktop pytest -q tests/test_desktop.py
+uv run --extra desktop pyside6-qmllint --max-warnings 0 src/ava/app/desktop/qml/Main.qml
+```
+
+Without a display server, these tests render the QML window offscreen and deliver Qt mouse, keyboard, and input-method events.
+They exercise the actual backend process and HTTP/SSE interface without calling a live model.
+
 ### Python API
 
 Use the same runtime inside your application. With a provider configured, save this
@@ -93,9 +132,10 @@ fields and tool-calling behaviour required by the selected adapter:
 ## Develop
 
 ```sh
-uv run pytest
-uv run ruff check src tests eval
-uv run mypy src eval/run.py
+uv sync --extra desktop
+uv run --extra desktop pytest
+uv run --extra desktop ruff check src tests eval
+uv run --extra desktop mypy src eval/run.py
 npm ci
 npm run check
 npm test
