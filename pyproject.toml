@@ -39,6 +39,7 @@ Documentation = "https://github.com/SmartAI/ava/tree/main/docs"
 [project.scripts]
 ava = "ava.app.cli:main"
 ava-desktop = "ava.app.desktop:main"
+ava-backend = "ava.app.backend:main"
 
 [build-system]
 requires = ["hatchling"]

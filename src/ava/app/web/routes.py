@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from ava.agent import Agent, CancelCause, CompactNowOutcome, Status
+from ava.agent import CancelCause, CompactNowOutcome, Status
 from ava.agent.prompt import discover_skills
 from ava.app.attach import TEXT_LIMIT, decode_base64, sniff_image, valid_utf8_prefix
 from ava.base import AvaError, ErrorKind
+from ava.base.images import IMAGE_BYTE_LIMIT
 from ava.llm import (
     AuthRequirement,
     ContentBlock,
@@ -34,6 +38,7 @@ from ava.llm.configuration import (
 from ava.llm.credentials import delete_api_key, save_api_key
 from ava.llm.provider import Selection, SelectionOverride
 
+from . import worktrees
 from .models import (
     AddProjectBody,
     ArchiveBody,
@@ -41,15 +46,18 @@ from .models import (
     CreateChatBody,
     CredentialsBody,
     MessageBody,
+    RenameChatBody,
+    ReviewBody,
     ReviseMessageBody,
     SelectionBody,
     SettingsBody,
     parse_body,
 )
-from .registry import Chat, Project, WebState, title_from_text
+from .registry import Project, WebState, title_from_text
 from .streaming import begin_drive, event_stream
 
 FAVICON = Path(__file__).parent / "assets" / "ava-logo.svg"
+_LOG = logging.getLogger(__name__)
 
 ATTACHMENT_COUNT_LIMIT = 10
 ATTACHMENT_BYTE_LIMIT = 8 * 1024 * 1024
@@ -205,7 +213,10 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
 
     @app.get("/api/projects")
     async def projects() -> Response:
-        return JSONResponse({"projects": [project.summary() for project in registry.projects]})
+        return JSONResponse({
+            "projects": [project.summary() for project in registry.projects if not project.hidden],
+            "revision": registry.revision,
+        })
 
     @app.get("/api/settings")
     async def settings() -> Response:
@@ -247,11 +258,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             if body.api_key:
                 save_api_key(provider_name, body.api_key)
         except AvaError as error:
-            status = (
-                400
-                if error.kind in (ErrorKind.invalid_argument, ErrorKind.parse)
-                else 503
-            )
+            status = 400 if error.kind in (ErrorKind.invalid_argument, ErrorKind.parse) else 503
             return error_response(status, error.message)
 
         payload = settings_payload(saved)
@@ -269,7 +276,9 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
 
         chat = found[1]
         if chat.status != "idle" or chat.drive.running:
-            payload["warning"] = "Defaults were saved, but the current chat is busy and was not changed."
+            payload["warning"] = (
+                "Defaults were saved, but the current chat is busy and was not changed."
+            )
             return JSONResponse(payload)
         try:
             replacement = state.provider_factory(
@@ -282,9 +291,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                 AuthRequirement.allow_missing,
             )
             # A blank effort is an explicit UI choice, even if an AVA_EFFORT override exists.
-            replacement.selection = Selection(
-                selected.provider, selected.model, selected.effort
-            )
+            replacement.selection = Selection(selected.provider, selected.model, selected.effort)
         except AvaError as error:
             payload["warning"] = (
                 f"Defaults were saved, but the current chat was not changed: {error.message}"
@@ -313,11 +320,16 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         body = await parse_body(request, AddProjectBody)
         if body is None:
             return error_response(400, "path must be a non-empty JSON string")
-        path = Path(body.path).resolve()
+        path = Path(body.path).expanduser().resolve()
         if not path.is_dir():
             return error_response(400, "path must name an existing directory")
         existing = next((project for project in registry.projects if project.path == path), None)
         if existing is not None:
+            if body.restore:
+                try:
+                    registry.set_hidden(existing, False)
+                except AvaError as error:
+                    return error_response(503, error.message)
             return JSONResponse(existing.summary())
         project = Project(id=registry.next_project_id(), name=path.name or str(path), path=path)
         registry.projects.append(project)
@@ -328,34 +340,82 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             return error_response(503, error.message)
         return JSONResponse(project.summary(), status_code=201)
 
+    @app.post("/api/projects/{project_id}/hide")
+    async def hide_project(project_id: str) -> Response:
+        project = registry.find_project(project_id)
+        if project is None:
+            return error_response(404, "no such project")
+        try:
+            registry.set_hidden(project, True)
+        except AvaError as error:
+            return error_response(503, error.message)
+        return JSONResponse({"id": project.id, "hidden": True, "revision": registry.revision})
+
+    @app.get("/api/projects/{project_id}/worktrees")
+    async def worktree_options(project_id: str) -> Response:
+        project = registry.find_project(project_id)
+        if project is None or project.hidden:
+            return error_response(404, "no such project")
+        try:
+            return JSONResponse(await worktrees.options(project.path))
+        except (OSError, ValueError, TimeoutError) as error:
+            return error_response(400, str(error) or "Git took too long. Retry loading branches.")
+
+    async def create_workspace_chat(body: CreateChatBody, key: str) -> Response:
+        project = registry.find_project(body.project_id)
+        if project is None or project.hidden:
+            return error_response(404, "no such project")
+        for owner in registry.projects:
+            for existing in owner.chats:
+                if existing.creation_key == key:
+                    if owner.id != project.id or existing.worktree != (body.branch if body.workspace == "worktree" else "") or existing.creation_base != body.base_ref:
+                        return error_response(409, "This request already created a different workspace.")
+                    return JSONResponse(existing.summary())
+        try:
+            chat = await state.create_chat(project, body, key)
+            return JSONResponse(chat.summary(), status_code=201)
+        except (AvaError, OSError, ValueError, TimeoutError) as error:
+            message = error.message if isinstance(error, AvaError) else str(error)
+            return error_response(503 if isinstance(error, (AvaError, OSError)) else 400, message)
+
     @app.post("/api/chats")
     async def create_chat(request: Request) -> Response:
         body = await parse_body(request, CreateChatBody)
         if body is None:
-            return error_response(400, "project_id must be a non-empty JSON string")
-        project = registry.find_project(body.project_id)
-        if project is None:
-            return error_response(404, "no such project")
+            return error_response(400, "Invalid chat or workspace settings.")
+        if body.workspace == "worktree" and not body.request_id:
+            return error_response(400, "Worktree creation requires a request_id for safe retry.")
+        key = body.request_id or uuid4().hex
+        # Setup survives HTTP disconnects; explicit retries join the same task.
+        task = registry.creations.get(key)
+        if task is not None and task.get_name() != body.model_dump_json():
+            return error_response(409, "This request is already creating a different session.")
+        if task is None:
+            task = asyncio.create_task(create_workspace_chat(body, key), name=body.model_dump_json())
+            registry.creations[key] = task
+            task.add_done_callback(lambda completed: registry.creations.pop(key, None))
+        return await asyncio.shield(task)
+
+    @app.post("/api/chats/{chat_id}/review")
+    async def review_chat(chat_id: str, request: Request) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None or found[0].hidden:
+            return error_response(404, "no such chat")
+        chat = found[1]
+        body = await parse_body(request, ReviewBody)
+        if body is None:
+            return error_response(400, "review must identify the result being acknowledged")
+        if body.through > chat.completion_seq:
+            return error_response(409, "This result is no longer available. Refresh the board.")
+        previous = chat.reviewed_through
+        chat.reviewed_through = max(previous, body.through)
         try:
-            provider = state.provider_factory(
-                state.selection, None, AuthRequirement.required
-            )
-            agent = Agent.create(provider, project.path, state.compaction)
+            if chat.reviewed_through != previous:
+                registry.persist()
         except AvaError as error:
+            chat.reviewed_through = previous
             return error_response(503, error.message)
-        session_id = agent.session_id
-        if session_id is None:
-            await agent.aclose()
-            return error_response(503, "cannot identify the new session")
-        chat = Chat(id=registry.next_chat_id(), agent=agent, session_id=session_id)
-        project.chats.insert(0, chat)
-        try:
-            registry.persist()
-        except AvaError as error:
-            project.chats.remove(chat)
-            await agent.aclose()
-            return error_response(503, error.message)
-        return JSONResponse(chat.summary(), status_code=201)
+        return JSONResponse(chat.summary())
 
     @app.get("/api/chats/{chat_id}")
     async def open_chat(chat_id: str) -> Response:
@@ -368,13 +428,69 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                 "id": chat.id,
                 "project_id": project.id,
                 "title": chat.title,
-                "cwd": str(project.path),
+                "cwd": str(chat.agent.cwd),
+                "worktree": chat.worktree,
                 "status": chat.status,
                 "turn_open": chat.agent.turn_open,
                 "archived": chat.archived,
                 "events": [],
             }
         )
+
+    @app.patch("/api/chats/{chat_id}")
+    async def rename_chat(chat_id: str, request: Request) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        body = await parse_body(request, RenameChatBody)
+        if body is None or not body.title.strip():
+            return error_response(400, "title must contain between 1 and 200 characters")
+        chat = found[1]
+        previous = chat.title
+        chat.title = body.title.strip()
+        try:
+            registry.persist()
+        except AvaError as error:
+            chat.title = previous
+            return error_response(503, error.message)
+        chat.notify_status()
+        return JSONResponse(chat.summary())
+
+    @app.get("/api/chats/{chat_id}/images/{seq}/{block_index}/{image_index}")
+    async def tool_image(chat_id: str, seq: int, block_index: int, image_index: int) -> Response:
+        from ava.session import ToolResult
+
+        found = registry.find_chat(chat_id)
+        if found is None or found[0].hidden or min(seq, block_index, image_index) < 0:
+            return error_response(404, "no such image")
+        # Sequences are sorted and immutable; binary search avoids scanning history
+        # or decompressing its log whenever a user opens a screenshot.
+        session = found[1].agent.state.session
+        low, high = 0, len(session)
+        while low < high:
+            middle = (low + high) // 2
+            if session.at(middle).seq < seq:
+                low = middle + 1
+            else:
+                high = middle
+        if low == len(session) or session.at(low).seq != seq:
+            return error_response(404, "no such image")
+        payload = session.at(low).payload
+        if not isinstance(payload, ToolResult):
+            return error_response(404, "no such image")
+        try:
+            image = payload.item.blocks[block_index].attachments[image_index]
+        except IndexError:
+            return error_response(404, "no such image")
+        if len(image.bytes) > IMAGE_BYTE_LIMIT or image.media_type not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+            return error_response(422, "image format or size is unsupported")
+        try:
+            data = await asyncio.to_thread(bytes, image.bytes)
+            sniff_image(data, {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}[image.media_type])
+        except AvaError as error:
+            return error_response(422, error.message)
+        return Response(data, media_type=image.media_type,
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.post("/api/chats/{chat_id}/archive")
     async def archive_chat(chat_id: str, request: Request) -> Response:
@@ -393,6 +509,39 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             chat.archived = previous
             return error_response(503, error.message)
         return JSONResponse(chat.summary())
+
+    @app.delete("/api/chats/{chat_id}", status_code=204)
+    async def delete_empty_chat(chat_id: str) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        project, chat = found
+        if chat.worktree or chat.title or chat.archived or chat.status != "idle" or chat.agent.turn_open:
+            return error_response(409, "only an unused chat can be removed")
+        session_path = chat.agent.session_path
+        if session_path is None:
+            return error_response(409, "chat has no removable session")
+        try:
+            index = registry.remove_chat(project, chat)
+        except AvaError as error:
+            return error_response(503, error.message)
+        try:
+            session_path.unlink()
+        except OSError as error:
+            try:
+                registry.restore_chat(project, chat, index)
+            except AvaError as restore_error:
+                return error_response(
+                    503,
+                    f"cannot remove chat session: {error.strerror or error}; "
+                    f"cannot restore its index: {restore_error.message}",
+                )
+            return error_response(503, f"cannot remove chat session: {error.strerror or error}")
+        try:
+            await chat.agent.aclose()
+        except Exception:
+            _LOG.exception("failed to close removed chat %s", chat_id)
+        return Response(status_code=204)
 
     @app.post("/api/chats/{chat_id}/messages")
     async def post_message(chat_id: str, request: Request) -> Response:
@@ -594,7 +743,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         found = registry.find_chat(chat_id)
         if found is None:
             return error_response(404, "no such chat")
-        catalog = discover_skills(found[0].path)
+        catalog = await asyncio.to_thread(discover_skills, found[1].agent.cwd)
         return JSONResponse(
             {
                 "skills": [

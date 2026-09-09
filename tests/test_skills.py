@@ -13,6 +13,8 @@ from ava.agent import Agent
 from ava.agent.skills import create, detail, discover_skills, inventory, set_state
 from ava.session import PromptResolved, ToolResult
 from tests.conftest import ScriptedProvider, message, text_response, tool_call_response
+from tests.test_web import client as client
+from tests.test_web import scripted as scripted
 
 
 def test_inventory_yaml_shadowing_removal_and_restart(home, project, tmp_path):
@@ -64,6 +66,25 @@ async def test_skill_changes_apply_at_step_seam_and_keep_tool_results(home, proj
         await agent.aclose()
 
 
+async def test_skills_http_validation_and_chat_catalog(client, project):
+    base = "/api/projects/workspace/skills"
+    assert (await client.get(base)).json()["skills"] == []
+    draft = {"name": "review", "description": "Check changes", "body": "# Review\n\nCheck **tests**.", "scope": "project"}
+    response = await client.post(base, json=draft)
+    assert response.status_code == 201, response.text
+    identity = response.json()["id"]
+    assert (await client.post(base, json={**draft, "body": "Replace it"})).status_code == 400
+    for invalid in ("../outside", "UPPER", "double--hyphen"):
+        assert (await client.post(base, json={**draft, "name": invalid})).status_code == 400
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    assert len((await client.get("/api/chats/c1/skills")).json()["skills"]) == 1
+    assert (await client.post(f"{base}/{identity}", json={"state": "disabled"})).status_code == 200
+    assert (await client.get("/api/chats/c1/skills")).json()["skills"] == []
+    assert (await client.post(f"{base}/{identity}", json={"state": False})).status_code == 400
+    assert (await client.get("/api/projects/nope/skills")).status_code == 404
+    assert (await client.get(base, params={"cwd": str(project.parent)})).status_code == 404
+    await client.post("/api/projects/workspace/hide")
+    assert (await client.get(base)).status_code == 404
 
 
 def test_large_skill_preview_is_bounded_and_catalog_does_not_read_body(home, project):

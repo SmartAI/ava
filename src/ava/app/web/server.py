@@ -13,11 +13,16 @@ from typing import Any
 from fastapi import FastAPI, Request
 
 from ava.agent import CompactionOptions
-from ava.base import AvaError, ErrorKind
+from ava.agent.skills import revision as skill_revision
+from ava.app.backend_state import BackendState
+from ava.base import AvaError, ErrorKind, ava_home
 from ava.llm import SelectionOverride, provider_from_environment
 
+from .mcp import register_mcp_routes
 from .registry import Registry, WebState
 from .routes import error_response, register_routes
+from .skills import register_skill_routes
+from .workspace import register_workspace_routes
 
 DEFAULT_PORT = 8777
 _ASSETS = Path(__file__).parent / "assets"
@@ -38,7 +43,7 @@ def web_asset() -> str:
 
 
 def create_app(
-    cwd: Path,
+    cwd: Path | None,
     options: CompactionOptions | None = None,
     selection: SelectionOverride | None = None,
     *,
@@ -46,15 +51,23 @@ def create_app(
 ) -> FastAPI:
     compaction = options or CompactionOptions()
     selected = selection or SelectionOverride()
-    registry = Registry(cwd.resolve())
-    registry.restore(compaction, selected, provider_from_environment)
+    backend = BackendState(ava_home())
+    try:
+        registry = Registry(cwd.resolve() if cwd is not None else None)
+    except BaseException:
+        backend.close()
+        raise
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
+            registry.restore(compaction, selected, provider_from_environment)
             yield
         finally:
-            await registry.aclose()
+            try:
+                await registry.aclose()
+            finally:
+                backend.close()
 
     app = FastAPI(
         docs_url=None,
@@ -63,6 +76,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.registry = registry
+    app.state.backend = backend
     app.state.bound_port = 0
     state = WebState(
         registry=registry,
@@ -70,7 +84,6 @@ def create_app(
         selection=selected,
         provider_factory=provider_from_environment,
     )
-
     @app.middleware("http")
     async def fence(request: Request, call_next: Any):
         host = request.headers.get("host")
@@ -88,6 +101,14 @@ def create_app(
         return await call_next(request)
 
     register_routes(app, state, web_asset)
+    register_workspace_routes(app, registry)
+    register_skill_routes(app, registry)
+    register_mcp_routes(app, registry)
+
+    @app.get("/api/system")
+    async def system_info() -> dict:
+        return {**backend.info, "navigation_revision": registry.revision, "skill_revision": skill_revision(), "mcp_revision": str(registry.mcp.generation) + ":" + skill_revision()}
+
     return app
 
 

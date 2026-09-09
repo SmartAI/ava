@@ -20,6 +20,10 @@ from tests.conftest import ScriptedProvider, text_response, tool_call_response
 PNG_2X3 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD")
 
 
+
+
+
+
 @pytest.fixture
 def scripted(monkeypatch: pytest.MonkeyPatch):
     providers: list[ScriptedProvider] = []
@@ -33,7 +37,7 @@ def scripted(monkeypatch: pytest.MonkeyPatch):
             ]
         )
         requested = args[0] if args else None
-        if getattr(requested, "provider", None):
+        if requested is not None and getattr(requested, "provider", None):
             provider.id = requested.provider
             provider.selection = Selection(
                 requested.provider,
@@ -128,7 +132,7 @@ async def test_fence_rejects_foreign_host_and_origin(client: httpx.AsyncClient):
         "/api/chats/c1/messages", headers={"origin": "https://example.invalid"}, content=b"{}"
     )
     assert cross.status_code == 403
-    same = await client.get("/api/projects", headers={"origin": f"http://127.0.0.1:{client.port}"})
+    same = await client.get("/api/projects", headers={"origin": f"http://127.0.0.1:{client.base_url.port}"})
     assert same.status_code == 200
     index = await client.get("/")
     assert index.status_code == 200
@@ -195,9 +199,7 @@ async def test_settings_route_saves_custom_provider_configuration(
         "base_url": "https://gateway.example.com/v1",
     }
     assert "sk-private" not in settings_text
-    assert json.loads((home / "auth.json").read_text())["company-gateway"]["key"] == (
-        "sk-private"
-    )
+    assert json.loads((home / "auth.json").read_text())["company-gateway"]["key"] == ("sk-private")
     assert "api_key" not in saved.json()
 
     invalid = await client.put(
@@ -214,9 +216,7 @@ async def test_settings_route_saves_custom_provider_configuration(
     assert "reserved" in invalid.json()["error"]
 
 
-async def test_settings_apply_to_the_current_idle_chat(
-    client: httpx.AsyncClient, scripted
-):
+async def test_settings_apply_to_the_current_idle_chat(client: httpx.AsyncClient, scripted):
     assert (await client.post("/api/chats", json={"project_id": "workspace"})).status_code == 201
     original = scripted[0]
     saved = await client.put(
@@ -269,7 +269,14 @@ async def test_projects_chats_and_archive(client: httpx.AsyncClient, project: Pa
         "title": "",
         "status": "idle",
         "archived": False,
+        "started_at": "", "completed_at": "", "completion_seq": -1,
+        "completion_reason": "", "reviewed_through": -1,
     }
+    renamed = await client.patch("/api/chats/c1", json={"title": "中文界面 review"})
+    assert renamed.status_code == 200 and renamed.json()["title"] == "中文界面 review"
+    for invalid in ("", "  ", "a" * 201, 42):
+        assert (await client.patch("/api/chats/c1", json={"title": invalid})).status_code == 400
+    assert (await client.patch("/api/chats/missing", json={"title": "Title"})).status_code == 404
     archived = await client.post("/api/chats/c1/archive", json={"archived": True})
     assert archived.json()["archived"] is True
     refused = await client.post("/api/chats/c1/messages", json={"text": "must not run"})
@@ -282,9 +289,39 @@ async def test_projects_chats_and_archive(client: httpx.AsyncClient, project: Pa
     assert opened["project_id"] == "p1" and opened["cwd"] == str(other) and opened["events"] == []
 
 
-async def test_projects_and_sessions_survive_a_server_restart(
-    home: Path, project: Path, scripted
+async def test_only_unused_chats_can_be_removed(
+    client: httpx.AsyncClient, home: Path, scripted
 ):
+    empty = await client.post("/api/chats", json={"project_id": "workspace"})
+    assert empty.status_code == 201
+    empty_id = empty.json()["id"]
+    empty_chat = client_agent(client, empty_id)
+    session_id = empty_chat.session_id
+    session_path = empty_chat.session_path
+    assert session_id and session_path and session_path.is_file()
+
+    used = await client.post("/api/chats", json={"project_id": "workspace"})
+    used_id = used.json()["id"]
+    accepted = await client.post(
+        f"/api/chats/{used_id}/messages", json={"text": "keep this chat"}
+    )
+    assert accepted.status_code == 202
+    refused = await client.delete(f"/api/chats/{used_id}")
+    assert refused.status_code == 409
+    assert refused.json() == {"error": "only an unused chat can be removed"}
+    assert (await client.delete("/api/chats/missing")).status_code == 404
+
+    removed = await client.delete(f"/api/chats/{empty_id}")
+    assert removed.status_code == 204 and removed.content == b""
+    assert scripted[0].closed
+    assert not session_path.exists()
+    assert (await client.get(f"/api/chats/{empty_id}")).status_code == 404
+    projects = (await client.get("/api/projects")).json()["projects"]
+    assert not any(chat["id"] == empty_id for project in projects for chat in project["chats"])
+    assert session_id not in json.loads((home / "web.json").read_text())["sessions"]
+
+
+async def test_projects_and_sessions_survive_a_server_restart(home: Path, project: Path, scripted):
     other = project.parent / "remembered-project"
     other.mkdir()
 
@@ -297,9 +334,13 @@ async def test_projects_and_sessions_survive_a_server_restart(
             f"/api/chats/{chat_id}/messages", json={"text": "remember this history"}
         )
         assert accepted.status_code == 202
-        await _events_until(first, chat_id, "turn/end")
+        events = await _events_until(first, chat_id, "turn/end")
+        renamed = await first.patch(f"/api/chats/{chat_id}", json={"title": "Renamed durable chat"})
+        assert renamed.status_code == 200
         archived = await first.post(f"/api/chats/{chat_id}/archive", json={"archived": True})
         assert archived.json()["archived"] is True
+        completed = archived.json()
+        assert completed["completion_seq"] == events[-1]["seq"]
 
     async with _running_client(create_app(project)) as second:
         projects = (await second.get("/api/projects")).json()["projects"]
@@ -307,9 +348,12 @@ async def test_projects_and_sessions_survive_a_server_restart(
         assert remembered["chats"] == [
             {
                 "id": chat_id,
-                "title": "remember this history",
+                "title": "Renamed durable chat",
                 "status": "idle",
                 "archived": True,
+                "started_at": completed["started_at"],
+                "completed_at": completed["completed_at"], "completion_seq": events[-1]["seq"],
+                "completion_reason": "completed", "reviewed_through": -1,
             }
         ]
         opened = (await second.get(f"/api/chats/{chat_id}")).json()
@@ -332,6 +376,132 @@ async def test_projects_and_sessions_survive_a_server_restart(
     assert all(provider.closed for provider in scripted)
 
 
+async def test_hidden_projects_keep_history_and_restore_without_automatic_rediscovery(
+    home: Path, project: Path, scripted, monkeypatch
+):
+    from ava.base import AvaError, ErrorKind
+
+    original = project / "keep.txt"
+    original.write_bytes(b"Project files must not be changed.\n")
+    async with _running_client(create_app(project)) as first:
+        project_id = (await first.get("/api/projects")).json()["projects"][0]["id"]
+        created = await first.post("/api/chats", json={"project_id": project_id})
+        chat_id = created.json()["id"]
+        await first.post(f"/api/chats/{chat_id}/messages", json={"text": "Preserved history"})
+        await _events_until(first, chat_id, "turn/end")
+        archived = (await first.post("/api/chats", json={"project_id": project_id})).json()["id"]
+        await first.post(f"/api/chats/{archived}/archive", json={"archived": True})
+        registry = first.app.state.registry
+        expected = registry.projects[0].summary()
+        task = registry.find_chat(chat_id)[1].task
+        if task is not None:
+            await task
+        before = {p: p.read_bytes() for p in home.rglob("*.jsonl*")}
+        assert before
+        revision = (await first.get("/api/system")).json()["navigation_revision"]
+        for _ in range(2):
+            assert (await first.post(f"/api/projects/{project_id}/hide")).status_code == 200
+        assert (await first.post("/api/projects/missing/hide")).status_code == 404
+        assert (await first.get("/api/projects")).json()["projects"] == []
+        assert (await first.get("/api/system")).json()["navigation_revision"] == revision + 1
+        assert (await first.post("/api/chats", json={"project_id": project_id})).status_code == 404
+        # Launch/connection discovery must not undo an explicit user removal.
+        await first.post("/api/projects", json={"path": str(project), "restore": False})
+        assert (await first.get("/api/projects")).json()["projects"] == []
+        assert {p: p.read_bytes() for p in before} == before
+        assert original.read_bytes() == b"Project files must not be changed.\n"
+
+    async with _running_client(create_app(project)) as second:
+        assert (await second.get("/api/projects")).json()["projects"] == []
+        registry = second.app.state.registry
+        persist = registry.persist
+
+        def failed_persist():
+            raise AvaError(ErrorKind.io, "Disk unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(registry, "persist", failed_persist)
+            failed = await second.post("/api/projects", json={"path": str(project)})
+            assert failed.status_code == 503
+            assert registry.projects[0].hidden
+        restored = await second.post("/api/projects", json={"path": str(project)})
+        assert restored.json() == expected
+        assert len((await second.get("/api/projects")).json()["projects"]) == 1
+        with monkeypatch.context() as patch:
+            patch.setattr(registry, "persist", failed_persist)
+            assert (await second.post(f"/api/projects/{project_id}/hide")).status_code == 503
+            assert not registry.projects[0].hidden
+        assert registry.persist == persist
+        assert {p: p.read_bytes() for p in before} == before
+        replay = await _events_until(second, chat_id, "turn/end")
+        assert any(event["kind"] == "assistant/message" for event in replay)
+
+
+async def test_session_review_survives_restart_without_acknowledging_a_new_result(
+    home: Path, project: Path, scripted, monkeypatch
+):
+    from ava.base import AvaError, ErrorKind
+
+    async def summary(client):
+        return (await client.get("/api/projects")).json()["projects"][0]["chats"][0]
+
+    async with _running_client(create_app(project)) as client:
+        project_id = (await client.get("/api/projects")).json()["projects"][0]["id"]
+        chat = (await client.post("/api/chats", json={"project_id": project_id})).json()
+        endpoint = f"/api/chats/{chat['id']}"
+        assert chat["completion_seq"] == chat["reviewed_through"] == -1
+        assert (await client.post(endpoint + "/review", json={"through": 0})).status_code == 409
+        await client.post(endpoint + "/messages", json={"text": "First result"})
+        events = await _events_until(client, chat["id"], "turn/end")
+        sequence = events[-1]["seq"]
+        assert (await client.get(endpoint)).status_code == 200
+        assert (await summary(client))["reviewed_through"] == -1
+        for invalid in ({}, {"through": -1}, {"through": True}, {"through": "1"}):
+            assert (await client.post(endpoint + "/review", json=invalid)).status_code == 400
+        registry = client.app.state.registry
+
+        def failed_persist():
+            raise AvaError(ErrorKind.io, "Disk unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(registry, "persist", failed_persist)
+            failed = await client.post(endpoint + "/review", json={"through": sequence})
+            assert failed.status_code == 503
+            assert (await summary(client))["reviewed_through"] == -1
+        reviewed = (await client.post(endpoint + "/review", json={"through": sequence})).json()
+        assert reviewed["reviewed_through"] == reviewed["completion_seq"] == sequence
+        assert reviewed["completed_at"] and reviewed["started_at"] <= reviewed["completed_at"]
+
+    async with _running_client(create_app(project)) as client:
+        restored = await summary(client)
+        assert restored["reviewed_through"] == restored["completion_seq"] == sequence
+        assert restored["completed_at"] == reviewed["completed_at"]
+        await client.post(endpoint + "/messages", json={"text": "Second result"})
+        events = await _events_until(client, chat["id"], lambda e: e["kind"] == "turn/end" and e["seq"] > sequence)
+        new_sequence = events[-1]["seq"]
+        # A delayed request from another desktop cannot review a result it never saw.
+        stale = (await client.post(endpoint + "/review", json={"through": sequence})).json()
+        assert stale["completion_seq"] == new_sequence > stale["reviewed_through"] == sequence
+        assert (await client.post(endpoint + "/review", json={"through": new_sequence + 1})).status_code == 409
+        summaries = (await client.get("/api/projects")).json()["projects"][0]["chats"]
+        assert summaries[0]["completion_seq"] == new_sequence
+        await client.post(f"/api/projects/{project_id}/hide")
+        assert (await client.post(endpoint + "/review", json={"through": new_sequence})).status_code == 404
+        assert (await client.get("/api/projects")).json()["projects"] == []
+        await client.post("/api/projects", json={"path": str(project)})
+        assert (await summary(client))["reviewed_through"] == sequence
+        scripted[-1].scripts = [AvaError(ErrorKind.invalid_argument, "Fixture provider failed")]
+        await client.post(endpoint + "/messages", json={"text": "A failed run also needs attention"})
+        failure = await _events_until(client, chat["id"], "drive/error", last=str(new_sequence))
+        task = client.app.state.registry.find_chat(chat["id"])[1].task
+        if task is not None:
+            await task
+        failed = await summary(client)
+        assert failed["status"] == "idle" and failed["completion_reason"] == "error"
+        assert failed["completion_seq"] == failure[-1]["seq"] > new_sequence
+        assert failed["reviewed_through"] == sequence
+
+
 async def test_historical_logs_recreate_projects_without_a_web_index(
     home: Path, project: Path, scripted
 ):
@@ -342,9 +512,7 @@ async def test_historical_logs_recreate_projects_without_a_web_index(
         added = await first.post("/api/projects", json={"path": str(historical_project)})
         created = await first.post("/api/chats", json={"project_id": added.json()["id"]})
         chat_id = created.json()["id"]
-        await first.post(
-            f"/api/chats/{chat_id}/messages", json={"text": "history from logs"}
-        )
+        await first.post(f"/api/chats/{chat_id}/messages", json={"text": "history from logs"})
         await _events_until(first, chat_id, "turn/end")
 
     (home / "web.json").unlink()
@@ -429,7 +597,9 @@ async def test_message_runs_a_turn_and_events_replay(client: httpx.AsyncClient, 
     assert accepted.status_code == 202
     assert accepted.json() == {
         "accepted": True,
-        "chat": {"id": "c1", "title": "photo.png", "status": "running", "archived": False},
+        "chat": {"id": "c1", "title": "photo.png", "status": "running", "archived": False,
+                 "started_at": "", "completed_at": "", "completion_seq": -1,
+                 "completion_reason": "", "reviewed_through": -1},
     }
     events = await _events_until(client, "c1", "turn/end")
     assert events[0]["kind"] == "status"
@@ -657,6 +827,10 @@ async def test_pause_resume_and_abort_controls(client: httpx.AsyncClient, script
     # Status flips to paused before the closing record is durable, so wait on the record.
     events = await _events_until(client, "c1", lambda e: e["kind"] == "turn/end")
     assert events[-1]["reason"] == "user_pause"
+    paused_summary = (await client.get("/api/projects")).json()["projects"][0]["chats"][0]
+    assert paused_summary["status"] == "paused"
+    assert paused_summary["completion_reason"] == "user_pause"
+    assert paused_summary["completion_seq"] == events[-1]["seq"]
     assert any(e["kind"] == "status" and e["status"] == "pausing" for e in events)
     assert (
         await client.post("/api/chats/c1/messages", json={"text": "queued", "delivery": "followup"})
@@ -746,9 +920,7 @@ async def test_model_and_effort_selection_apply_at_the_next_step(
         return status_count == 2
 
     replay = await _events_until(client, "c1", after_replay)
-    assert any(
-        event["kind"] == "selection" and event["model"] == "other-model" for event in replay
-    )
+    assert any(event["kind"] == "selection" and event["model"] == "other-model" for event in replay)
     assert replay[-1]["kind"] == "status" and replay[-1]["model"] == "scripted-model"
 
 
@@ -802,12 +974,11 @@ async def test_credentials_are_stored_and_idle_chats_reloaded(
 ):
     await client.post("/api/chats", json={"project_id": "workspace"})
     reloaded: list[str] = []
-    monkeypatch.setattr(
-        "ava.agent.agent.provider_from_environment",
-        lambda cli, resumed, requirement: (
-            reloaded.append(requirement.value) or client_agent(client, "c1").state.provider
-        ),
-    )
+    def provider(cli, resumed, requirement):
+        reloaded.append(requirement.value)
+        return client_agent(client, "c1").state.provider
+
+    monkeypatch.setattr("ava.agent.agent.provider_from_environment", provider)
     bad = await client.post("/api/credentials", json={"provider": "scripted"})
     assert bad.status_code == 400
     codex = await client.post("/api/credentials", json={"provider": "codex", "key": "x"})
@@ -836,3 +1007,182 @@ async def test_context_route_reports_the_model_window(client: httpx.AsyncClient,
     assert report["context_window"] == 10_000 and report["threshold_percent"] == 85
     assert report["compacted"] is False
     assert (await client.get("/api/chats/nope/context")).status_code == 404
+
+
+async def test_project_files_page_snapshot_and_bounded_versioned_download(client, project, tmp_path):
+    import os
+
+    folder = project / '目录 #?'
+    folder.mkdir()
+    for i in range(700):
+        (folder / f'{i:04}.txt').write_text(f'文件 {i}')
+    source = folder / '中文 #?.md'
+    source.write_text('# Hello 世界\n\n**Remote preview**')
+    (folder / 'empty').mkdir()
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'secret.txt').write_text('must not be returned')
+    (folder / 'escape').symlink_to(outside, target_is_directory=True)
+    (folder / 'within').symlink_to(folder / 'empty', target_is_directory=True)
+    (folder / 'pipe').parent.mkdir(exist_ok=True)
+    os.mkfifo(folder / 'pipe')
+    path = '/api/projects/workspace/'
+    first = (await client.get(path + 'files', params={'path': str(folder)})).json()
+    assert len(first['entries']) == 256 and first['next'] == 256
+    assert [entry['fileName'] for entry in first['entries'][:2]] == ['empty', 'within']
+    # Later pages remain from the original snapshot, without duplicates as files change.
+    (folder / '0000.txt').unlink()
+    (folder / 'new.txt').write_text('created after initial page')
+    rows = list(first['entries'])
+    offset = first['next']
+    while offset is not None:
+        page = (await client.get(path + 'files', params={'path': str(folder), 'cursor': first['cursor'], 'offset': offset})).json()
+        rows += page['entries']
+        offset = page['next']
+    assert len(rows) == first['total'] == len({row['filePath'] for row in rows})
+    assert not any(row['fileName'] == 'new.txt' for row in rows)
+    assert not next(row for row in rows if row['fileName'] == 'escape')['directory']
+    empty = (await client.get(path + 'files', params={'path': str(folder / 'empty')})).json()
+    assert empty['entries'] == [] and empty['next'] is None
+    for invalid in [str(folder / 'escape'), '../outside', str(outside)]:
+        assert (await client.get(path + 'files', params={'path': invalid})).status_code == 400
+    assert (await client.get(path + 'file', params={'path': str(folder / 'pipe')})).status_code == 400
+    assert (await client.get(path + 'file', params={'path': str(folder / 'escape/secret.txt')})).status_code == 400
+    metadata = (await client.get(path + 'file', params={'path': str(source)})).json()
+    assert metadata['kind'] == 'markdown'
+    download = await client.get(path + 'file/content', params={'path': str(source), 'version': metadata['version']})
+    assert download.content == source.read_bytes()
+    source.write_text('Changed')
+    stale = await client.get(path + 'file/content', params={'path': str(source), 'version': metadata['version']})
+    assert stale.status_code == 409
+    large = folder / 'large.txt'
+    with large.open('wb') as stream:
+        stream.truncate(1024 * 1024 + 1)
+    metadata = (await client.get(path + 'file', params={'path': str(large)})).json()
+    assert metadata['kind'] == 'unsupported' and '1 MiB' in metadata['notice']
+    assert (await client.get(path + 'file/content', params={'path': str(large), 'version': metadata['version']})).status_code == 400
+    await client.post('/api/projects/workspace/hide')
+    assert (await client.get(path + 'files', params={'path': str(folder), 'cursor': first['cursor'], 'offset': 256})).status_code == 400
+    assert source.read_text() == 'Changed'
+
+
+async def test_worktree_sessions_restore_project_identity_and_fence_file_access(home, project, scripted):
+    import subprocess
+    from uuid import uuid4
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(project), *args], text=True).strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Ava fixture")
+    git("config", "user.email", "ava@example.invalid")
+    git("config", "commit.gpgsign", "false")
+    (project / "code").mkdir()
+    (project / "code" / "answer.txt").write_text("committed")
+    git("add", ".")
+    git("commit", "-qm", "initial")
+    (project / "code" / "answer.txt").write_text("uncommitted")
+    async with _running_client(create_app(project / "code")) as first:
+        project_id = (await first.get("/api/projects")).json()["projects"][0]["id"]
+        options = await first.get(f"/api/projects/{project_id}/worktrees")
+        assert options.status_code == 200
+        assert any(ref["ref"] == "refs/heads/main" for ref in options.json()["refs"])
+        body = {"project_id": project_id, "workspace": "worktree", "branch": "ava/中文-review",
+                "base_ref": "refs/heads/main", "request_id": uuid4().hex}
+        results = await asyncio.gather(*(first.post("/api/chats", json=body) for _ in range(2)))
+        assert all(response.status_code in (200, 201) for response in results), [r.text for r in results]
+        assert results[0].json() == results[1].json()
+        chat = results[0].json()
+        workspace = Path(chat["cwd"])
+        assert workspace.name == "code" and workspace.parent.parent == home / "worktrees"
+        assert (workspace / "answer.txt").read_text() == "committed"
+        assert (project / "code" / "answer.txt").read_text() == "uncommitted"
+        assert git("branch", "--show-current") == "main"
+        opened = (await first.get(f"/api/chats/{chat['id']}")).json()
+        assert opened["project_id"] == project_id and opened["cwd"] == str(workspace)
+        info = await first.get(f"/api/projects/{project_id}/file", params={"workspace": str(workspace), "path": "answer.txt"})
+        assert info.status_code == 200
+        content = await first.get(f"/api/projects/{project_id}/file/content", params={"workspace": str(workspace), "path": "answer.txt", "version": info.json()["version"]})
+        assert content.text == "committed"
+        assert (await first.get(f"/api/projects/{project_id}/files", params={"workspace": str(home)})).status_code == 400
+        assert (await first.delete(f"/api/chats/{chat['id']}")).status_code == 409
+        assert len((await first.get("/api/projects")).json()["projects"]) == 1
+    # Durable labels preserve grouping even when rebuilding the optional UI index.
+    (home / "web.json").unlink()
+    async with _running_client(create_app(project / "code")) as second:
+        projects = (await second.get("/api/projects")).json()["projects"]
+        assert len(projects) == 1 and projects[0]["path"] == str(project / "code")
+        assert len(projects[0]["chats"]) == 1
+        resumed = projects[0]["chats"][0]
+        body["project_id"] = projects[0]["id"]
+        retried = await second.post("/api/chats", json=body)
+        assert retried.status_code == 200 and retried.json()["id"] == resumed["id"]
+        assert retried.json()["cwd"] == str(workspace)
+        await second.post(f"/api/projects/{projects[0]['id']}/hide")
+        assert (await second.get("/api/projects")).json()["projects"] == []
+        await second.post("/api/projects", json={"path": str(project / "code")})
+        assert (workspace / "answer.txt").read_text() == "committed"
+    assert all(provider.closed for provider in scripted)
+
+
+async def test_worktree_creation_failures_are_retryable_without_orphan_sessions(home, project, scripted, monkeypatch):
+    import subprocess
+    from uuid import uuid4
+
+    from ava.base import AvaError, ErrorKind
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(project), *args], text=True).strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Ava fixture")
+    git("config", "user.email", "ava@example.invalid")
+    git("config", "commit.gpgsign", "false")
+    git("commit", "--allow-empty", "-qm", "initial")
+    async with _running_client(create_app(project)) as client:
+        registry = client.app.state.registry
+        body = {"project_id": registry.projects[0].id, "workspace": "worktree", "branch": "ava/retry", "request_id": uuid4().hex}
+        for invalid in ({"branch": "bad name"}, {"base_ref": "does-not-exist"}, {"request_id": "../escape"}):
+            response = await client.post("/api/chats", json={**body, **invalid})
+            assert response.status_code == 400, response.text
+        assert not registry.projects[0].chats
+        assert not list(home.rglob("*.jsonl*"))
+        # Constructor failure must remove its new empty log before discovery
+        # can resurrect a failed creation as an orphan conversation.
+        with monkeypatch.context() as patch:
+            def broken_state(*args, **kwargs):
+                raise AvaError(ErrorKind.io, "Cannot load workspace instructions")
+            patch.setattr("ava.agent.agent.AgentState.create", broken_state)
+            failed_agent = await client.post("/api/chats", json={"project_id": registry.projects[0].id})
+            assert failed_agent.status_code == 503
+            assert not list(home.rglob("*.jsonl*"))
+        # A slow real checkout hook must not block the event loop. Concurrent
+        # retries join the task; changing its parameters cannot hijack it.
+        marker = project / "hook-ready"
+        hook = project / ".git" / "hooks" / "post-checkout"
+        hook.write_text(f'#!/bin/sh\ntouch "{marker}"\nsleep 0.3\nprintf kept > hook-output\n')
+        hook.chmod(0o700)
+        with monkeypatch.context() as patch:
+            def unavailable():
+                raise AvaError(ErrorKind.io, "Fixture disk unavailable")
+            patch.setattr(registry, "persist", unavailable)
+            pending = asyncio.create_task(client.post("/api/chats", json=body))
+            async with asyncio.timeout(3):
+                while not marker.exists():
+                    await asyncio.sleep(0.01)
+            assert (await client.get("/api/projects")).status_code == 200
+            assert not pending.done()
+            mismatch = await client.post("/api/chats", json={**body, "branch": "ava/other"})
+            assert mismatch.status_code == 409
+            failed = await pending
+            assert failed.status_code == 503 and "retained" in failed.text
+        assert not registry.projects[0].chats
+        assert not list(home.rglob("*.jsonl*"))
+        retained = home / "worktrees" / body["request_id"]
+        assert (retained / "hook-output").read_text() == "kept"
+        retried = await client.post("/api/chats", json=body)
+        assert retried.status_code == 201, retried.text
+        assert retried.json()["cwd"] == str(retained)
+        assert len(registry.projects[0].chats) == 1
+        assert (retained / "hook-output").read_text() == "kept"
+    assert all(provider.closed for provider in scripted)

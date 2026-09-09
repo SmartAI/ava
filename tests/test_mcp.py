@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +21,8 @@ from ava.llm.openai import _tool_schema as openai_schema
 from ava.session import Event, ToolsAdvertised
 from ava.session.codec import decode_record, encode_record
 from ava.tool.mcp import MCPServers, ServerConfig
+from tests.test_web import client as client
+from tests.test_web import scripted as scripted
 
 FIXTURE = Path(__file__).parent / "fixtures/mcp_server.py"
 
@@ -88,6 +93,75 @@ async def test_stdio_tools_preserve_nested_schema_and_cancel_cleanly(home, proje
     assert not psutil.pid_exists(other_proof["pid"])
 
 
+async def test_http_mcp_management_auth_and_restart(client, home, project):
+    from uuid import uuid4
+
+    import httpx
+
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    secret = "Bearer synthetic-mcp-secret"
+    process = subprocess.Popen([sys.executable, str(FIXTURE), str(port)], cwd=project,
+                               env={**os.environ, "MCP_EXPECTED_AUTH": secret}, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        async with httpx.AsyncClient(timeout=1) as probe, asyncio.timeout(10):
+            while True:
+                try:
+                    assert (await probe.get(f"http://127.0.0.1:{port}/mcp")).status_code == 401
+                    break
+                except httpx.TransportError:
+                    assert process.poll() is None
+                    await asyncio.sleep(0.03)
+        base = "/api/projects/workspace/mcp"
+        draft = {"name": "HTTP fixture", "transport": "http", "url": f"http://127.0.0.1:{port}/mcp",
+                 "credentials": [{"name": "Authorization", "value": "Bearer invalid-fixture-token"}], "request_id": uuid4().hex}
+        added = await client.post(base, json=draft)
+        assert added.status_code == 201, added.text
+        identity = added.json()["id"]
+        assert (await client.post(base, json=draft)).json()["id"] == identity
+        listing = await client.get(base)
+        assert secret not in listing.text
+        row = listing.json()["servers"][0]
+        assert row["status"] == "error" and "401" in row["error"], row
+        assert "invalid-fixture-token" not in listing.text
+        repair = {**draft, "version": row["version"], "credentials": [{"name": "Authorization", "value": secret}]}
+        assert (await client.post(base + "/" + identity, json=repair)).status_code == 200
+        row = (await client.get(base)).json()["servers"][0]
+        assert row["status"] == "connected" and len(row["tools"]) == 2, row
+        changed = {**draft, "name": "Renamed HTTP server", "version": row["version"],
+                   "credentials": [{"name": "Authorization", "value": None}]}
+        assert (await client.post(base + "/" + identity, json=changed)).status_code == 200
+        row = (await client.get(base)).json()["servers"][0]
+        assert row["status"] == "connected", row
+        assert (await client.post(base + "/" + identity, json=changed)).status_code == 400
+        assert (await client.post(base + "/" + identity + "/refresh", json={"version": row["version"]})).json()["status"] == "connected"
+        tools = await client.app.state.registry.mcp.tools(project, CancelToken())
+        tool = next(tool for tool in tools if "record_change" in tool.name)
+        result = await tool.run(json.dumps({"change": {"title": "HTTP tool call", "labels": ["mcp", "refresh-tools"], "approved": True}}), CancelToken())
+        assert not result.is_error, result.text
+        assert json.loads((project / "mcp-proof.json").read_text())["change"]["title"] == "HTTP tool call"
+        async with asyncio.timeout(5):
+            while len((await client.get(base)).json()["servers"][0]["tools"]) != 3:
+                await asyncio.sleep(0.01)
+        fresh = MCPServers(home)
+        try:
+            # A new owner connects using durable configuration, with no credential round trip through the UI.
+            assert len(await fresh.tools(project, CancelToken())) == 3
+        finally:
+            await fresh.aclose()
+        assert (await client.get(base, params={"cwd": str(project.parent)})).status_code == 404
+        response = await client.request("DELETE", base + "/" + identity, json={"version": row["version"]})
+        assert response.status_code == 200, response.text
+        assert (await client.get(base)).json()["servers"] == []
+    finally:
+        process.terminate()
+        try:
+            await asyncio.to_thread(process.wait, 5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            await asyncio.to_thread(process.wait, 5)
+        process.stderr.close()
 
 
 async def test_idle_mcp_process_is_released_and_reopens_for_next_call(home, project, monkeypatch):
