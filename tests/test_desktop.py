@@ -5069,6 +5069,51 @@ def test_desktop_automation_creates_runs_and_opens_results(desktop, model_server
     assert any(chat["id"] == first_chat for project in controller.projects for chat in project["chats"])
 
 
+def test_desktop_automation_list_virtualizes_and_preserves_state(desktop, capfd):
+    controller, window = desktop
+    automation = controller.automations
+    controller._projects = [{"id": "p", "name": "Project", "machine": "local", "chats": []}]
+    automation._snapshots["local"] = [
+        {"id": f"a{i}", "name": f"Task {i} · 中文", "project_id": "p", "enabled": i % 2 == 0,
+         "remaining": 3, "created_at": i, "active_run": "", "next_due": None} for i in range(1000)
+    ]
+    automation._navigation_changed()
+    resets = QSignalSpy(automation.rows.modelReset)
+    pulses = [time.perf_counter()]
+    heartbeat = QTimer()
+    heartbeat.setInterval(10)
+    heartbeat.timeout.connect(lambda: pulses.append(time.perf_counter()))
+    heartbeat.start()
+    opened = time.perf_counter()
+    click(window, "automationsButton")
+    view = find_item(window, "automationList")
+    assert view.property("count") == 1000
+    open_ms = (time.perf_counter() - opened) * 1000
+    for fraction in (0.5, 1, 0):
+        view.setProperty("contentY", max(0, view.property("contentHeight") - view.height()) * fraction)
+        frame = QSignalSpy(window.frameSwapped)
+        window.update()
+        assert frame.count() or frame.wait(2000)
+    live = [item for item in view.childItems()[0].childItems() if item.objectName().startswith("automationTask_")]
+    assert len(live) < 30
+    click(window, "automationStatusFilter")
+    QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert automation.rows.rowCount() == 500
+    click(window, "closeAutomationsButton")
+    click(window, "automationsButton")
+    assert find_item(window, "automationStatusFilter").property("currentIndex") == 1
+    automation._navigation_changed()
+    assert resets.count() == 0
+    heartbeat.stop()
+    metrics = {"summaries": 1000, "open_ms": round(open_ms), "live_delegates": len(live),
+               "max_gui_ms": round(max(b-a for a, b in zip(pulses, pulses[1:], strict=False)) * 1000)}
+    with capfd.disabled():
+        print("AUTOMATION_BENCHMARK", json.dumps(metrics))
+    assert open_ms < 500 and metrics["max_gui_ms"] < 150
+    save_screenshot(window, "automation-thousand-tasks")
+
+
 def test_desktop_session_board_filters_and_virtualizes_large_summary_lists(desktop):
     """Benchmark the native view with summaries; HTTP tests cover their durable source."""
     from datetime import UTC, datetime, timedelta
@@ -5425,3 +5470,312 @@ def test_desktop_agent_browser_rejects_covered_and_stale_targets(desktop, model_
     dialog = window.findChild(QObject, 'contextDialog')
     assert dialog is not None and dialog.property('visible')
     save_screenshot(window, 'agent-browser-context-takeover')
+
+
+def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_server, home, project, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from ava.session import (
+        Log,
+        StepEnd,
+        StepEndReason,
+        StepStart,
+        TurnEnd,
+        TurnEndReason,
+        TurnStart,
+        Usage,
+        UserMessage,
+    )
+    from tests.conftest import message
+
+    controller, window = desktop
+    analytics = controller.analytics
+    today = datetime.now(ZoneInfo(analytics.property('filters')['timezone'])).replace(hour=0, minute=1, second=0, microsecond=0)
+    with monkeypatch.context() as patch:
+        log = Log.create_default(project, 'desktop-test', 'fixture')
+        try:
+            log.append(UserMessage(message('Historical analytics fixture')))
+            for index in range(30):
+                at = (today - timedelta(days=29-index)).astimezone(UTC)
+                patch.setattr('ava.session.log.now_ms', lambda at=at: at)
+                log.append_batch([TurnStart(index+1), StepStart(index+1, 1), Usage(str(index), input=(index+1)*1000, cached_read=(index+1)*500, cache_write=(index+1)*100, output=(index+1)*250)])
+                patch.setattr('ava.session.log.now_ms', lambda at=at: at+timedelta(minutes=2))
+                log.append_batch([StepEnd(index+1, 1, StepEndReason.completed), TurnEnd(index+1, TurnEndReason.completed)])
+            log.sync()
+        finally:
+            log.close()
+    other = project.parent/'other-project'
+    other.mkdir()
+    log = Log.create_default(other, 'desktop-test', 'fixture')
+    log.append(UserMessage(message('A project without measured activity')))
+    log.close()
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    ticks = [time.perf_counter()]
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(time.perf_counter()))
+    timer.start()
+    first_started = time.perf_counter()
+    click(window, 'analyticsButton')
+    until(lambda: analytics.data['totals']['tokens'] == 349650, analytics.changed)
+    timer.stop()
+    first_ms = (time.perf_counter()-first_started)*1000
+    gap = max((b-a)*1000 for a, b in zip(ticks, ticks[1:], strict=False)) if len(ticks)>1 else 0
+    assert first_ms < 500 and gap < 150, (first_ms, gap)
+    assert analytics.data['totals']['active_ms'] == 14*60000
+    assert len(analytics.data['days']) == 7
+    assert find_item(window, 'analyticsTokens').property('value') == '349.6k'
+    save_screenshot(window, 'analytics-week')
+    started = time.perf_counter()
+    click(window, 'analytics30d')
+    until(lambda: len(analytics.data['days']) == 30, analytics.changed)
+    assert analytics.data['totals']['tokens'] == 860250
+    switch_ms = (time.perf_counter()-started)*1000
+    assert switch_ms < 100, switch_ms
+    click(window, 'analyticsMetric_active_ms')
+    assert find_item(window, 'analyticsPane').property('metric') == 'active_ms'
+    window.setProperty('dark', True)
+    window.setWidth(900)
+    window.setHeight(700)
+    save_screenshot(window, 'analytics-dark-narrow')
+    chart = find_item(window, 'analyticsChart')
+    assert chart.mapToScene(QPointF(chart.width(), 0)).x() <= window.width()
+    project_filter = find_item(window, 'analyticsProject')
+    choices = analytics.property('projects')
+    other_index = next(i for i, row in enumerate(choices) if row['name'] == 'other-project')
+    click(window, 'analyticsProject')
+    QTest.keyClick(window, Qt.Key.Key_Home)
+    for _ in range(other_index):
+        QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: analytics.property('filters')['project'] == choices[other_index]['id'] and analytics.data['reports'] > 0, analytics.changed)
+    assert analytics.data['totals']['tokens'] == 0
+    assert project_filter.property('currentText') == 'other-project'
+    save_screenshot(window, 'analytics-empty-project')
+    click(window, 'analyticsProject')
+    QTest.keyClick(window, Qt.Key.Key_Home)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: analytics.data['totals']['tokens'] == 860250, analytics.changed)
+    click(window, 'closeAnalytics')
+    skill = project/'.agents/skills/review/SKILL.md'
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: review\ndescription: Review code carefully.\n---\nRead the change and report findings.\n')
+    settings = json.loads((home/'settings.json').read_text())
+    settings['model'] = 'fixture-analytics'
+    (home/'settings.json').write_text(json.dumps(settings))
+    controller.newChat()
+    until(lambda: controller.connected and not controller._busy, controller.changed)
+    controller.selectModel('fixture-analytics')
+    until(lambda: controller.selection.get('model') == 'fixture-analytics', controller.changed)
+    type_message(window, 'Load the review skill and summarize it.')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: len(model_server) == 2, controller.changed)
+    click(window, 'analyticsButton')
+    updated = time.perf_counter()
+    model_server[-1].release.set()
+    until(lambda: analytics.data['totals']['skills'] == 1 and analytics.data['totals']['tokens'] == 861530, analytics.changed)
+    update_ms = (time.perf_counter()-updated)*1000
+    assert update_ms < 1000, update_ms
+    until(lambda: controller.status == 'idle', controller.changed)
+    assert analytics.data['totals']['tools'] == 1
+    assert analytics.data['skills'][0]['name'] == 'review'
+    assert analytics.data['totals']['missing_usage'] == 1
+    save_screenshot(window, 'analytics-live')
+    print(f'Analytics native: first display {first_ms:.0f} ms, GUI gap {gap:.0f} ms, 7/30-day switch {switch_ms:.0f} ms, live update {update_ms:.0f} ms; project filters, durable history and actual skill read/provider usage verified')
+
+    connection = controller._connection
+    until(lambda: not analytics._pending, connection._network.finished)
+    request = connection._request
+    def delayed_analytics(path):
+        result = request(path)
+        if path.startswith('/api/analytics?'):
+            result.setUrl(QUrl(settings['providers']['desktop-test']['base_url'].removesuffix('/v1') + '/pending-analytics'))
+        return result
+    monkeypatch.setattr(connection, '_request', delayed_analytics)
+    analytics.refresh()
+    assert analytics._pending
+    stop_backend(home)
+    until(lambda: controller._connection is not connection and controller.connected, controller.changed, timeout=15000)
+    click(window, 'closeAnalytics')
+    controller.newChat()
+    until(lambda: controller.connected and not controller._busy, controller.changed)
+    type_message(window, 'Read the review skill after reconnecting.')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: len(model_server) == 4, controller.changed)
+    model_server[-1].release.set()
+    until(lambda: controller.status == 'idle', controller.changed)
+    resumed = time.perf_counter()
+    click(window, 'analyticsButton')
+    until(lambda: analytics.data['totals']['tokens'] == 862810, analytics.changed, timeout=3000)
+    resumed_ms = (time.perf_counter()-resumed)*1000
+    assert resumed_ms < 1000, resumed_ms
+    assert analytics.data['totals']['skills'] == 2
+    assert not analytics.data['notice'], analytics.data['notice']
+    save_screenshot(window, 'analytics-reconnected')
+    print(f'Analytics reconnect: new task totals visible in {resumed_ms:.0f} ms after an interrupted HTTP request')
+
+
+@pytest.mark.skipif(os.environ.get('AVA_DESKTOP_SSH_TESTS') != '1' or not os.environ.get('AVA_SSH_TEST_CONTAINER'), reason='Requires the isolated Fedora SSH fixture')
+def test_desktop_remote_analytics_and_browser_handoff(desktop, model_server, home, project):
+    from ava.app.desktop.ssh import ssh_arguments
+
+    ssh = ssh_arguments('ava-test')
+    def remote(code, data=None):
+        result = subprocess.run([*ssh, 'ava-test', shlex.join(['/opt/ava/bin/python', '-c', code])],
+                                input=data, capture_output=True, text=True, timeout=40)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    config = json.loads((home/'settings.json').read_text())
+    config['model'] = 'fixture-analytics'
+    for name in ('fixture-analytics', 'fixture-browser'):
+        config['providers']['desktop-test']['models'][name] = {'context_window': 100000}
+    (home/'settings.json').write_text(json.dumps(config))
+    skill = project/'.agents/skills/review/SKILL.md'
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: review\ndescription: Local review instructions.\n---\nRead the local workspace.\n')
+    local_port = config['providers']['desktop-test']['base_url'].split(':')[-1].split('/')[0]
+    port = remote("import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()").strip()
+    config['providers']['desktop-test']['base_url'] = f'http://127.0.0.1:{port}/v1'
+    remote(r"""
+import sys
+from pathlib import Path
+from ava.llm.credentials import save_api_key
+p=Path.home()
+(p/'.ava').mkdir(exist_ok=True)
+(p/'.ava/settings.json').write_text(sys.stdin.read())
+save_api_key('desktop-test','local-test-only')
+skill=p/'analytics project/.agents/skills/review/SKILL.md'
+skill.parent.mkdir(parents=True,exist_ok=True)
+skill.write_text('---\nname: review\ndescription: Fedora review instructions.\n---\nRead the Fedora workspace.\n')
+""", json.dumps(config))
+    model_tunnel = subprocess.Popen([*ssh, '-N', '-o', 'ExitOnForwardFailure=yes', '-R', f'127.0.0.1:{port}:127.0.0.1:{local_port}', 'ava-test'],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    controller, window = desktop
+    try:
+        controller.start()
+        until(lambda: bool(controller.projects), controller.changed)
+        controller.newChat()
+        until(lambda: controller.connected and not controller._busy, controller.changed)
+        local_chat = controller.chatId
+        type_message(window, 'Read the local review skill.')
+        click(window, 'sendButton')
+        until(lambda: len(model_server) == 2, controller.changed)
+        # Keep this turn open while the remote turn runs, creating a real overlap.
+        click(window, 'machinesButton')
+        find_item(window, 'machineHostField').setProperty('text', 'ava-test')
+        find_item(window, 'machineNameField').setProperty('text', 'Fedora acceptance')
+        click(window, 'addMachineAction')
+        until(lambda: len(controller.machines) == 2 and (controller.machines[1]['online'] or controller.machines[1]['error']), controller.machinesChanged, timeout=180000)
+        state = controller.machines[1]
+        assert state['online'], state['error']
+        machine = controller._machines[state['id']]
+        assert 'analytics' in machine.runtime.info['capabilities']
+        instance = machine.runtime.info['instance_id']
+        click(window, 'selectMachine_'+machine.id)
+        click(window, 'addProject_'+machine.id)
+        find_item(window, 'remoteProjectPath').setProperty('text', '~/analytics project')
+        click(window, 'addRemoteProjectAction')
+        until(lambda: controller.projectPath.endswith('analytics project'), controller.changed)
+        controller.newChat()
+        until(lambda: controller.connected and not controller._busy, controller.changed)
+        remote_chat = controller.chatId
+        assert remote_chat.endswith('~'+local_chat), (remote_chat, local_chat)
+        type_message(window, 'Read the Fedora review skill.')
+        click(window, 'sendButton')
+        until(lambda: len(model_server) == 4, controller.changed, timeout=20000)
+        assert any(message['role'] == 'tool' and 'Read the Fedora workspace' in message['content'] for message in model_server[3].request['messages'])
+        model_server[3].release.set()
+        until(lambda: controller.status == 'idle', controller.changed)
+        controller.openChat(local_chat)
+        until(lambda: controller.chatId == local_chat and controller.status == 'running', controller.changed)
+        model_server[1].release.set()
+        until(lambda: controller.status == 'idle', controller.changed)
+        click(window, 'analyticsButton')
+        analytics = controller.analytics
+        until(lambda: analytics.data['totals']['tokens'] == 2560 and analytics.data['reports'] == 2, analytics.changed, timeout=20000)
+        assert analytics.data['totals']['skills'] == analytics.data['totals']['tools'] == 2
+        assert analytics.data['totals']['active_ms'] < analytics.data['totals']['run_ms'], 'Parallel machines must not double-count active time'
+        assert not analytics.data['notice'], analytics.data['notice']
+        save_screenshot(window, 'remote-analytics-combined')
+        click(window, 'analyticsMachine')
+        QTest.keyClick(window, Qt.Key.Key_End)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        until(lambda: analytics.property('filters')['machine'] == machine.id and analytics.data['totals']['tokens'] == 1280, analytics.changed)
+        click(window, 'analyticsMachine')
+        QTest.keyClick(window, Qt.Key.Key_Home)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        until(lambda: analytics.data['totals']['tokens'] == 2560, analytics.changed)
+        click(window, 'closeAnalytics')
+        controller.openChat(remote_chat)
+        until(lambda: controller.chatId == remote_chat and controller.connected, controller.changed)
+        controller.newChat()
+        until(lambda: controller.chatId != remote_chat and controller.connected and not controller._busy, controller.changed)
+        controller.selectModel('fixture-browser')
+        until(lambda: controller.selection.get('model') == 'fixture-browser', controller.changed)
+        (home/'browser').mkdir(exist_ok=True)
+        (home/'browser/library.json').write_text('{"attempted":true}')
+        click(window, 'toggleRightSidebar')
+        click(window, 'browserTab')
+        click(window, 'browserHandoff')
+        control = controller.browserControl
+        until(lambda: bool(control.tabs.get('1', {}).get('active')), control.changed)
+        assert control.tabs['1']['chat'] == controller.chatId
+        type_message(window, 'Complete the form using the shared desktop browser, then capture it.')
+        click(window, 'sendButton')
+        until(lambda: len(model_server) == 17 or bool(controller.error), controller.changed, timeout=30000)
+        assert len(model_server) == 17, controller.error
+        results = [message for message in model_server[-1].request['messages'] if message['role'] == 'tool']
+        assert 'Ava 中文 / input true / click true' in json.loads(results[2]['content'])['text']
+        assert any(part['type'] == 'image_url' for message in model_server[-1].request['messages'] if message['role'] == 'user' for part in message['content'])
+        model_server[-1].release.set()
+        until(lambda: controller.status == 'idle', controller.changed)
+        save_screenshot(window, 'remote-browser-result')
+        click(window, 'analyticsButton')
+        until(lambda: analytics.data['totals']['tools'] == 14, analytics.changed)
+        assert analytics.data['totals']['tokens'] == 2560
+        click(window, 'closeAnalytics')
+        click(window, 'browserHandoff')
+        until(lambda: bool(control.tabs.get('1', {}).get('active')), control.changed)
+        type_message(window, 'Wait for the missing page text.')
+        click(window, 'sendButton')
+        until(lambda: bool(control.tabs.get('1', {}).get('working')), control.changed)
+        machine.reconnect = False
+        machine.runtime.process.terminate()
+        until(lambda: machine.connection is None, controller.machinesChanged)
+        assert not control.tabs.get('1', {}).get('active')
+        click(window, 'analyticsButton')
+        until(lambda: 'offline' in analytics.data['notice'], analytics.changed)
+        assert analytics.data['totals']['tokens'] == 2560
+        save_screenshot(window, 'remote-analytics-offline')
+        until(lambda: len(model_server) == 19, controller.changed, analytics.changed, timeout=35000)
+        error = [message for message in model_server[-1].request['messages'] if message['role'] == 'tool'][-1]['content']
+        assert 'desktop' in error.lower() or 'control' in error.lower(), error
+        model_server[-1].release.set()
+        click(window, 'machinesButton')
+        click(window, 'selectMachine_'+machine.id)
+        until(lambda: machine.connection is not None and controller.connected, controller.machinesChanged, controller.changed, timeout=70000)
+        assert machine.runtime.info['instance_id'] == instance
+        QTest.keyClick(window, Qt.Key.Key_Escape)
+        until(lambda: not analytics.data['notice'] and analytics.data['totals']['tools'] == 15, analytics.changed)
+        assert analytics.data['totals']['tokens'] == 2560
+        assert not control.tabs.get('1', {}).get('active'), 'Reconnect must not restore browser control automatically'
+        assert len(model_server) == 19, 'Reconnect must not replay completed or uncertain actions'
+        # Restart the remote daemon, keeping its durable statistics and identity.
+        remote("from ava.app.backend import stop; from ava.base import ava_home; stop(ava_home(),force=True)")
+        until(lambda: machine.connection is None, controller.machinesChanged, timeout=15000)
+        until(lambda: machine.connection is not None and machine.runtime.info['instance_id'] != instance, controller.machinesChanged, timeout=70000)
+        until(lambda: analytics.data['reports'] == 2 and not analytics.data['notice'] and analytics.data['totals']['tools'] == 15, analytics.changed)
+        assert analytics.data['totals']['tokens'] == 2560 and analytics.data['totals']['skills'] == 2
+        assert len(model_server) == 19
+        save_screenshot(window, 'remote-analytics-restarted')
+        print('Remote Analytics/browser: local and Fedora totals, overlapping time, 12 native browser actions, screenshot delivery, disconnect/reconnect and daemon restart verified')
+    finally:
+        controller.shutdown()
+        until(lambda: controller._closed_emitted, controller.closed, timeout=15000)
+        model_tunnel.terminate()
+        model_tunnel.wait(timeout=5)
+        if model_tunnel.stderr:
+            model_tunnel.stderr.close()
