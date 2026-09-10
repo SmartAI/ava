@@ -1,11 +1,13 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtWebEngine
 
 Item {
     id: pane
+    readonly property var hostWindow: Window.window
     objectName: "browserPane"
     property string mediaProblem: ""
     property bool mediaDismissed: false
@@ -160,7 +162,7 @@ Item {
         property bool editable: false
         property int editFlags: 0
         property string linkUrl: ""
-        onClosed: browser.forceActiveFocus()
+        onClosed: Qt.callLater(function() { pane.hostWindow.requestActivate(); browser.forceActiveFocus(); })
         NativeMenuItem { text: "Undo"; visible: textMenu.editable; enabled: !!(textMenu.editFlags & ContextMenuRequest.CanUndo); onTriggered: browser.triggerWebAction(WebEngineView.Undo) }
         NativeMenuItem { text: "Redo"; visible: textMenu.editable; enabled: !!(textMenu.editFlags & ContextMenuRequest.CanRedo); onTriggered: browser.triggerWebAction(WebEngineView.Redo) }
         MenuSeparator { visible: textMenu.editable }

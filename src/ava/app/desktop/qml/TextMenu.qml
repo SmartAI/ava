@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls
 
 NativeMenu {
@@ -11,7 +12,7 @@ NativeMenu {
     readonly property bool canCopy: hasSelection && (editor.echoMode === undefined || editor.echoMode === TextInput.Normal)
     property bool canPaste: !!editor && editor.canPaste
     palette: editor ? editor.palette : undefined
-    onClosed: { if (editor && editor.enabled) editor.forceActiveFocus(); }
+    onClosed: { if (editor && editor.enabled) { editor.Window.window.requestActivate(); editor.forceActiveFocus(); } }
     NativeMenuItem {
         objectName: "textUndo"
         text: "Undo"

@@ -3495,10 +3495,165 @@ def open_text_context(window, item, *, keyboard=False, point=None):
     until(lambda: text_menu_item("Copy") is not None, window.frameSwapped)
 
 
+def test_desktop_text_context_preserves_selection_and_pastes_images(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    type_message(window, "Keep this 中文 selection")
+    composer = find_item(window, "composer")
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    selected = composer.property("selectedText")
+    assert selected == "Keep this 中文 selection"
+    picture = QImage(24, 24, QImage.Format.Format_RGB32)
+    picture.fill(Qt.GlobalColor.blue)
+    QGuiApplication.clipboard().setImage(picture)
+    open_text_context(window, composer)
+    assert composer.property("selectedText") == selected
+    found = text_menu_item("Paste")
+    assert found is not None
+    surface, paste = found
+    save_screenshot(surface, "composer-image-menu")
+    assert paste.property("enabled"), "Image paste must work from the context menu as it does from the keyboard"
+    point = paste.mapToScene(QPointF(paste.width() / 2, paste.height() / 2)).toPoint()
+    QTest.mouseClick(surface, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    until(lambda: len(controller.attachments) == 1, controller.draftChanged)
+    assert composer.property("text") == selected
+    assert controller.attachments[0]["kind"] == "image"
+    until(lambda: composer.hasActiveFocus(), window.frameSwapped)
+    QGuiApplication.clipboard().setText("菜单粘贴")
+    open_text_context(window, composer, keyboard=True)
+    click_text_menu("Paste")
+    assert composer.property("text") == "菜单粘贴"
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    open_text_context(window, composer)
+    click_text_menu("Cut")
+    assert composer.property("text") == ""
+    assert QGuiApplication.clipboard().text() == "菜单粘贴"
+    open_text_context(window, composer)
+    click_text_menu("Undo")
+    assert composer.property("text") == "菜单粘贴"
+    QGuiApplication.clipboard().clear()
+    window.setProperty("dark", True)
+    window.setWidth(800)
+    window.setHeight(600)
+    screen = window.screen().availableGeometry()
+    window.setPosition(screen.right() - window.width(), screen.bottom() - window.height())
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    until(lambda: composer.hasActiveFocus(), window.frameSwapped)
+    open_text_context(window, composer)
+    surface, paste = text_menu_item("Paste")
+    assert not paste.property("enabled")
+    assert screen.contains(surface.geometry())
+    save_screenshot(surface, "text-menu-dark-edge")
+    QTest.keyClick(surface, Qt.Key.Key_Escape)
+    until(lambda: composer.hasActiveFocus(), window.frameSwapped)
+    type_message(window, "继续输入", append=True)
 
 
+def test_desktop_readonly_text_context_copies_markdown_and_code(desktop, model_server, project):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    controller.selectModel("fixture-reasoning")
+    until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
+    type_message(window, "Show a readable answer")
+    click(window, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    until(lambda: bool(find_item(window, "assistantMarkdown")), window.frameSwapped)
+    output = find_item(window, "assistantMarkdown")
+    output.forceActiveFocus()
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    selected = output.property("selectedText")
+    assert "Native controls" in selected and "**Native controls**" not in selected
+    open_text_context(window, output)
+    assert output.property("selectedText") == selected
+    assert text_menu_item("Paste") is None and text_menu_item("Cut") is None
+    surface, item = text_menu_item("Copy")
+    assert item.height() == 30
+    save_screenshot(surface, "readonly-text-menu")
+    click_text_menu("Copy")
+    assert QGuiApplication.clipboard().text() == selected.replace("\u2029", "\n").replace("\u2028", "\n")
+    until(lambda: output.hasActiveFocus(), window.frameSwapped)
+
+    code = "# 中文源代码\nanswer = '**keep this**'\nprint(answer)\n"
+    source = project / "context.py"
+    source.write_text(code)
+    controller.browseFiles(str(source))
+    until(
+        lambda: bool(preview := find_item(window, "codePreview"))
+        and preview.isVisible() and preview.property("lineCount") == 4,
+        window.frameSwapped,
+    )
+    lines = find_item(window, "codeLines")
+    save_screenshot(window, "code-context-before")
+    open_text_context(window, lines)
+    save_screenshot(text_menu_item("Copy")[0], "code-context-select-all")
+    click_text_menu("Select all")
+    preview = find_item(window, "codePreview")
+    assert preview.property("startLine") == 0 and preview.property("endLine") == 3
+    open_text_context(window, lines, keyboard=True)
+    assert text_menu_item("Cut") is None
+    click_text_menu("Copy")
+    assert QGuiApplication.clipboard().text() == code
+    preview = find_item(window, "codePreview")
+    line_height = preview.property("lineHeight")
+    gutter = preview.property("gutterWidth")
+    start = lines.mapToScene(QPointF(gutter + 1, line_height / 2)).toPoint()
+    end = lines.mapToScene(QPointF(gutter + 1, line_height * 2.5)).toPoint()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+    QTest.mouseMove(window, end, delay=30)
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+    open_text_context(window, lines)
+    click_text_menu("Copy")
+    assert QGuiApplication.clipboard().text() == code[:code.index("print(answer)")]
 
 
+def test_desktop_browser_text_context_edits_and_copies(desktop, model_server, home):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    click(window, "browserTab")
+    until(lambda: bool(find_item(window, "webBrowser")), window.frameSwapped)
+    browser = find_item(window, "webBrowser")
+    config = json.loads((home / "settings.json").read_text())
+    base = config["providers"]["desktop-test"]["base_url"].removesuffix("/v1")
+    browser.setProperty("url", QUrl(base + "/text-menu"))
+    until(lambda: browser.property("title") == "Text menus ready", browser.titleChanged)
+    until(lambda: not browser.property("loading"), window.frameSwapped)
+    click(window, "webBrowser")
+    QTest.qWait(100)  # Chromium presents the first document frame after load completion.
+    save_screenshot(window, "browser-context-page")
+    point = browser.mapToScene(QPointF(40, 40)).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    until(lambda: browser.property("title") == "Selected:网页文字 selection", browser.titleChanged)
+    save_screenshot(window, "browser-context-selected")
+    open_text_context(window, browser, point=point)
+    assert text_menu_item("Copy")[1].height() == 30
+    click_text_menu("Copy")
+    until(lambda: QGuiApplication.clipboard().text() == "网页文字 selection", window.frameSwapped)
+    QGuiApplication.clipboard().setText("更新后的文字")
+    open_text_context(window, browser, point=point)
+    click_text_menu("Paste")
+    until(lambda: browser.property("title") == "更新后的文字", browser.titleChanged)
+    point = browser.mapToScene(QPointF(40, 150)).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    until(lambda: browser.property("title") == "Selected page", browser.titleChanged)
+    open_text_context(window, browser, point=point)
+    assert text_menu_item("Cut") is None and text_menu_item("Paste") is None
+    save_screenshot(text_menu_item("Copy")[0], "browser-text-menu")
+    click_text_menu("Copy")
+    until(lambda: "只读网页" in QGuiApplication.clipboard().text(), window.frameSwapped)
 
 
 
