@@ -4029,6 +4029,259 @@ def test_desktop_review_stage_unstage_and_commit(desktop, model_server, project)
     assert not review.state["error"]
 
 
+def test_desktop_terminal_interactive_tabs_resize_and_interrupt(
+    desktop, model_server, project, monkeypatch
+):
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setenv("PS1", "ava-test> ")
+    monkeypatch.setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
+
+    def written(relative):
+        path = project / relative
+        return path.exists() and path.stat().st_size > 0
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleTerminalButton")
+    until(lambda: bool(find_item(window, "terminalWeb")), window.frameSwapped)
+    pane = find_item(window, "terminalPane")
+    session = pane.property("session")
+    until(lambda: session.ready, session.changed)
+    assert find_item(window, "terminalDock").property("activePane") is pane
+
+    click(window, "terminalWeb")
+    for character in "pwd > terminal.txt":
+        QTest.keyClick(window, character)  # type: ignore[call-overload]  # Qt accepts char; PySide stubs omit it.
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: written("terminal.txt"), session.outputReceived)
+    assert (project / "terminal.txt").read_text().strip() == str(project)
+    until(lambda: session._inflight == 0, window.frameSwapped)
+    assert "pwd > terminal.txt" in terminal_evaluate(pane, "window.avaTerminal.text()")
+    # Unicode paste passes through xterm's bracketed-paste handling into the real PTY.
+    QGuiApplication.clipboard().setText(
+        "printf '\\033[32m你好 👋\\033[0m\\n'; printf '你好 👋' > unicode.txt"
+    )
+    if sys.platform == "darwin" and QGuiApplication.platformName() == "offscreen":
+        QTest.keyClick(window, Qt.Key.Key_V, Qt.KeyboardModifier.MetaModifier)
+    elif sys.platform == "darwin":
+        QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.Paste))
+    else:
+        QTest.keyClick(
+            window, Qt.Key.Key_V,
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+        )
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: written("unicode.txt"), session.outputReceived)
+    assert (project / "unicode.txt").read_text() == "你好 👋"
+    until(lambda: session._inflight == 0, window.frameSwapped)
+    assert "你好 👋" in terminal_evaluate(pane, "window.avaTerminal.text()")
+    QGuiApplication.clipboard().setText("unchanged clipboard")
+    modifier = (
+        Qt.KeyboardModifier.MetaModifier
+        if sys.platform == "darwin" and QGuiApplication.platformName() == "offscreen"
+        else Qt.KeyboardModifier.ControlModifier
+        if sys.platform == "darwin"
+        else Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+    )
+    QTest.keyClick(window, Qt.Key.Key_A, modifier)
+    QTest.keyClick(window, Qt.Key.Key_C, modifier)
+    until(lambda: "pwd > terminal.txt" in QGuiApplication.clipboard().text(), window.frameSwapped)
+    assert "你好 👋" in QGuiApplication.clipboard().text()
+    # Copy and Paste must accurately reflect an empty terminal selection/clipboard.
+    assert "\x1b" not in QGuiApplication.clipboard().text()
+    click(window, "terminalWeb")
+    assert not terminal_evaluate(pane, "window.avaTerminal.hasSelection()")
+    QGuiApplication.clipboard().clear()
+    open_text_context(window, find_item(window, "terminalWeb"))
+    surface, copy = text_menu_item("Copy")
+    assert not copy.property("enabled") and not text_menu_item("Paste")[1].property("enabled")
+    QTest.keyClick(surface, Qt.Key.Key_Escape)
+    click(window, "terminalWeb")
+    QTest.qWait(100)  # Chromium presents the terminal after its write callback.
+    QTest.keyClick(window, Qt.Key.Key_A, modifier)
+    open_text_context(window, find_item(window, "terminalWeb"))
+    assert text_menu_item("Copy")[1].property("enabled")
+    QGuiApplication.clipboard().setText("Copy through the menu")
+    click_text_menu("Copy")
+    until(lambda: "pwd > terminal.txt" in QGuiApplication.clipboard().text(), window.frameSwapped)
+    assert "你好 👋" in QGuiApplication.clipboard().text()
+    save_screenshot(window, "terminal")
+    old_size = terminal_evaluate(pane, "window.avaTerminal.size()")
+    divider = find_item(window, "terminalDivider")
+    point = divider.mapToScene(QPointF(divider.width() / 2, divider.height() / 2)).toPoint()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    QTest.mouseMove(window, point - QPointF(0, 100).toPoint(), delay=50)
+    QTest.mouseRelease(
+        window,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        point - QPointF(0, 100).toPoint(),
+    )
+    until(lambda: find_item(window, "terminalDock").height() > 300, window.frameSwapped)
+    QTest.qWait(100)
+    new_size = terminal_evaluate(pane, "window.avaTerminal.size()")
+    assert new_size[1] > old_size[1]
+    assert controller.terminalHeight > 300
+
+    def command(text, marker):
+        click(window, "terminalWeb")
+        for character in text:
+            QTest.keyClick(window, character)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        until(marker, session.outputReceived, window.frameSwapped)
+
+    command("stty size > size.txt", lambda: written("size.txt"))
+    assert [int(n) for n in (project / "size.txt").read_text().split()] == new_size[::-1]
+    command(
+        "export AVA_TERM_VALUE=first; mkdir nested; cd nested; pwd > first.cwd",
+        lambda: written("nested/first.cwd"),
+    )
+    first_process = session._process
+    first_session = session
+    click(window, "newTerminalButton")
+    until(
+        lambda: find_item(window, "terminalPane").property("session") is not first_session,
+        window.frameSwapped,
+    )
+    pane = find_item(window, "terminalPane")
+    session = pane.property("session")
+    until(lambda: session.ready, session.changed)
+    command(
+        "printf '%s' \"${AVA_TERM_VALUE-unset}\" > second.env",
+        lambda: written("second.env"),
+    )
+    assert (project / "second.env").read_text() == "unset"
+    second_process = session._process
+    second_session = session
+    click(window, "hideTerminalButton")
+    assert not find_item(window, "terminalDock").isVisible()
+
+    assert first_process.poll() is None and second_process.poll() is None
+    if QGuiApplication.platformName() == "offscreen":
+        QTest.keySequence(window, QKeySequence("Ctrl+J"))
+    else:
+        # Cocoa keeps automation launched from the CLI inactive; window shortcuts
+        # are covered offscreen, while native tests exercise the visible button.
+        click(window, "toggleTerminalButton")
+    until(lambda: find_item(window, "terminalDock").isVisible(), window.frameSwapped)
+    click(window, "terminalTab_0")
+    pane = find_item(window, "terminalPane")
+    session = pane.property("session")
+    assert session is first_session
+    assert "first.cwd" in terminal_evaluate(pane, "window.avaTerminal.text()")
+    command("sleep 60 & echo $! > child.pid; wait", lambda: written("nested/child.pid"))
+    child = int((project / "nested/child.pid").read_text())
+    # Ctrl+C must interrupt the foreground wait without closing the interactive shell.
+    QTest.keyClick(
+        window,
+        Qt.Key.Key_C,
+        Qt.KeyboardModifier.MetaModifier
+        if QGuiApplication.platformName() == "cocoa"
+        else Qt.KeyboardModifier.ControlModifier,
+    )
+    command("printf alive > alive.txt", lambda: written("nested/alive.txt"))
+    window.setProperty("dark", True)
+    QTest.qWait(100)
+    assert terminal_evaluate(pane, "document.body.style.background") == "rgb(32, 32, 32)"
+    save_screenshot(window, "terminal-dark-tabs")
+    click(window, "closeTerminalTab_0")
+    until(lambda: first_session not in controller._terminals, first_session.closed)
+    assert first_process.poll() is not None and second_process.poll() is None
+    assert find_item(window, "terminalDock").property("activePane") is find_item(
+        window, "terminalPane"
+    )
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)
+    click(window, "closeTerminalTab_1")
+    until(lambda: not controller._terminals, second_session.closed)
+    assert second_process.poll() is not None
+    assert not find_item(window, "terminalDock").isVisible()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("AVA_DESKTOP_PERF"), reason="Opt-in native terminal benchmark"
+)
+def test_desktop_terminal_output_backpressure(
+    desktop, model_server, project, monkeypatch, tmp_path
+):
+    import base64
+    import shlex
+    from time import perf_counter
+
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    (project / "produce.py").write_text(
+        "import sys\n"
+        "sys.stdout.write(('performance row ' + 'x'*48 + '\\n') * 65536)\n"
+        "sys.stdout.write('END_TERMINAL_OUTPUT\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start = perf_counter()
+    click(window, "toggleTerminalButton")
+    pane = find_item(window, "terminalPane")
+    session = pane.property("session")
+    until(lambda: session.ready, session.changed)
+    startup_ms = (perf_counter() - start) * 1000
+    QTest.qWait(100)
+    tail = b""
+    received = 0
+    complete = False
+    pauses = []
+    in_flight = []
+    previous = perf_counter()
+    heartbeat = QTimer()
+    heartbeat.setInterval(16)
+
+    def beat():
+        nonlocal previous
+        now = perf_counter()
+        pauses.append(now - previous)
+        in_flight.append(session._inflight)
+        previous = now
+
+    def output(encoded, count):
+        nonlocal tail, received, complete
+        received += count
+        tail = (tail + base64.b64decode(encoded))[-100:]
+        complete = complete or b"\r\nEND_TERMINAL_OUTPUT\r\n" in tail
+
+    heartbeat.timeout.connect(beat)
+    session.outputReceived.connect(output)
+    click(window, "terminalWeb")
+    for character in shlex.quote(sys.executable) + " produce.py":
+        QTest.keyClick(window, character)  # type: ignore[call-overload]  # Qt accepts char; PySide stubs omit it.
+    heartbeat.start()
+    start = previous = perf_counter()
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(
+        lambda: complete and session._inflight == 0,
+        session.outputReceived,
+        window.frameSwapped,
+        timeout=15_000,
+    )
+    elapsed = (perf_counter() - start) * 1000
+    heartbeat.stop()
+    text = terminal_evaluate(pane, "window.avaTerminal.text()")
+    assert "END_TERMINAL_OUTPUT" in text
+    assert len(text.splitlines()) < 5100
+    metrics = dict(
+        startup_ms=round(startup_ms),
+        output_ms=round(elapsed),
+        bytes=received,
+        max_ui_pause_ms=round(max(pauses) * 1000),
+        max_in_flight=max(in_flight),
+        retained_lines=len(text.splitlines()),
+    )
+    print("TERMINAL_BENCHMARK", json.dumps(metrics))
+    (tmp_path / "terminal-benchmark.json").write_text(json.dumps(metrics))
+    assert startup_ms < 2000 and elapsed < 10000 and max(pauses) < 0.15, metrics
+    assert max(in_flight) <= session.HIGH_WATER, metrics
+    save_screenshot(window, "terminal-throughput")
+
+
 def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
     def git(*args):
         return subprocess.check_output(['git', '-C', str(project), *args], text=True)
