@@ -2519,6 +2519,221 @@ def test_desktop_session_title_is_single_line(desktop, model_server):
     assert title.property("lineCount") == 1
 
 
+def test_desktop_remote_files_preview_cache_and_project_tabs(desktop, model_server, project):
+    import shutil
+
+    from ava.app.desktop.connection import Connection
+    from ava.app.desktop.controller import Machine
+    from ava.app.desktop.runtime import BackendProcess
+
+    controller, window = desktop
+    source = project / "中文 #?.md"
+    source.write_text("# 远程文件\n\n**Markdown** 与中文")
+    fixtures = Path(__file__).parent / "fixtures"
+    shutil.copyfile(fixtures / "preview.pdf", project / "报告.pdf")
+    large = project / "large"
+    large.mkdir()
+    file_count = 20_000 if os.environ.get("AVA_DESKTOP_PERF") else 2000
+    for i in range(file_count):
+        (large / f"module_{i:04}.py").touch()
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    # A real authenticated backend, scoped as a remote authority. The separate
+    # Fedora E2E exercises this same path through the actual SSH tunnel.
+    local = controller._connection
+    connection = Connection(int(local._base.rsplit(":", 1)[1]), local._token, controller, prefix="remote~")
+    runtime = BackendProcess(project, controller, host="fixture")
+    machine = Machine("remote", "Fedora 文件", runtime, "remote", connection,
+                      connection._identifiers("/api/projects", {"projects": controller.projects})["projects"], status="Connected")
+    controller._machines[machine.id] = machine
+    controller._rebuild_projects()
+    controller._heartbeat.stop()  # This transport fixture intentionally shares one backend store.
+    controller.selectMachine(machine.id)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_中文 #?.md")), window.frameSwapped)
+    pane = find_item(window, "filePane")
+    model = pane.property("treeModel")
+    assert model.remote
+    pulses = [time.perf_counter()]
+    heartbeat = QTimer()
+    heartbeat.setInterval(10)
+    heartbeat.timeout.connect(lambda: pulses.append(time.perf_counter()))
+    heartbeat.start()
+    start = time.perf_counter()
+    click(window, "file_large")
+    tree = find_item(window, "fileTree")
+    until(lambda: tree.property("rows") >= file_count + 3, tree.rowsChanged)
+    directory_ms = (time.perf_counter() - start) * 1000
+    click(window, "file_large")
+    click(window, "file_中文 #?.md")
+    until(lambda: pane.property("fileState").get("kind") == "markdown", model.previewReady)
+    state = pane.property("fileState")
+    assert state["text"] == source.read_text()
+    cache = Path(state["attachmentPath"])
+    assert cache != source and cache.read_bytes() == source.read_bytes()
+    before = cache.stat().st_mtime_ns
+    click(window, "refreshFilesButton")
+    until(lambda: pane.property("fileState").get("kind") == "markdown", model.previewReady)
+    assert cache.stat().st_mtime_ns == before
+    source.write_text("# Changed remotely")
+    click(window, "refreshFilesButton")
+    until(lambda: pane.property("fileState").get("text") == "# Changed remotely", model.previewReady)
+    click(window, "file_报告.pdf")
+    until(lambda: bool(find_item(window, "pdfView")), window.frameSwapped)
+    until(lambda: find_item(window, "pdfPreview").property("pageCount") == 3, window.frameSwapped)
+    until(lambda: find_item(window, "pdfView").property("currentPageRenderingStatus") == 1, window.frameSwapped)
+    heartbeat.stop()
+    max_pause = max((b-a)*1000 for a,b in zip(pulses, pulses[1:], strict=False))
+    print("REMOTE_FILES_BENCHMARK", json.dumps({"files": file_count, "directory_ms": round(directory_ms), "max_ui_pause_ms": round(max_pause)}))
+    assert max_pause < 150
+    save_screenshot(window, "remote-files-pdf")
+    remote_pane = pane
+    controller.selectMachine("local")
+    until(lambda: find_item(window, "filePane") != remote_pane, window.frameSwapped)
+    assert not find_item(window, "filePane").property("remote")
+    controller.selectMachine("remote")
+    until(lambda: find_item(window, "filePane") == remote_pane, window.frameSwapped)
+    # A disconnected tree reports a retry action; cached PDF remains readable.
+    machine.connection = None
+    controller.machinesChanged.emit()
+    click(window, "refreshFileTree")
+    assert "offline" in model.error
+    assert find_item(window, "pdfPreview").property("pageCount") == 3
+    machine.connection = connection
+    controller.machinesChanged.emit()
+    click(window, "refreshFileTree")
+    until(lambda: bool(find_item(window, "file_中文 #?.md")), window.frameSwapped)
+    assert not model.error
+
+    changing = project / "cancel.txt"
+    changing.write_text("remote line\n" * 70_000)
+    interrupted: list[bool] = []
+
+    def switch_during_download(state):
+        if state.get("path") == str(changing) and state.get("progress", 0) > 0 and not interrupted:
+            interrupted.append(True)
+            controller.browseFiles(str(source))
+
+    model.previewReady.connect(switch_during_download)
+    controller.browseFiles(str(changing))
+    until(lambda: interrupted and pane.property("fileState").get("text") == "# Changed remotely", model.previewReady)
+    model.previewReady.disconnect(switch_during_download)
+    assert not any(path.suffix == ".txt" for path in Path(model._temporary.path()).iterdir())
+    temporary_path = Path(model._temporary.path())
+    controller.selectMachine("local")
+    click(window, "closeInspectorTab_0")
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not temporary_path.exists()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("AVA_DESKTOP_PERF"), reason="Opt-in native rendering benchmark"
+)
+def test_desktop_file_explorer_performance(desktop, model_server, project, tmp_path):
+    from time import perf_counter
+
+    def next_frame():
+        presented = QSignalSpy(window.frameSwapped)
+        window.update()
+        assert presented.wait(2000), "preview frame was not presented"
+
+    large = project / "large"
+    large.mkdir()
+    for index in range(2000):
+        (large / f"module_{index:04}.py").touch()
+    code_file = project / "large.py"
+    code_file.write_text("# 中文模块\ndef calculate(value):\n    return value * 2 + 42\n\n" * 4000)
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_large")), window.frameSwapped)
+    QTest.qWait(150)  # Start after the inspector has presented its initial frame.
+    samples = []
+    previous = perf_counter()
+    heartbeat = QTimer()
+    heartbeat.setInterval(16)
+
+    def beat():
+        nonlocal previous
+        now = perf_counter()
+        samples.append(now - previous)
+        previous = now
+
+    heartbeat.timeout.connect(beat)
+    heartbeat.start()
+    start = perf_counter()
+    click(window, "file_large")
+    tree = find_item(window, "fileTree")
+    until(lambda: tree.property("rows") >= 2002, tree.rowsChanged)
+    next_frame()
+    directory_ms = (perf_counter() - start) * 1000
+    click(window, "file_large")
+    QTest.qWait(30)
+    start = perf_counter()
+    click(window, "file_large.py")
+    next_frame()
+    preview_ms = (perf_counter() - start) * 1000
+    code = find_item(window, "codePreview")
+    assert code.property("text").startswith("# 中文模块")
+    lines = find_item(window, "codeLines")
+    for fraction in (0.25, 0.5, 0.9, 0):
+        lines.setProperty("contentY", (lines.property("contentHeight") - lines.height()) * fraction)
+        QTest.qWait(60)
+    # Count the live native delegates, including the reuse pool, not model rows.
+    delegates = [
+        child for child in lines.childItems()[0].childItems() if child.objectName() == "codeLine"
+    ]
+    assert len(delegates) < 100
+    minified = project / "bundle.js"
+    minified.write_text("const answer = 42; " * 16000)
+    start = perf_counter()
+    controller.browseFiles(str(minified))
+    next_frame()
+    minified_ms = (perf_counter() - start) * 1000
+    document = find_item(window, "codePreview").property("document")
+    assert document.count > 1
+    assert document.selectedText(0, 0, document.count - 1, 2147483647) == minified.read_text()
+    markdown_file = project / "report.md"
+    markdown_file.write_text(
+        (
+            "## 项目进展\n\n一份 **清晰易读** 的项目报告。\n\n> 重要的上下文\n\n- 任务一\n- 任务二\n\n```python\ndef answer():\n    return 42\n```\n\n"
+        )
+        * 300
+    )
+    start = perf_counter()
+    controller.browseFiles(str(markdown_file))
+    next_frame()
+    markdown_ms = (perf_counter() - start) * 1000
+    QTest.qWait(32)
+    heartbeat.stop()
+    metrics = {
+        "directory_ms": round(directory_ms),
+        "preview_ms": round(preview_ms),
+        "max_ui_pause_ms": round(max(samples) * 1000),
+        "live_code_rows": len(delegates),
+        "minified_preview_ms": round(minified_ms),
+        "markdown_preview_ms": round(markdown_ms),
+        "markdown_bytes": markdown_file.stat().st_size,
+    }
+    print("FILE_EXPLORER_BENCHMARK", json.dumps(metrics))
+    (tmp_path / "file-explorer-benchmark.json").write_text(json.dumps(metrics))
+    save_screenshot(window, "large-markdown")
+    controller.browseFiles(str(minified))
+    next_frame()
+    save_screenshot(window, "minified-code")
+    controller.browseFiles(str(code_file))
+    QTest.qWait(100)
+    save_screenshot(window, "large-code")
+    assert (
+        directory_ms < 250
+        and preview_ms < 500
+        and minified_ms < 500
+        and markdown_ms < 500
+        and max(samples) < 0.15
+    ), metrics
+
+
 def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project):
     import shutil
 
@@ -2730,6 +2945,128 @@ def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project)
     click(window, "file_notes.txt")
     until(lambda: find_item(window, "pdfPreview") is None, window.frameSwapped)
     assert not controller.pdf_images._sources
+
+
+@pytest.mark.skipif(
+    not os.environ.get("AVA_DESKTOP_PERF"), reason="Opt-in native rendering benchmark"
+)
+def test_desktop_pdf_lazy_rendering_performance(desktop, model_server, project, tmp_path, monkeypatch):
+    from random import Random
+    from time import perf_counter
+
+    import psutil
+    from PySide6.QtGui import QFont, QPageSize, QPainter, QPdfWriter
+
+    source = project / "large.pdf"
+    writer = QPdfWriter(str(source))
+    writer.setResolution(72)
+    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    writer.setTitle("Thousand-page PDF acceptance fixture")
+    painter = QPainter(writer)
+    painter.setFont(QFont("Helvetica", 16))
+    pixels = Random(42).randbytes(1024 * 1024 * 3)
+    picture = QImage(pixels, 1024, 1024, QImage.Format.Format_RGB888)
+    for index in range(1000):
+        if index:
+            assert writer.newPage()
+        painter.drawText(32, 48, f"PDF preview - page {index + 1} of 1000")
+        painter.drawText(32, 82, "中文分页预览 / Native PDF rendering")
+        if index % 100 == 0:
+            painter.drawImage(QRectF(32, 120, 480, 480), picture)
+        painter.drawText(32, 770, "Pages are rendered only as they enter the viewport.")
+    painter.end()
+    del writer
+    assert source.stat().st_size > 1024 * 1024
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_large.pdf")), window.frameSwapped)
+    QTest.qWait(80)
+    samples = []
+    previous = perf_counter()
+    heartbeat = QTimer()
+    heartbeat.setInterval(16)
+
+    def beat():
+        nonlocal previous
+        now = perf_counter()
+        samples.append(now - previous)
+        previous = now
+
+    heartbeat.timeout.connect(beat)
+    heartbeat.start()
+    process = psutil.Process()
+    before = process.memory_info().rss
+    render_requests = []
+    render = type(controller.pdf_images).requestImage
+
+    def count_render(provider, image_id, size, requested_size):
+        if provider is controller.pdf_images:
+            render_requests.append((image_id.split("/")[1], requested_size.width(), requested_size.height()))
+        return render(provider, image_id, size, requested_size)
+
+    monkeypatch.setattr(type(controller.pdf_images), "requestImage", count_render)
+    start = perf_counter()
+    click(window, "file_large.pdf")
+    until(lambda: find_item(window, "pdfView") is not None, window.frameSwapped)
+    view = find_item(window, "pdfView")
+
+    def page_ready(number):
+        return view.property("currentPage") == number and any(
+            image.property("currentFrame") == number
+            and view.property("currentPageRenderingStatus") == 1
+            and not visible_rect(window, image).isEmpty()
+            for image in pdf_page_images(view)
+        )
+
+    until(lambda: page_ready(0), window.frameSwapped)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    first_page_ms = (perf_counter() - start) * 1000
+    initial_page_renders = [request for request in render_requests if request[0] == "0"]
+    first_image = next(image for image in pdf_page_images(view) if image.property("currentFrame") == 0)
+    displayed_pixels = (first_image.width() * window.devicePixelRatio(), first_image.height() * window.devicePixelRatio())
+    assert find_item(window, "pdfPages").property("rows") == 1000
+    assert "1000" in find_item(window, "pdfPageCount").property("text")
+    live_images = [len(pdf_page_images(view))]
+    jumps = []
+    for number in (499, 999, 5, 800, 0):
+        page = find_item(window, "pdfPageNumber")
+        page.forceActiveFocus()
+        page.setProperty("text", str(number + 1))
+        start = perf_counter()
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        until(lambda number=number: page_ready(number), window.frameSwapped)
+        jumps.append((perf_counter() - start) * 1000)
+        live_images.append(len(pdf_page_images(view)))
+    QTest.qWait(32)
+    heartbeat.stop()
+    metrics = {
+        "pages": 1000,
+        "file_bytes": source.stat().st_size,
+        "first_page_ms": round(first_page_ms),
+        "initial_page_renders": initial_page_renders,
+        "displayed_page_pixels": [round(value) for value in displayed_pixels],
+        "jump_ms": [round(value) for value in jumps],
+        "live_page_images": live_images,
+        "max_ui_pause_ms": round(max(samples) * 1000),
+        "rss_growth_mib": round((process.memory_info().rss - before) / 1024**2, 1),
+        "renderer_rss_mib": round(psutil.Process(controller.pdf_images._process.pid).memory_info().rss / 1024**2, 1),
+    }
+    print("PDF_BENCHMARK", json.dumps(metrics))
+    (tmp_path / "pdf-benchmark.json").write_text(json.dumps(metrics))
+    save_screenshot(window, "pdf-thousand-pages")
+    click(window, "closeInspectorTab_0")
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not isValid(view)
+    assert first_page_ms < 500 and max(jumps) < 500 and max(samples) < 0.15, metrics
+    assert len(initial_page_renders) == 1, metrics
+    assert all(abs(actual - displayed) <= window.devicePixelRatio() + 1
+               for actual, displayed in zip(initial_page_renders[0][1:], displayed_pixels, strict=True)), metrics
+    assert max(live_images) <= 8, metrics
 
 
 def test_desktop_inspector_tabs_preserve_files_pages_and_release_closed_tabs(
@@ -3996,6 +4333,113 @@ def test_desktop_browser_text_context_edits_and_copies(desktop, model_server, ho
     save_screenshot(text_menu_item("Copy")[0], "browser-text-menu")
     click_text_menu("Copy")
     until(lambda: "只读网页" in QGuiApplication.clipboard().text(), window.frameSwapped)
+
+
+@pytest.mark.skipif(not os.environ.get("AVA_DESKTOP_PERF"), reason="Opt-in native rendering benchmark")
+def test_desktop_pdf_complex_page_does_not_block_chat(desktop, model_server, project, monkeypatch):
+    import subprocess
+
+    from PySide6.QtGui import QColor, QPageSize, QPainter, QPdfWriter
+
+    # Dense vector drawings stress PDF rasterization independently of page count.
+    source = project / "drawing.pdf"
+    writer = QPdfWriter(str(source))
+    writer.setResolution(72)
+    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    painter = QPainter(writer)
+    painter.setPen(Qt.PenStyle.NoPen)
+    for index in range(12_000):
+        painter.setBrush(QColor(index % 251, index * 7 % 251, index * 13 % 251, 160))
+        painter.drawEllipse(QRectF(index * 17 % 500, index * 31 % 700, 36, 36))
+    assert writer.newPage()
+    painter.setPen(Qt.GlobalColor.black)
+    painter.drawText(32, 48, "A simple second page")
+    painter.end()
+    del writer
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_drawing.pdf")), window.frameSwapped)
+    samples, typed = [], []
+    previous = time.perf_counter()
+    heartbeat = QTimer()
+    heartbeat.setInterval(16)
+
+    def beat():
+        nonlocal previous
+        now = time.perf_counter()
+        samples.append(now - previous)
+        previous = now
+
+    heartbeat.timeout.connect(beat)
+    heartbeat.start()
+    start = time.perf_counter()
+
+    def write_during_render():
+        type_message(window, "PDF 渲染时继续工作")
+        typed.append(time.perf_counter() - start)
+
+    QTimer.singleShot(40, write_during_render)
+    click(window, "file_drawing.pdf")
+    until(
+        lambda: bool(view := find_item(window, "pdfView"))
+        and view.property("currentPageRenderingStatus") == 1 and bool(typed),
+        window.frameSwapped, timeout=20_000,
+    )
+    heartbeat.stop()
+    assert controller.draft == "PDF 渲染时继续工作"
+    metrics = {"ready_ms": round((time.perf_counter() - start) * 1000),
+               "typing_ms": round(typed[0] * 1000), "max_ui_pause_ms": round(max(samples) * 1000)}
+    print("COMPLEX_PDF_BENCHMARK", json.dumps(metrics))
+    QTest.mouseMove(window, find_item(window, "composer").mapToScene(QPointF(20, 20)).toPoint())
+    save_screenshot(window, "complex-pdf-responsive-chat")
+    assert max(samples) < .15 and typed[0] < .15, metrics
+
+    # A renderer failure stays within the page, and its retry action starts a
+    # fresh process. Closing another in-flight render must not await PDFium.
+    view = find_item(window, "pdfView")
+    worker = controller.pdf_images._process
+    assert worker is not None
+    click(window, "pdfZoomIn")
+    until(lambda: bool(controller.pdf_images._render_key), window.frameSwapped)
+    until(lambda: find_item(window, "pdfBusy").property("running"), window.frameSwapped)
+    QTest.qWait(300)  # Qt Basic's loading indicator fades in over 250ms.
+    save_screenshot(window, "pdf-render-loading")
+    launch = subprocess.Popen
+
+    def unavailable(command, *args, **kwargs):
+        if "ava.app.desktop._pdf_worker" in command:
+            raise OSError("Renderer unavailable during failure injection")
+        return launch(command, *args, **kwargs)
+
+    # A resize may already have queued another image. Keep the renderer
+    # unavailable until those requests have reached the visible error state.
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "Popen", unavailable)
+        worker.kill()
+        until(lambda: view.property("currentPageRenderingStatus") == 3, window.frameSwapped)
+        save_screenshot(window, "pdf-render-error")
+    until(lambda: worker.poll() is not None, window.frameSwapped)
+    click(window, "pdfRenderRetry_0")
+    until(lambda: view.property("currentPageRenderingStatus") == 1, window.frameSwapped)
+    assert controller.draft == "PDF 渲染时继续工作"
+    worker = controller.pdf_images._process
+    assert worker is not None
+    click(window, "pdfZoomIn")
+    until(lambda: bool(controller.pdf_images._render_key), window.frameSwapped)
+    close_start = time.perf_counter()
+    click(window, "closeInspectorTab_0")
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert find_item(window, "pdfView") is None
+    assert not controller.pdf_images._sources
+    close_ms = (time.perf_counter() - close_start) * 1000
+    until(lambda: worker.poll() is not None, window.frameSwapped)
+    print("PDF_CLOSE_BENCHMARK", json.dumps({"close_ms": round(close_ms), "renderer_stopped": True}))
+    assert close_ms < 150
 
 
 def test_desktop_session_board_tracks_completion_and_explicit_review(desktop, model_server, home):
