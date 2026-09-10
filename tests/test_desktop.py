@@ -5,8 +5,10 @@ from __future__ import annotations
 import gc
 import json
 import os
+import plistlib
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -2219,6 +2221,111 @@ def test_desktop_models_attachments_skills_markdown_and_files(
     assert not controller.error
 
 
+def test_desktop_embedded_browser_navigation(desktop, model_server, home, monkeypatch):
+    controller, window = desktop
+    # Exercise automatic default-browser detection in the real importer subprocess.
+    # HOME is isolated by the shared fixture, including the OS preference boundary.
+    user = Path.home()
+    if sys.platform == "darwin":
+        preferences = user / "Library/Preferences/com.apple.LaunchServices"
+        preferences.mkdir(parents=True)
+        (preferences / "com.apple.launchservices.secure.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "LSHandlers": [
+                        {"LSHandlerURLScheme": "https", "LSHandlerRoleAll": "org.mozilla.firefox"}
+                    ]
+                }
+            )
+        )
+        root = user / "Library/Application Support/Firefox"
+    else:
+        binaries = user / "bin"
+        binaries.mkdir()
+        command = binaries / "xdg-settings"
+        command.write_text("#!/bin/sh\nprintf 'firefox.desktop\\n'\n")
+        command.chmod(0o700)
+        monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+        root = user / ".mozilla/firefox"
+    profile = root / "fixture.default"
+    profile.mkdir(parents=True)
+    (root / "profiles.ini").write_text("[InstallFixture]\nDefault=fixture.default\n")
+    with sqlite3.connect(profile / "cookies.sqlite") as db:
+        db.execute(
+            "CREATE TABLE moz_cookies (host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, name TEXT, value TEXT, isHttpOnly INTEGER, sameSite INTEGER, originAttributes TEXT)"
+        )
+        db.execute(
+            "INSERT INTO moz_cookies VALUES ('127.0.0.1','/account',0,0,'fixture_session','imported-session',1,1,'')"
+        )
+        db.execute(
+            "INSERT INTO moz_cookies VALUES ('127.0.0.1','/account',0,0,'isolated','container-session',1,1,'^userContextId=1')"
+        )
+    with sqlite3.connect(profile / "places.sqlite") as db:
+        db.execute(
+            "CREATE TABLE moz_places (id INTEGER, title TEXT, url TEXT, last_visit_date INTEGER)"
+        )
+        db.execute("CREATE TABLE moz_bookmarks (fk INTEGER, type INTEGER, title TEXT)")
+        db.execute(
+            "INSERT INTO moz_places VALUES (1, '中文资料', 'https://example.test/reference', 123)"
+        )
+        db.execute("INSERT INTO moz_bookmarks VALUES (1, 1, '中文资料')")
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    click(window, "toggleRightSidebar")
+    click(window, "browserTab")
+    until(lambda: bool(find_item(window, "webBrowser")), window.frameSwapped)
+    browser = find_item(window, "webBrowser")
+    session = controller.browserSession
+    until(
+        lambda: not session.importing and bool(session.importStatus),
+        session.changed,
+        timeout=20_000,
+    )
+    assert "1 cookies, 1 bookmarks, 1 history" in session.importStatus
+    assert "Skipped 1" in session.importStatus
+    assert not session.profile.isOffTheRecord()
+    report = (home / "browser/library.json").read_text()
+    assert "imported-session" not in report and "container-session" not in report
+    assert json.loads(report)["attempted"] is True
+    click(window, "bookmarksButton")
+    until(lambda: bool(find_item(window, "browserEntry_中文资料")), window.frameSwapped)
+    assert find_item(window, "browserEntry_中文资料").isVisible()
+    click(window, "closeBrowserLibrary")
+    url = json.loads((home / "settings.json").read_text())["providers"]["desktop-test"][
+        "base_url"
+    ].removesuffix("/v1")
+    address = find_item(window, "browserAddress")
+    address.setProperty("text", url + "/account")
+    address.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(
+        lambda: browser.property("title") == "Account ready", browser.titleChanged, timeout=20_000
+    )
+    address.setProperty("text", url + "/preview")
+    address.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(
+        lambda: browser.property("title") == "Browser ready", browser.titleChanged, timeout=20_000
+    )
+    until(lambda: not browser.property("loading"), browser.loadingChanged, timeout=20_000)
+    assert browser.height() > 200 and browser.width() > 200
+    QTest.qWait(400)
+    assert browser.property("url").toString() == url + "/preview"
+    save_screenshot(window, "browser")
+    address.setProperty("text", url + "/next")
+    address.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: browser.property("title") == "Next page", browser.titleChanged)
+    click(window, "browserBack")
+    until(lambda: browser.property("title") == "Browser ready", browser.titleChanged)
+    click(window, "browserForward")
+    until(lambda: browser.property("title") == "Next page", browser.titleChanged)
+    click(window, "closeInspectorButton")
+    click(window, "toggleRightSidebar")
+    assert browser.property("title") == "Next page"
+    assert not controller.error
 
 
 @pytest.mark.parametrize(
@@ -2410,10 +2517,6 @@ def test_desktop_session_title_is_single_line(desktop, model_server):
     )
     title = find_item(window, "sessionTitle_" + identity)
     assert title.property("lineCount") == 1
-
-
-
-
 
 
 def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project):
@@ -2629,8 +2732,6 @@ def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project)
     assert not controller.pdf_images._sources
 
 
-
-
 def test_desktop_inspector_tabs_preserve_files_pages_and_release_closed_tabs(
     desktop, model_server, project, home
 ):
@@ -2705,6 +2806,40 @@ def test_desktop_inspector_tabs_preserve_files_pages_and_release_closed_tabs(
     assert not controller.error
 
 
+def test_desktop_browser_media_playback_and_unsupported_format_notice(desktop, model_server, home):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    click(window, "browserTab")
+    browser = find_item(window, "webBrowser")
+    url = json.loads((home / "settings.json").read_text())["providers"]["desktop-test"][
+        "base_url"
+    ].removesuffix("/v1")
+
+    def navigate(path):
+        address = find_item(window, "browserAddress")
+        address.setProperty("text", url + path)
+        address.forceActiveFocus()
+        QTest.keyClick(window, Qt.Key.Key_Return)
+
+    navigate("/video-webm")
+    until(lambda: browser.property("title") == "Video ready", browser.titleChanged, timeout=20_000)
+    assert not find_item(window, "browserMediaNotice").isVisible()
+    navigate("/video-mp4")
+    until(
+        lambda: browser.property("title") in ("Video ready", "Media failed"),
+        browser.titleChanged,
+        timeout=20_000,
+    )
+    if browser.property("title") == "Media failed":
+        until(lambda: find_item(window, "browserMediaNotice").isVisible(), window.frameSwapped)
+        assert "H.264" in find_item(window, "browserPane").property("mediaProblem")
+        assert find_item(window, "openMediaExternally").isVisible()
+        save_screenshot(window, "unsupported-media")
+    navigate("/preview")
+    until(lambda: browser.property("title") == "Browser ready", browser.titleChanged)
+    assert not find_item(window, "browserMediaNotice").isVisible()
 
 
 def test_desktop_transcript_renders_markdown_tools_and_expands_complete_output(
@@ -3557,10 +3692,6 @@ def test_desktop_review_stage_unstage_and_commit(desktop, model_server, project)
     assert not review.state["error"]
 
 
-
-
-
-
 def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
     def git(*args):
         return subprocess.check_output(['git', '-C', str(project), *args], text=True)
@@ -3865,8 +3996,6 @@ def test_desktop_browser_text_context_edits_and_copies(desktop, model_server, ho
     save_screenshot(text_menu_item("Copy")[0], "browser-text-menu")
     click_text_menu("Copy")
     until(lambda: "只读网页" in QGuiApplication.clipboard().text(), window.frameSwapped)
-
-
 
 
 def test_desktop_session_board_tracks_completion_and_explicit_review(desktop, model_server, home):
@@ -4243,8 +4372,6 @@ def test_desktop_automation_creates_runs_and_opens_results(desktop, model_server
     assert any(chat["id"] == first_chat for project in controller.projects for chat in project["chats"])
 
 
-
-
 def test_desktop_session_board_filters_and_virtualizes_large_summary_lists(desktop):
     """Benchmark the native view with summaries; HTTP tests cover their durable source."""
     from datetime import UTC, datetime, timedelta
@@ -4364,3 +4491,240 @@ def test_desktop_session_board_filters_and_virtualizes_large_summary_lists(deskt
     board.update(machines, [{**stopped, "chats": [{"id": "legacy", "title": "Legacy backend", "status": "running"}]}])
     assert board.notice and board.activeSessions.rowCount() == 1
     assert not board.needsReview.rowCount()
+
+
+def test_desktop_browser_screenshot_tool_result(desktop, model_server, home, project):
+    import base64
+
+    from ava.tool.mcp import MCPServers, ServerConfig
+    from tests.test_mcp import FIXTURE
+
+    settings = json.loads((home / "settings.json").read_text())
+    settings["model"] = "fixture-mcp-image"
+    settings["providers"]["desktop-test"]["models"]["fixture-mcp-image"] = {"context_window": 10000}
+    (home / "settings.json").write_text(json.dumps(settings))
+    screenshot = project / "captured-viewport.png"
+    servers = MCPServers(home)
+    servers.save(ServerConfig(name="Page capture", command=sys.executable,
+                              args=[str(FIXTURE)], env={"MCP_IMAGE_PATH": str(screenshot)}))
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller.newChat()
+    until(lambda: controller.connected and not controller._busy, controller.changed)
+    click(window, "toggleRightSidebar")
+    click(window, "browserTab")
+    browser = find_item(window, "webBrowser")
+    address = settings["providers"]["desktop-test"]["base_url"].removesuffix("/v1") + "/preview"
+    browser.setProperty("url", QUrl(address))
+    until(lambda: browser.property("title") == "Browser ready" and not browser.property("loading"), window.frameSwapped)
+    # Chromium can finish navigation before its surface has reached the Qt scene.
+    # The fixture's text must be visible in pixels before using it as golden input.
+    deadline = time.monotonic() + 5
+    while True:
+        capture = browser.grabToImage()
+        until(lambda captured=capture: not captured.image().isNull(), capture.ready)
+        pixels = capture.image()
+        assert pixels.width() > 100 and pixels.height() > 100
+        colors = {pixels.pixelColor(x, y).rgba() for x in range(0, pixels.width(), 4)
+                  for y in range(0, min(220, pixels.height()), 4)}
+        if len(colors) > 3:
+            break
+        assert time.monotonic() < deadline, "The loaded page never appeared in its screenshot"
+        QTest.qWait(30)
+    assert capture.saveToFile(str(screenshot))
+    click(window, "toggleRightSidebar")
+    type_message(window, "Inspect this browser screenshot")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: len(model_server) == 2 or bool(controller.error), controller.changed, timeout=20000)
+    assert len(model_server) == 2, controller.error
+    messages = model_server[1].request["messages"]
+    results = [message for message in messages if message["role"] == "tool"]
+    assert results[-1]["content"] == "Captured browser viewport"
+    images = [part for message in messages if message["role"] == "user"
+              for part in message["content"] if part["type"] == "image_url"]
+    assert len(images) == 1
+    assert base64.b64decode(images[0]["image_url"]["url"].split(",", 1)[1]) == screenshot.read_bytes()
+    model_server[1].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    row = next(row for row in controller.transcript.rows if row["attachments"])
+    metadata = row["attachments"][0]
+    assert metadata["byte_size"] == screenshot.stat().st_size
+    assert "base64" not in metadata and "bytes" not in metadata
+    connection = controller._connection
+    resource = f"{connection._base}/api/chats/{controller.chatId}/{metadata['path']}"
+    assert httpx.get(resource).status_code in (401, 403)
+    fetched = httpx.get(resource, headers={"Authorization": "Bearer " + connection._token})
+    assert fetched.status_code == 200 and fetched.content == screenshot.read_bytes()
+    assert fetched.headers["content-type"] == "image/png"
+    assert httpx.get(resource + "999", headers={"Authorization": "Bearer " + connection._token}).status_code == 404
+    name = "transcriptAttachment_" + metadata["display_path"]
+    until(lambda: find_item(window, name) is not None, window.frameSwapped)
+    started = time.perf_counter()
+    click(window, name)
+    preview = controller.attachmentPreview
+    until(lambda: not preview.state["loading"], preview.changed)
+    assert not preview.state["error"]
+    dialog = window.findChild(QObject, "toolImageDialog")
+    until(lambda: dialog.property("imageReady"), window.frameSwapped)
+    first_preview_ms = (time.perf_counter() - started) * 1000
+    assert first_preview_ms < 500, first_preview_ms
+    print(f"Tool image preview: {first_preview_ms:.0f} ms, {metadata['byte_size']} bytes; authenticated on-demand fetch")
+    save_screenshot(window, "browser-tool-image")
+    cached = preview.state["url"]
+    assert dialog.property("activeFocus"), "The image preview must receive keyboard input"
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    until(lambda: not dialog.property("visible"), window.frameSwapped)
+    click(window, name)
+    assert preview.state["url"] == cached and not preview.state["loading"]
+    window.setProperty("dark", True)
+    window.setWidth(800)
+    window.setHeight(600)
+    save_screenshot(window, "browser-tool-image-dark-narrow")
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    chat = controller.chatId
+    controller._detach()
+    stop_backend(home)
+    controller.start()
+    until(lambda: controller.connected and controller.chatId == chat, controller.changed, timeout=20000)
+    until(lambda: any(row["attachments"] for row in controller.transcript.rows), controller.changed)
+    restored = next(row for row in controller.transcript.rows if row["attachments"])
+    assert restored["attachments"] == row["attachments"]
+    click(window, name)
+    until(lambda: not preview.state["loading"], preview.changed)
+    assert not preview.state["error"] and preview.state["url"]
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+
+
+def test_desktop_agent_browser_handoff_and_takeover(desktop, model_server, home):
+    import base64
+
+    settings_path = home / 'settings.json'
+    settings = json.loads(settings_path.read_text())
+    settings['model'] = 'fixture-browser'
+    settings_path.write_text(json.dumps(settings))
+    controller, window = desktop
+    directory = home / 'browser'
+    directory.mkdir(exist_ok=True)
+    (directory / 'library.json').write_text('{"attempted": true}')
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller.newChat()
+    until(lambda: controller.connected and not controller._busy, controller.changed)
+    click(window, 'toggleRightSidebar')
+    click(window, 'browserTab')
+    click(window, 'browserHandoff')
+    control = controller.browserControl
+    until(lambda: bool(control.tabs.get('1', {}).get('active')), control.changed)
+    assert control.tabs['1']['chat'] == controller.chatId
+    browser = find_item(window, 'webBrowser')
+    ticks = [time.perf_counter()]
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(time.perf_counter()))
+    timer.start()
+    type_message(window, 'Complete the form in the shared browser, then capture it.')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: len(model_server) >= 13 or bool(controller.error), controller.changed, timeout=20000)
+    timer.stop()
+    assert len(model_server) == 13, controller.error
+    stall = max(right-left for left, right in zip(ticks, ticks[1:], strict=False)) * 1000
+    assert stall < 150, f'Browser control stalled the GUI for {stall:.0f} ms'
+    print(f'Browser control: 12 actual agent actions, maximum GUI interval {stall:.0f} ms')
+    messages = model_server[-1].request['messages']
+    results = [message for message in messages if message['role'] == 'tool']
+    assert 'Ava 中文 / input true / click true' in json.loads(results[2]['content'])['text']
+    assert any(element['name'] == 'Shadow note' and element['value'] == 'Nested input' for element in json.loads(results[5]['content'])['elements'])
+    assert any(element['name'] == 'Priority' and element['value'] == 'High' for element in json.loads(results[6]['content'])['elements'])
+    assert any(element['name'] == 'Frame note' and element['value'] == 'Nested input' for element in json.loads(results[7]['content'])['elements'])
+    assert json.loads(results[10]['content'])['url'].endswith('/next')
+    assert browser.property('url').toString().endswith('/agent-browser')
+    images = [part for message in messages if message['role'] == 'user' for part in message['content'] if part['type'] == 'image_url']
+    assert len(images) == 1
+    pixels = QImage.fromData(base64.b64decode(images[0]['image_url']['url'].split(',', 1)[1]))
+    assert not pixels.isNull() and pixels.width() > 100 and pixels.height() > 100
+    model_server[-1].release.set()
+    until(lambda: controller.status == 'idle', controller.changed)
+    save_screenshot(window, 'agent-browser-result')
+    width, height = window.width(), window.height()
+    window.setProperty('dark', True)
+    window.setWidth(900)
+    window.setHeight(650)
+    save_screenshot(window, 'agent-browser-dark-narrow')
+    takeover = find_item(window, 'browserTakeOver')
+    right = takeover.mapToScene(QPointF(takeover.width(), takeover.height()))
+    assert right.x() <= window.width() and right.y() <= window.height()
+    click(window, 'browserTakeOver')
+    until(lambda: not control.tabs.get('1', {}).get('active'), control.changed)
+    window.setProperty('dark', False)
+    window.setWidth(width)
+    window.setHeight(height)
+    click(window, 'browserHandoff')
+    until(lambda: bool(control.tabs.get('1', {}).get('active')), control.changed)
+    point = browser.mapToScene(QPointF(20, 20)).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    assert not control.tabs.get('1', {}).get('active'), 'User input must revoke agent control before reaching the page'
+    click(window, 'browserHandoff')
+    until(lambda: bool(control.tabs.get('1', {}).get('active')), control.changed)
+    count = len(model_server)
+    type_message(window, 'Wait for the missing page text.')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: bool(control.tabs.get('1', {}).get('working')), control.changed)
+    started = time.perf_counter()
+    click(window, 'browserTakeOver')
+    assert not control.tabs.get('1', {}).get('active'), control.tabs
+    until(lambda: len(model_server) >= count + 2 or bool(controller.error), controller.changed)
+    assert not controller.error, controller.error
+    assert len(model_server) == count + 2
+    assert (time.perf_counter() - started) < 1
+    assert not control.tabs.get('1', {}).get('active')
+    cancelled = [message for message in model_server[-1].request['messages'] if message['role'] == 'tool'][-1]
+    assert 'took control' in cancelled['content']
+    model_server[-1].release.set()
+    until(lambda: controller.status == 'idle', controller.changed)
+    transcript = find_item(window, 'transcriptView')
+    transcript.setProperty('follow', False)
+    QMetaObject.invokeMethod(transcript, 'positionViewAtBeginning')
+    click(window, 'activityGroupToggle')
+    until(lambda: (summary := find_item(window, 'activitySummary')) is not None and summary.property('text').startswith('Open page'), window.frameSwapped)
+    click(window, 'closeInspectorTab_1')
+    assert isValid(window)
+
+
+def test_desktop_agent_browser_rejects_covered_and_stale_targets(desktop, model_server, home):
+    settings_path = home / 'settings.json'
+    settings = json.loads(settings_path.read_text())
+    settings['model'] = 'fixture-browser-guards'
+    settings_path.write_text(json.dumps(settings))
+    directory = home / 'browser'
+    directory.mkdir(exist_ok=True)
+    (directory / 'library.json').write_text('{"attempted": true}')
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller.newChat()
+    until(lambda: controller.connected and not controller._busy, controller.changed)
+    click(window, 'toggleRightSidebar')
+    click(window, 'browserTab')
+    click(window, 'browserHandoff')
+    control = controller.browserControl
+    until(lambda: bool(control.tabs.get('1', {}).get('active')), control.changed)
+    type_message(window, 'Check the guarded form.')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: len(model_server) >= 9 or bool(controller.error), controller.changed, timeout=20000)
+    assert len(model_server) == 9, controller.error
+    results = [message for message in model_server[-1].request['messages'] if message['role'] == 'tool']
+    assert 'covers this target' in results[2]['content']
+    assert any(element['name'] == 'Guarded field' and element['value'] == '' for element in json.loads(results[3]['content'])['elements'])
+    assert any(element['name'] == 'Guarded field' and element['value'] == 'Accepted' for element in json.loads(results[4]['content'])['elements'])
+    assert 'reference is stale' in results[6]['content']
+    assert 'could not be loaded' in results[7]['content'], results[7]['content']
+    model_server[-1].release.set()
+    until(lambda: controller.status == 'idle', controller.changed)
+    assert control.tabs['1']['active']
+    type_message(window, '/context')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: not control.tabs.get('1', {}).get('active'), control.changed)
+    dialog = window.findChild(QObject, 'contextDialog')
+    assert dialog is not None and dialog.property('visible')
+    save_screenshot(window, 'agent-browser-context-takeover')
