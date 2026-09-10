@@ -28,7 +28,9 @@ from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
     QEvent,
     QEventLoop,
+    QLocale,
     QMetaObject,
+    QObject,
     QPersistentModelIndex,
     QPoint,
     QPointF,
@@ -43,6 +45,8 @@ from PySide6.QtGui import (  # noqa: E402
     QGuiApplication,
     QImage,
     QInputMethodEvent,
+    QKeySequence,
+    QTextTable,
 )
 from PySide6.QtQml import QJSValue  # noqa: E402
 from PySide6.QtQuick import QQuickWindow  # noqa: E402
@@ -1610,6 +1614,169 @@ def test_project_switch_and_ime_preedit(desktop, model_server, project, tmp_path
     assert controller.projectId == other_id and not controller.chatId
 
 
+def test_desktop_context_chart_matches_report(desktop, model_server, project):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: bool(controller.connected), controller.changed)
+    type_message(window, "/context")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    dialog = window.findChild(QObject, "contextDialog")
+    until(lambda: dialog.property("visible"), controller.changed)
+    connection = controller._connection
+    report = httpx.get(
+        connection._base + f"/api/chats/{controller.chatId}/context",
+        headers={"Authorization": f"Bearer {connection._token}"},
+    ).json()
+    shown = dialog.property("report")
+    assert (shown.toVariant() if isinstance(shown, QJSValue) else shown) == report
+    assert report["estimated_tokens"] == sum(s["tokens"] for s in report["sections"])
+    assert not model_server, "Inspecting context must not call the model"
+
+    def verify_graph(payload):
+        until(
+            lambda: find_item(window, "contextWindowTrack").width() > 0,
+            window.frameSwapped,
+        )
+        presented = QSignalSpy(window.frameSwapped)
+        window.update()
+        assert presented.count() or presented.wait(3000), "Context layout was not presented"
+        total = payload["estimated_tokens"]
+        capacity = payload["context_window"]
+        track = find_item(window, "contextWindowTrack")
+        fill = find_item(window, "contextWindowFill")
+        expected = min(1, total / capacity) if capacity else 0
+        assert fill.width() == pytest.approx(track.width() * expected, abs=0.01)
+        for section in payload["sections"]:
+            kind = section["kind"]
+            track = find_item(window, "contextTrack_" + kind)
+            fill = find_item(window, "contextFill_" + kind)
+            share = section["tokens"] / total if total else 0
+            assert fill.width() == pytest.approx(track.width() * share, abs=0.01)
+            label = find_item(window, "contextShare_" + kind).property("text")
+            assert label.endswith("%")
+            if label.startswith("<"):
+                assert 0 < share * 100 < 0.1
+            elif label.startswith(">"):
+                assert 99.9 < share * 100 < 100
+            else:
+                rounded, valid = QLocale().toDouble(label[:-1])
+                assert valid and rounded == pytest.approx(share * 100, abs=0.051)
+        ordered = sorted(payload["sections"], key=lambda s: -s["tokens"])
+        positions = [
+            find_item(window, "contextLabel_" + s["kind"]).mapToScene(QPointF()).y()
+            for s in ordered
+        ]
+        assert positions == sorted(positions), "Largest context categories must come first"
+        assert "estimated tokens" in find_item(window, "contextShareNote").property("text")
+        # Numeric byte sizes must not leak back into this user-facing report.
+        pending = [find_item(window, "contextScroll")]
+        while pending:
+            item = pending.pop()
+            text = item.property("text")
+            if text and item.isVisible():
+                assert "bytes" not in text.lower()
+                assert "NaN" not in text and "Infinity" not in text
+            pending.extend(item.childItems())
+
+    verify_graph(report)
+    save_screenshot(window, "context")
+    click(window, "contextDoneButton")
+    assert not dialog.property("visible")
+    assert find_item(window, "composer").hasActiveFocus()
+
+    # Use real request content to verify that attachments and a subsequent response
+    # update the next-request estimate, without mixing it with provider usage.
+    attachment = project / "context.md"
+    attachment.write_text("# Context\n\n解释上下文统计。" * 50)
+    controller.addAttachments([str(attachment)])
+    type_message(window, "解释上下文统计。" * 30)
+    click(window, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    type_message(window, "/context")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: dialog.property("visible"), controller.changed)
+    updated = dialog.property("report")
+    if isinstance(updated, QJSValue):
+        updated = updated.toVariant()
+    assert updated["estimated_tokens"] > report["estimated_tokens"]
+    assert {"user_text", "assistant_text", "attachment_files"} <= {
+        s["kind"] for s in updated["sections"]
+    }
+    verify_graph(updated)
+
+    # Controlled report edge cases supplement the real backend flow: all category
+    # rows, tiny/zero shares, Chinese wrapping, unknown capacity and overflow.
+    from ava.session.context_report import SECTION_LABELS
+
+    amounts = [0, 1, 99, 100, 700, 1500, 2500, 4500, 5500, 10000, 10000, 10000, 25000, 30000]
+    sections = [
+        {"kind": kind, "label": label, "tokens": value, "bytes": value * 4, "count": 1}
+        for (kind, label), value in zip(SECTION_LABELS.items(), amounts, strict=True)
+    ]
+    sections[-1]["label"] = "消息格式开销 · 包含消息角色、边界与模型所需的格式信息，以及工具调用的分隔标识"
+    mixed = {
+        "sections": sections,
+        "estimated_tokens": sum(amounts),
+        "context_window": 128000,
+        "measured_input_tokens": 75000,
+        "compacted": True,
+    }
+    controller.contextRequested.emit(mixed)
+    window.setWidth(800)
+    window.setHeight(600)
+    window.setProperty("dark", True)
+    verify_graph(mixed)
+    assert find_item(window, "contextShare_environment").property("text") == "<0.1%"
+    assert find_item(window, "contextShare_system").property("text") == "0%"
+    assert find_item(window, "contextLabel_framing").height() > 20, "Chinese label must wrap"
+    assert dialog.property("height") <= window.height() - 64
+    save_screenshot(window, "context-dark-narrow")
+    scroll = find_item(window, "contextScroll")
+    position = visible_rect(window, scroll).center().toPoint()
+    QTest.wheelEvent(window, position, QPoint(0, -2400))
+    until(
+        lambda: not visible_rect(window, find_item(window, "contextMeasured")).isEmpty(),
+        window.frameSwapped,
+    )
+    viewport = scroll.property("contentItem")
+    until(lambda: not viewport.property("moving"), window.frameSwapped)
+    assert viewport.property("contentY") <= max(
+        0, viewport.property("contentHeight") - viewport.height()
+    ) + 1
+    save_screenshot(window, "context-scroll")
+    click(window, "closeContextButton")
+    assert not dialog.property("visible")
+    controller.contextRequested.emit(mixed)
+    QTest.qWait(30)
+    assert not visible_rect(window, find_item(window, "contextTotal")).isEmpty()
+
+    for capacity, total in [(0, 100000), (10000, 12000), (10000, 0), (0, 0)]:
+        payload = {
+            "sections": [{"kind": "system", "label": "System prompt", "tokens": total}]
+            if total else [],
+            "estimated_tokens": total,
+            "context_window": capacity,
+            "measured_input_tokens": 0 if total else None,
+        }
+        controller.contextRequested.emit(payload)
+        verify_graph(payload)
+        assert find_item(window, "contextEmpty").isVisible() == (total == 0)
+        assert find_item(window, "contextOverflow").isVisible() == (0 < capacity < total)
+        if not capacity:
+            assert find_item(window, "contextWindowShare").property("text") == "Unknown"
+        if total:
+            assert "0 input tokens" in find_item(window, "contextMeasured").property("text")
+        else:
+            assert viewport.property("contentHeight") <= viewport.height() + 1, (
+                viewport.property("contentHeight"), viewport.height()
+            )
+        save_screenshot(window, f"context-edge-{capacity}-{total}")
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    assert not dialog.property("visible")
 
 
 def test_transcript_golden_replay(qt_app, capfd):
@@ -1860,20 +2027,18 @@ def test_pause_queue_resume_and_backend_failure(desktop, model_server):
 
 
 def save_screenshot(window, suffix):
+    if QGuiApplication.focusWindow() != window:
+        window.raise_()
+        window.requestActivate()
+    presented = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert presented.wait(2000), (
+        f"screenshot frame was not presented: exposed={window.isExposed()}, "
+        f"active={window.isActive()}, app={QGuiApplication.applicationState()}"
+    )
     output = os.environ.get("AVA_DESKTOP_SCREENSHOT")
     if output:
-        from pathlib import Path
-
         target = Path(output)
-        if QGuiApplication.focusWindow() != window:
-            window.raise_()
-            window.requestActivate()
-        presented = QSignalSpy(window.frameSwapped)
-        window.update()
-        assert presented.wait(2000), (
-            f"screenshot frame was not presented: exposed={window.isExposed()}, "
-            f"active={window.isActive()}, app={QGuiApplication.applicationState()}"
-        )
         # Use the same asynchronous capture path for every scene; avoid
         # grabWindow's synchronous GPU readback on the GUI thread.
         capture = window.contentItem().grabToImage()
@@ -1918,6 +2083,333 @@ def pdf_page_images(view):
     return images
 
 
+def test_desktop_models_attachments_skills_markdown_and_files(
+    desktop, model_server, project, qt_app
+):
+    """Golden workbench flow: user gestures must reach the real provider and renderer."""
+    (project / "notes.md").write_text("# Project notes\n\nA **small** example.\n")
+    skill = project / ".agents/skills/review/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: review\ndescription: Review the project carefully\n---\nRead the project notes.\n"
+    )
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected and bool(controller._skills), controller.changed)
+    first_chat = controller.chatId
+
+    # A mouse-opened picker changes both model and advertised reasoning effort.
+    click(window, "modelButton")
+    until(lambda: bool(controller.modelChoices), controller.changed)
+    click(window, "modelPicker")
+    QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
+    until(
+        lambda: controller.modelChoices.get("effort_values") == ["low", "high"], controller.changed
+    )
+    click(window, "effortPicker")
+    QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.selection.get("effort") == "high", controller.changed)
+    save_screenshot(window, "models")
+    click(window, "closeModelButton")
+
+    click(window, "toggleRightSidebar")
+    assert controller.fileState.get("kind") == "directory", (
+        controller.fileState,
+        controller.error,
+        window.property("rightOpen"),
+    )
+    until(lambda: bool(find_item(window, "file_notes.md")), window.frameSwapped)
+    click(window, "file_notes.md")
+    assert controller.fileState["kind"] == "markdown"
+    preview = find_item(window, "filePreview")
+    assert "Project notes" in preview.property("textDocument").textDocument().toPlainText()
+    click(window, "attachPreviewButton")
+    assert [a["name"] for a in controller.attachments] == ["notes.md"]
+
+    # Native chooser selection boundary, then actual clipboard-image paste into the composer.
+    click(window, "attachButton")
+    dialog = window.findChild(QObject, "attachmentDialog")
+    assert dialog.setProperty("selectedFile", QUrl.fromLocalFile(str(project / "notes.md")))
+    QMetaObject.invokeMethod(dialog, "accepted")
+    QMetaObject.invokeMethod(dialog, "close")
+    until(lambda: len(controller.attachments) == 2, controller.draftChanged)
+    click(window, "remove_notes.md")
+    assert len(controller.attachments) == 1
+    picture = QImage(80, 60, QImage.Format.Format_RGB32)
+    picture.fill(Qt.GlobalColor.darkGreen)
+    qt_app.clipboard().setImage(picture)
+    click(window, "composer")
+    find_item(window, "composer").forceActiveFocus()
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.Paste))
+    assert [a["kind"] for a in controller.attachments] == ["file", "image"]
+    save_screenshot(window, "attachments")
+
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != first_chat, controller.changed)
+    assert not controller.attachments
+    controller.openChat(first_chat)
+    until(lambda: controller.connected and controller.chatId == first_chat, controller.changed)
+    assert len(controller.attachments) == 2
+
+    type_message(window, "/rev")
+    until(lambda: bool(find_item(window, "command_review")), window.frameSwapped)
+    save_screenshot(window, "commands")
+    QTest.keyClick(window, Qt.Key.Key_Tab)
+    assert controller.draft == "$review "
+    type_message(window, "Summarize these notes.", append=True)
+    click(window, "sendButton")
+    until(
+        lambda: any(r["kind"] == "assistant" for r in controller._transcript.rows),
+        controller.changed,
+    )
+    assert model_server[0].request["model"] == "fixture-reasoning"
+    assert model_server[0].request["reasoning_effort"] == "high"
+    sent = json.dumps(model_server[0].request["messages"])
+    assert "Project notes" in sent and "data:image/png;base64," in sent and "$review" in sent
+    until(lambda: not controller.busy, controller.changed)
+    assert not controller.attachments
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    until(lambda: bool(find_item(window, "assistantMarkdown")), window.frameSwapped)
+    markdown = find_item(window, "assistantMarkdown")
+    quick_document = markdown.property("textDocument")
+    document = quick_document.textDocument()
+    assert "A clearer workspace" in document.toPlainText()
+    assert "**Native controls**" not in document.toPlainText()
+    assert document.begin().blockFormat().headingLevel() == 2
+    assert find_item(window, "transcriptAttachment_notes.md")
+    assert find_item(window, "transcriptAttachment_Pasted image.png")
+    save_screenshot(window, "workbench")
+
+    click(window, "hideSidebarButton")
+    assert not find_item(window, "leftSidebar").isVisible()
+    click(window, "closeInspectorButton")
+    assert not find_item(window, "rightSidebar").isVisible()
+    assert controller.preference("leftSidebar", True) is False
+    assert controller.preference("rightSidebar", True) is False
+    window.setWidth(800)
+    window.setHeight(600)
+    save_screenshot(window, "compact")
+    click(window, "toggleLeftSidebar")
+    click(window, "toggleRightSidebar")
+    save_screenshot(window, "narrow")
+    card = find_item(window, "composerCard")
+    send = find_item(window, "sendButton")
+    assert (
+        send.mapToScene(QPointF(send.width(), 0)).x()
+        <= card.mapToScene(QPointF(card.width() - 8, 0)).x()
+    )
+    window.setProperty("dark", True)
+    current_output = find_item(window, "assistantMarkdown")
+    current_document = current_output.property("textDocument").textDocument()
+    until(
+        lambda: (
+            current_document.find("Open preview").charFormat().foreground().color()
+            == current_output.property("linkColor")
+        ),
+        window.frameSwapped,
+    )
+    save_screenshot(window, "dark")
+    assert not controller.error
+
+
+
+
+@pytest.mark.parametrize(
+    "width,left_open,right_open",
+    [(1280, True, False), (1600, False, False), (1280, True, True), (900, False, True)],
+)
+def test_desktop_message_composer_alignment(desktop, width, left_open, right_open):
+    controller, window = desktop
+    window.setWidth(width)
+    window.setProperty("leftOpen", left_open)
+    window.setProperty("rightOpen", right_open)
+    controller._transcript.append("user", "You", "hello")
+    controller._transcript.append("assistant", "Ava", "Hello")
+    QTest.qWait(100)
+    message = find_item(window, "assistantMarkdown")
+    user_message = find_item(window, "messageBody")
+    composer = find_item(window, "composer").parentItem()
+    # The input lives inside a ScrollView; locate its outer rounded card.
+    while composer.parentItem() and composer.property("radius") != 20:
+        composer = composer.parentItem()
+    assert composer.property("radius") == 20
+    message_left = message.mapToScene(QPointF(0, 0)).x()
+    composer_left = composer.mapToScene(QPointF(0, 0)).x()
+    assert abs(message_left - composer_left) <= 1
+    assert abs(message.width() - composer.width()) <= 1
+    assert user_message.width() < composer.width() * 0.9
+    assert (
+        abs(
+            user_message.mapToScene(QPointF(user_message.width(), 0)).x()
+            - (composer_left + composer.width())
+        )
+        <= 1
+    )
+
+
+def test_desktop_code_preview(desktop, model_server, project):
+    source = '# 中文 and emoji 🐍\ndef hello():\n    return "world"\n' + "# long " + "x" * 240
+    (project / "sample.py").write_text(source)
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    controller.browseFiles(str(project / "sample.py"))
+    QTest.qWait(100)
+    code = find_item(window, "codePreview")
+    document = code.property("document")
+    assert document.selectedText(0, 0, 3, 1000) == source
+    assert document.count == 4
+    assert document.selectedText(0, 15, 0, 17) == "🐍"
+    until(lambda: "<span" in document.data(document.index(1), document.HTML), document.dataChanged)
+    horizontal = find_item(window, "codeHorizontalScroll")
+    assert horizontal.property("contentWidth") > horizontal.width()
+    click(window, "codePreview")
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.Copy))
+    assert QGuiApplication.clipboard().text() == source
+    save_screenshot(window, "code-preview")
+    (project / "plain.unknown").write_text("<b>not markup</b>")
+    controller.browseFiles(str(project / "plain.unknown"))
+    until(lambda: document.count == 1, document.changed)
+    assert document.selectedText(0, 0, 0, 1000) == "<b>not markup</b>"
+
+
+def test_desktop_resizable_sidebars(desktop):
+    _, window = desktop
+    window.setProperty("rightOpen", True)
+    QCoreApplication.processEvents()
+    left = find_item(window, "leftSidebar")
+    right = find_item(window, "rightSidebar")
+
+    def drag(x, distance):
+        origin = QPointF(x, window.height() / 2).toPoint()
+        end = QPointF(x + distance, window.height() / 2).toPoint()
+        QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, origin)
+        QTest.mouseMove(window, end, 30)
+        QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+        QCoreApplication.processEvents()
+
+    old_left = left.width()
+    drag(left.mapToScene(QPointF(left.width() + 2, 0)).x(), 90)
+    assert left.width() > old_left + 60
+    old_right = right.width()
+    drag(right.mapToScene(QPointF(-2, 0)).x(), -80)
+    assert right.width() > old_right + 50
+    click(window, "closeInspectorButton")
+    click(window, "toggleRightSidebar")
+    assert right.width() > old_right + 50
+
+
+def test_desktop_sessions_group_by_project_and_switch_without_picker(
+    desktop, model_server, project, tmp_path
+):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    first_project, first_chat = controller.projectId, controller.chatId
+    type_message(window, "Draft for the first project")
+    (project / "context.txt").write_text("First project context")
+    controller.addAttachments([str(project / "context.txt")])
+    other = tmp_path / "另一个项目"
+    other.mkdir()
+    controller.addProject(other.as_uri())
+    until(lambda: controller.projectId != first_project, controller.changed)
+    second_project = controller.projectId
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    second_chat = controller.chatId
+    type_message(window, "另一个项目的草稿")
+
+    assert find_item(window, "projectPicker") is None
+    for identity in (first_chat, second_chat):
+        assert find_item(window, "session_" + identity).isVisible()
+    click(window, "session_" + first_chat)
+    until(lambda: controller.connected and controller.chatId == first_chat, controller.changed)
+    assert controller.projectId == first_project and controller.projectPath == str(project)
+    assert controller.draft == "Draft for the first project"
+    assert [entry["name"] for entry in controller.attachments] == ["context.txt"]
+    assert controller.fileState["path"] == str(project)
+
+    click(window, "projectGroup_" + second_project)
+    QCoreApplication.processEvents()
+    assert not find_item(window, "session_" + second_chat)
+    assert controller.chatId == first_chat
+    controller.refresh()
+    until(
+        lambda: not any(row.get("id") == second_chat for row in controller.sessionRows),
+        controller.navigationChanged,
+    )
+    assert not controller.preference("groups/" + second_project, True)
+    save_screenshot(window, "project-groups-collapsed")
+    click(window, "projectGroup_" + second_project)
+    click(window, "session_" + second_chat)
+    until(lambda: controller.connected and controller.chatId == second_chat, controller.changed)
+    assert controller.projectId == second_project
+    assert controller.draft == "另一个项目的草稿" and not controller.attachments
+    save_screenshot(window, "project-groups")
+
+    click(window, "newChat_" + first_project)
+    until(
+        lambda: (
+            controller.connected
+            and controller.projectId == first_project
+            and controller.chatId != first_chat
+        ),
+        controller.changed,
+    )
+    assert len(next(p for p in controller.projects if p["id"] == first_project)["chats"]) == 2
+    assert not controller.draft and not controller.attachments
+    assert not controller.error
+
+    blank_chat = controller.chatId
+    click(window, "session_" + first_chat)
+    until(lambda: controller.connected and controller.chatId == first_chat, controller.changed)
+    until(
+        lambda: not any(
+            chat["id"] == blank_chat
+            for item in controller.projects
+            for chat in item["chats"]
+        ),
+        controller.navigationChanged,
+    )
+    assert any(
+        chat["id"] == second_chat
+        for item in controller.projects
+        for chat in item["chats"]
+    )
+    assert controller.draft == "Draft for the first project"
+
+
+def test_desktop_session_title_is_single_line(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    identity = controller.chatId
+    type_message(window, "更新后的文字\n只读网页 Read only content")
+    click(window, "sendButton")
+    until(
+        lambda: "\n" in next(
+            chat["title"]
+            for project in controller.projects
+            for chat in project["chats"]
+            if chat["id"] == identity
+        ),
+        controller.navigationChanged,
+    )
+    title = find_item(window, "sessionTitle_" + identity)
+    assert title.property("lineCount") == 1
 
 
 
@@ -1928,28 +2420,298 @@ def pdf_page_images(view):
 
 
 
+def test_desktop_inspector_tabs_preserve_files_pages_and_release_closed_tabs(
+    desktop, model_server, project, home
+):
+    (project / "first.py").write_text("# First file\nprint('one')\n" * 80)
+    (project / "second.py").write_text("# Second file\nprint('two')\n")
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_first.py")), window.frameSwapped)
+    click(window, "file_first.py")
+    first = find_item(window, "filePane")
+    first_lines = find_item(window, "codeLines")
+    first_lines.setProperty("contentY", 120)
+    tree_panel = find_item(window, "fileTreePanel")
+    old_width = tree_panel.width()
+    origin = tree_panel.mapToScene(QPointF(old_width + 2, 100)).toPoint()
+    end = origin + QPointF(40, 0).toPoint()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, origin)
+    QTest.mouseMove(window, end, 30)
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+    QCoreApplication.processEvents()
+    assert tree_panel.width() > old_width + 25
+    click(window, "addInspectorTab")
+    click(window, "newFilesTab")
+    until(lambda: find_item(window, "filePane") != first, window.frameSwapped)
+    until(lambda: bool(find_item(window, "file_second.py")), window.frameSwapped)
+    click(window, "file_second.py")
+    second = find_item(window, "filePane")
+    assert second != first
+    assert first.property("fileState")["name"] == "first.py"
+    assert second.property("fileState")["name"] == "second.py"
+    assert (
+        find_item(window, "fileTreePanel").isVisible()
+        and find_item(window, "fileContentPanel").isVisible()
+    )
+    click(window, "filesTab")
+    assert find_item(window, "filePane") == first
+    assert first_lines.property("contentY") == 120
+    assert find_item(window, "codePreview").property("text").startswith("# First file")
+
+    click(window, "browserTab")
+    first_browser = find_item(window, "webBrowser")
+    url = json.loads((home / "settings.json").read_text())["providers"]["desktop-test"][
+        "base_url"
+    ].removesuffix("/v1")
+    address = find_item(window, "browserAddress")
+    address.setProperty("text", url + "/preview")
+    address.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: first_browser.property("title") == "Browser ready", first_browser.titleChanged)
+    click(window, "addInspectorTab")
+    click(window, "newBrowserTab")
+    second_browser = find_item(window, "webBrowser")
+    assert second_browser != first_browser
+    address = find_item(window, "browserAddress")
+    address.setProperty("text", url + "/next")
+    address.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: second_browser.property("title") == "Next page", second_browser.titleChanged)
+    assert first_browser.property("title") == "Browser ready"
+    until(lambda: not second_browser.property("loading"), second_browser.loadingChanged)
+    QTest.qWait(80)
+    save_screenshot(window, "multiple-tabs")
+    click(window, "closeInspectorTab_3")
+    click(window, "browserTab")
+    assert find_item(window, "webBrowser") == first_browser
+    before = len(controller._preview_objects)
+    click(window, "closeInspectorTab_2")
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert len(controller._preview_objects) == before - 2
+    assert not controller.error
 
 
 
 
+def test_desktop_transcript_renders_markdown_tools_and_expands_complete_output(
+    desktop, model_server
+):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    body = (
+        "# 项目状态\n\n**已完成** 中文优化，*正在测试*。\n\n- 第一项\n- 第二项\n\n> 保留清晰的引用。\n\n```python\nprint('你好 👋')\nreturn 42\n```\n\n| 功能 | 状态 |\n| --- | --- |\n| Markdown | 已验证 |\n\n"
+        + "详细说明，保留所有内容。\n\n" * 30
+    )
+    controller._transcript.append("tool", "read", body, '{"path":"STATUS.md"}')
+    QTest.qWait(100)
+    assert not find_item(window, "messageBody")
+    save_screenshot(window, "transcript-collapsed")
+    click(window, "expandMessage")
+    until(lambda: bool(find_item(window, "markdownCodeBackground")), window.frameSwapped)
+    output = find_item(window, "messageBody")
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert "**已完成**" not in document.toPlainText()
+    assert "# 项目状态" not in document.toPlainText()
+    assert document.begin().blockFormat().headingLevel() == 1
+    bold = document.find("已完成")
+    assert bold.charFormat().fontWeight() >= 600
+    assert not document.find("正在测试").charFormat().fontWeight() >= 600
+    table = next(
+        frame for frame in document.rootFrame().childFrames() if isinstance(frame, QTextTable)
+    )
+    assert (table.rows(), table.columns()) == (2, 2)
+    assert (
+        document.find("return").charFormat().foreground()
+        != document.find("42").charFormat().foreground()
+    )
+    code_box = find_item(window, "markdownCodeBackground")
+    quote_border = find_item(window, "markdownQuoteBorder")
+    assert code_box.width() >= output.width() - 1 and code_box.height() > 30
+    assert quote_border.width() == 3 and quote_border.height() > 10
+    click(window, "copyActivityOutput")
+    assert QGuiApplication.clipboard().text() == body
+    assert "详细说明" in document.toPlainText()
+    assert document.toPlainText().count("详细说明") == 30
+    save_screenshot(window, "transcript-markdown")
+    # A structural document check alone misses an opaque item covering native glyphs.
+    if QGuiApplication.platformName() != "offscreen":
+        frame = window.grabWindow()
+        scale = frame.width() / window.width()
+        top = code_box.mapToScene(QPointF(14, 5))
+        region = frame.copy(
+            int(top.x() * scale),
+            int(top.y() * scale),
+            int(180 * scale),
+            int((code_box.height() - 10) * scale),
+        )
+        background = code_box.property("color").lightnessF()
+        assert (
+            sum(
+                abs(region.pixelColor(x, y).lightnessF() - background) > 0.3
+                for y in range(region.height())
+                for x in range(region.width())
+            )
+            > 100
+        )
 
 
+def test_desktop_markdown_streaming_code_blocks_and_source_files(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    body = (
+        "## 渲染检查\n\n**中文粗体**与 `inline_code`。\n\n"
+        "```python\nprint('你好 👋')\n```\n\n"
+        '```json\n{"ready": true}\n```\n\n'
+        "    indented_code()\n\n"
+        "| 名称 | 内容 |\n| --- | --- |\n| 文件 | **已完成** |\n"
+    )
+    row = controller._transcript.append("assistant", "Ava", body[:35])
+    until(lambda: bool(find_item(window, "assistantMarkdown")), window.frameSwapped)
+    controller._transcript.update(row, body=body)
+    output = find_item(window, "assistantMarkdown")
+    until(lambda: '"ready"' in output.property("text"), window.frameSwapped)
+
+    def decorations():
+        value = output.property("decorations")
+        return value.toVariant() if isinstance(value, QJSValue) else value
+
+    until(lambda: bool(decorations()), window.frameSwapped)
+    save_screenshot(window, "markdown-streaming")
+    assert [d["text"] for d in decorations() if d["kind"] == "code"] == [
+        "print('你好 👋')",
+        '{"ready": true}',
+        "indented_code()",
+    ]
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert document.find("中文粗体").charFormat().fontWeight() >= 600
+    controller._transcript.clear()
+    source = "# Python comment\nvalue = '**keep these characters**'\n"
+    controller._transcript.append("tool", "read", source, '{"path":"example.py"}')
+    click(window, "expandMessage")
+    until(lambda: bool(find_item(window, "messageBody")), window.frameSwapped)
+    quick_source = find_item(window, "messageBody").property("textDocument")
+    assert quick_source.textDocument().toPlainText() == source
 
 
+def test_desktop_file_tree_watches_changes_and_bounds_previews(
+    desktop, model_server, project, tmp_path
+):
+    controller, window = desktop
+    folder = project / "nested"
+    folder.mkdir()
+    (folder / "inside.txt").write_text("inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.txt").write_text("outside")
+    (project / "external").symlink_to(outside, target_is_directory=True)
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    assert not controller._preview_objects  # The hidden inspector has no file models.
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_nested")), window.frameSwapped)
+    click(window, "file_nested")
+    until(lambda: bool(find_item(window, "file_inside.txt")), window.frameSwapped)
+    click(window, "file_inside.txt")
+    assert controller.fileState["text"] == "inside"
+    added = folder / "added.txt"
+    added.write_text("new file")
+    until(lambda: bool(find_item(window, "file_added.txt")), window.frameSwapped)
+    click(window, "file_added.txt")
+    assert controller.fileState["text"] == "new file"
+    tree = find_item(window, "fileTree")
+    rows = tree.property("rows")
+    click(window, "file_external")
+    QTest.qWait(100)
+    assert tree.property("rows") == rows
+    assert not find_item(window, "file_private.txt")
+    controller.browseFiles(str(outside / "private.txt"))
+    assert "inside this project" in controller.error
+    controller.dismissError()
+    binary = project / "binary.dat"
+    binary.write_bytes(b"\x00binary")
+    controller.browseFiles(str(binary))
+    assert controller.fileState["kind"] == "unsupported"
+    huge = project / "huge.txt"
+    huge.write_bytes(b"x" * (1024 * 1024 + 1))
+    controller.browseFiles(str(huge))
+    assert "1 MiB" in controller.fileState["notice"]
+    fifo = project / "pipe"
+    os.mkfifo(fifo)
+    controller.browseFiles(str(fifo))
+    assert "regular file" in controller.error
+    controller.dismissError()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
+def test_desktop_remove_project_hides_history_without_stopping_tasks(
+    desktop, model_server, project, home
+):
+    controller, window = desktop
+    preserved = project / "保留文件.txt"
+    preserved.write_text("Project removal must leave this file intact.\n")
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    first, project_id = controller.chatId, controller.projectId
+    type_message(window, "后台任务在隐藏项目后继续运行")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: any(row["body"] == "Hello " for row in controller._transcript.rows), controller.changed)
+    click(window, "sessionMenu_" + first)
+    click(window, "pinChatAction")
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    group = find_item(window, "projectGroup_" + project_id)
+    QTest.mouseClick(window, Qt.MouseButton.RightButton, pos=visible_rect(window, group).center().toPoint())
+    action = find_item(window, "removeProjectAction")
+    assert action is not None and action.isVisible(), "Projects need a discoverable Remove from Ava action"
+    click(window, "removeProjectAction")
+    until(lambda: not controller.projects, controller.navigationChanged)
+    assert not controller.projectId and not controller.chatId and not controller._transcript.rows
+    assert not controller.searchChats("", False) and not controller.searchChats("", True)
+    until(lambda: not find_item(window, "session_" + first), window.frameSwapped)
+    assert find_item(window, "emptyStateAction").property("text") == "Add project"
+    assert find_item(window, "emptyStateAction").property("enabled")
+    assert preserved.read_text() == "Project removal must leave this file intact.\n"
+    with httpx.Client(
+        base_url=controller._connection._base,
+        headers={"Authorization": "Bearer " + controller._connection._token},
+        trust_env=False,
+    ) as client:
+        assert client.get(f"/api/chats/{first}").json()["status"] == "running"
+        assert client.get("/api/projects").json()["projects"] == []
+        model_server[0].release.set()
+        until(
+            lambda: client.get(f"/api/chats/{first}").json()["status"] == "idle",
+            controller._heartbeat.timeout,
+        )
+    save_screenshot(window, "project-removed")
+    controller._detach()
+    stop_backend(home, force=True)
+    controller.start()
+    until(lambda: controller.online, controller.changed)
+    # Startup from the removed directory must not implicitly add it back.
+    until(lambda: controller._navigation_revision >= 0, controller.changed)
+    assert not controller.projects
+    controller.addProject(str(project))
+    until(lambda: controller.connected and controller.chatId == first, controller.changed)
+    until(lambda: any(row["body"] == "Hello 世界" for row in controller._transcript.rows), controller.changed)
+    assert controller.projectId == project_id
+    assert controller.preference("pinned/" + first, False)
+    assert preserved.read_text() == "Project removal must leave this file intact.\n"
+    assert len(model_server) == 1
+    save_screenshot(window, "project-restored")
 
 
 def test_desktop_remove_project_undo_and_other_client_keep_selection_and_drafts(
@@ -2062,24 +2824,620 @@ def test_desktop_remove_project_undo_and_other_client_keep_selection_and_drafts(
     QTest.keyClick(window, Qt.Key.Key_Escape)
 
 
+def test_desktop_pin_moves_chats_above_project_groups(desktop, model_server, project, tmp_path):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    first, first_project = controller.chatId, controller.projectId
+    controller.renameChat(first, "中文置顶会话")
+    until(lambda: controller.chatTitle == "中文置顶会话", controller.changed)
+    other = tmp_path / "Second project"
+    other.mkdir()
+    controller.addProject(str(other))
+    until(lambda: controller.projectPath == str(other), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != first, controller.changed)
+    second, second_project = controller.chatId, controller.projectId
+
+    click(window, "sessionMenu_" + first)
+    click(window, "pinChatAction")
+    save_screenshot(window, "pin-first")
+    rows = controller.sessionRows
+    assert next(i for i, row in enumerate(rows) if row["id"] == first) < next(
+        i for i, row in enumerate(rows) if row["kind"] == "project"
+    ), "Pinned conversations must move above every project group"
+    until(lambda: bool(find_item(window, "pinnedSection")), window.frameSwapped)
+    pinned = find_item(window, "session_" + first)
+    assert pinned.mapToScene(QPointF()).y() < find_item(
+        window, "projectGroup_" + first_project
+    ).mapToScene(QPointF()).y()
+    assert find_item(window, "pinnedProject_" + first).property("text") == project.name
+    click(window, "sessionMenu_" + second)
+    click(window, "pinChatAction")
+    assert controller.preference("pinned/" + second, False)
+    click(window, "projectGroup_" + first_project)
+    click(window, "projectGroup_" + second_project)
+    for identity in (first, second):
+        assert find_item(window, "session_" + identity).isVisible()
+        assert sum(row["id"] == identity for row in controller.sessionRows) == 1
+    click(window, "session_" + first)
+    until(lambda: controller.connected and controller.chatId == first, controller.changed)
+    assert controller.projectId == first_project
+    save_screenshot(window, "pin-projects-collapsed")
+    window.setProperty("dark", True)
+    window.setWidth(800)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    save_screenshot(window, "pin-dark-narrow")
+
+    # A newly constructed controller reads persisted pins and collapsed groups.
+    controller.settings.sync()
+    restored = Controller(
+        project, [], QSettings(controller.settings.fileName(), QSettings.Format.IniFormat)
+    )
+    restored_engine = create_engine(restored)
+    restored_window = restored_engine.rootObjects()[0]
+    assert isinstance(restored_window, QQuickWindow)
+    try:
+        restored.start()
+        until(lambda: restored.online and bool(restored.property("projects")), restored.changed)
+        until(lambda: bool(find_item(restored_window, "session_" + second)), restored_window.frameSwapped)
+        assert restored.property("sessionRows") == controller.sessionRows
+        assert find_item(restored_window, "pinnedSection").isVisible()
+    finally:
+        restored_window.close()
+        until(lambda: restored._closed_emitted, restored.closed)
+        restored_engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    click(window, "sessionMenu_" + first)
+    assert find_item(window, "pinChatAction").property("text") == "Unpin chat"
+    click(window, "pinChatAction")
+    assert controller.preference("groups/" + first_project, False)
+    rows = controller.sessionRows
+    assert next(i for i, row in enumerate(rows) if row["id"] == first) > next(
+        i for i, row in enumerate(rows) if row["id"] == first_project
+    )
+    assert find_item(window, "session_" + first).isVisible()
+    click(window, "sessionMenu_" + second)
+    click(window, "pinChatAction")
+    until(lambda: not find_item(window, "pinnedSection"), window.frameSwapped)
+    assert controller.preference("groups/" + second_project, False)
+    save_screenshot(window, "pin-cleared")
+    assert not controller.error and not model_server
+
+
+def test_desktop_search_manage_and_restore_conversations(desktop, model_server, project, tmp_path):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    first = controller.chatId
+    click(window, "sessionMenu_" + first)
+    click(window, "renameChatAction")
+    name = find_item(window, "chatNameField")
+    name.setProperty("text", "中文界面审查")
+    click(window, "saveChatName")
+    until(lambda: controller.chatTitle == "中文界面审查", controller.changed)
+    click(window, "sessionMenu_" + first)
+    click(window, "pinChatAction")
+    assert next(row for row in controller.sessionRows if row["id"] == first)["pinned"]
+    second_project = tmp_path / "second-project"
+    second_project.mkdir()
+    controller.addProject(str(second_project))
+    until(lambda: controller.projectPath == str(second_project), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != first, controller.changed)
+    click(window, "searchChatsButton")
+    search = find_item(window, "chatSearchField")
+    search.setProperty("text", "中文界面")
+    until(lambda: bool(find_item(window, "searchChat_" + first)), window.frameSwapped)
+    click(window, "searchChat_" + first)
+    until(lambda: controller.connected and controller.chatId == first, controller.changed)
+    assert controller.projectPath == str(project)
+    click(window, "sessionMenu_" + first)
+    click(window, "archiveChatAction")
+    until(
+        lambda: all(row["id"] != first for row in controller.sessionRows),
+        controller.navigationChanged,
+    )
+    click(window, "searchChatsButton")
+    click(window, "searchArchivedToggle")
+    find_item(window, "chatSearchField").setProperty("text", "中文界面")
+    until(lambda: bool(find_item(window, "restoreChat_" + first)), window.frameSwapped)
+    click(window, "restoreChat_" + first)
+    until(
+        lambda: any(row["id"] == first for row in controller.sessionRows),
+        controller.navigationChanged,
+    )
+    assert not controller.error
+    save_screenshot(window, "search-and-restore")
+
+
+def test_desktop_activity_is_lazy_and_preserves_reading_position(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    model = controller._transcript
+    for index in range(40):
+        model.append(
+            "tool",
+            "read",
+            "# Output\n\n" + "A complete result.\n" * 10000,
+            f'{{"path":"module-{index}.md"}}',
+        )
+    until(lambda: bool(find_item(window, "activityGroupSummary")), window.frameSwapped)
+    assert not find_item(window, "messageBody")
+    assert not controller._preview_objects
+    view = find_item(window, "transcriptView")
+    QTest.qWait(60)
+    print("ACTIVITY_GROUPS", view.property("count"), view.property("contentHeight"))
+    save_screenshot(window, "activity-groups")
+    assert view.property("count") == 1
+    assert view.property("contentHeight") < 40
+    pending = model.append("tool", "bash", "Running…", '{"command":"test"}')
+    until(lambda: find_item(window, "activityGroupRunning").isVisible(), window.frameSwapped)
+    assert view.property("count") == 1
+    model.update(pending, kind="error", body="Command failed")
+    until(lambda: find_item(window, "activityGroupFailed").isVisible(), window.frameSwapped)
+    assert not find_item(window, "activityGroupRunning").isVisible()
+    click(window, "activityGroupToggle")
+    until(lambda: view.property("count") == 41, window.frameSwapped)
+    view.setProperty("follow", False)
+    QMetaObject.invokeMethod(view, "positionViewAtBeginning")
+    QTest.qWait(60)
+    click(window, "expandMessage")
+    until(lambda: bool(find_item(window, "activityCodePreview")), window.frameSwapped)
+    assert len(controller._preview_objects) == 1
+    click(window, "copyActivityOutput")
+    assert QGuiApplication.clipboard().text() == model.rows[0]["body"]
+    QMetaObject.invokeMethod(view, "positionViewAtEnd")
+    until(lambda: not controller._preview_objects, window.frameSwapped)
+    QMetaObject.invokeMethod(view, "positionViewAtBeginning")
+    until(lambda: bool(find_item(window, "activityCodePreview")), window.frameSwapped)
+    click(window, "activityGroupToggle")
+    until(lambda: view.property("count") == 1, window.frameSwapped)
+    assert not controller._preview_objects
+    click(window, "activityGroupToggle")
+    until(lambda: view.property("count") == 41, window.frameSwapped)
+    QMetaObject.invokeMethod(view, "positionViewAtBeginning")
+    QTest.qWait(60)
+    until(lambda: bool(find_item(window, "activityCodePreview")), window.frameSwapped)
+    click(window, "expandMessage")
+    assert not controller._preview_objects
+    QTest.qWait(30)
+    position = view.property("contentY")
+    model.append("assistant", "Ava", "More progress while you read.")
+    QTest.qWait(60)
+    assert abs(view.property("contentY") - position) < 1
+    assert find_item(window, "jumpToLatest").isVisible()
+    click(window, "jumpToLatest")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    assert view.property("follow")
+    model.append("error", "bash", "Invalid command argument", '{"command":123}')
+    model.append("error", "read", "Invalid read argument", "null")
+    save_screenshot(window, "activity")
+
+
+def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    model = controller._transcript
+    view = find_item(window, "transcriptView")
+    model.append("user", "You", "项目状态如何")
+    for step in range(5):
+        model.append("assistant", "Ava", "正在检查项目状态。" * (step + 1))
+        for _ in range(4):
+            model.append("tool", "read", "A completed tool result", '{"path":"notes.md"}')
+    model.append(
+        "assistant", "Ava",
+        "# 项目进展\n\n" + ("## 已完成的工作\n\n**验证结果**清晰可读。\n\n- 第一项\n- 第二项\n\n" * 25),
+    )
+    for _ in range(3):
+        model.append("reasoning", "Thinking", "Completed reasoning")
+    QTest.qWait(700)
+    positions = []
+    for _ in range(20):
+        QTest.qWait(20)
+        positions.append(view.property("contentY"))
+    assert max(positions) - min(positions) < 1, positions
+    assert view.property("atYEnd")
+    streaming = model.append("assistant", "Ava", "## 后续更新\n\n")
+    for paragraphs in range(1, 5):
+        model.update(streaming, body="## 后续更新\n\n" + "一段新的状态说明。\n\n" * paragraphs)
+        QTest.qWait(25)
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    # Real wheel input ends follow mode; later output must not pull the reader back.
+    position = view.mapToScene(QPointF(view.width() / 2, view.height() / 2))
+    QTest.wheelEvent(window, position, QPoint(0, 1200))
+    until(lambda: not view.property("moving"), view.movingChanged)
+    assert not view.property("follow")
+    assert view.property("currentIndex") == -1
+    reading_y = view.property("contentY")
+    model.update(streaming, body="## 后续更新\n\n" + "一段新的状态说明。\n\n" * 15)
+    QTest.qWait(100)
+    assert abs(view.property("contentY") - reading_y) < 1
+    click(window, "jumpToLatest")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    assert view.property("follow")
+    save_screenshot(window, "stable-variable-history")
+
+
+def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_server, home):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    click(window, "settingsButton")
+    click(window, "settingsProvidersTab")
+    until(
+        lambda: window.findChild(QObject, "settingsDialog").property("ready"),
+        controller.providerSettingsChanged,
+    )
+    model = find_item(window, "settingsModel")
+    url = find_item(window, "settingsBaseUrl")
+    key = find_item(window, "settingsApiKey")
+    original = (home / "settings.json").read_text()
+    original_url = url.property("text")
+    assert model.property("text") == "fixture"
+    assert find_item(window, "settingsProviderName").property("text") == "desktop-test"
+    save_screenshot(window, "provider-settings")
+    model.setProperty("text", "fixture-reasoning")
+    find_item(window, "settingsEffort").setProperty("text", "high")
+    key.setProperty("text", "desktop-test-new-key")
+    key.forceActiveFocus()
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    QGuiApplication.clipboard().setText("clipboard remains private")
+    open_text_context(window, key, keyboard=True)
+    surface, copy = text_menu_item("Copy")
+    assert not copy.property("enabled")
+    assert not text_menu_item("Cut")[1].property("enabled")
+    QTest.keyClick(surface, Qt.Key.Key_Escape)
+    assert QGuiApplication.clipboard().text() == "clipboard remains private"
+    url.setProperty("text", "http://remote.invalid/v1")
+    click(window, "saveProviderSettings")
+    until(
+        lambda: bool(controller.providerSettingsState["error"]), controller.providerSettingsChanged
+    )
+    assert "HTTPS" in controller.providerSettingsState["error"]
+    assert key.property("text") == "desktop-test-new-key"
+    assert model.property("text") == "fixture-reasoning"
+    assert (home / "settings.json").read_text() == original
+    save_screenshot(window, "settings-validation")
+    url.setProperty("text", original_url)
+    click(window, "saveProviderSettings")
+    until(
+        lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged
+    )
+    until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
+    assert controller.selection["effort"] == "high"
+    assert not key.property("text")
+    stored = json.loads((home / "settings.json").read_text())
+    assert stored["model"] == "fixture-reasoning"
+    assert (
+        stored["providers"]["desktop-test"]["models"]
+        == json.loads(original)["providers"]["desktop-test"]["models"]
+    )
+    assert "desktop-test-new-key" not in (home / "settings.json").read_text()
+    assert (
+        json.loads((home / "auth.json").read_text())["desktop-test"]["key"]
+        == "desktop-test-new-key"
+    )
+    click(window, "closeSettingsButton")
+    click(window, "settingsButton")
+    until(
+        lambda: window.findChild(QObject, "settingsDialog").property("ready"),
+        controller.providerSettingsChanged,
+    )
+    assert model.property("text") == "fixture-reasoning" and not key.property("text")
+
+    # Built-in auth modes are visible without making an external provider request.
+    click(window, "builtinProviderType")
+    picker = find_item(window, "settingsProviderPicker")
+    builtins = window.findChild(QObject, "settingsDialog").property("builtIns")
+    if isinstance(builtins, QJSValue):
+        builtins = builtins.toVariant()
+    click(window, "settingsProviderPicker")
+    QTest.keyClick(window, Qt.Key.Key_Home)
+    for _ in range(next(i for i, item in enumerate(builtins) if item["id"] == "codex")):
+        QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert picker.property("currentValue") == "codex"
+    assert not key.isVisible()
+    save_screenshot(window, "settings-codex-login")
+    click(window, "customProviderType")
+    find_item(window, "settingsProviderName").setProperty("text", "desktop-second")
+    model.setProperty("text", "fixture")
+    url.setProperty("text", original_url)
+    key.setProperty("text", "second-test-key")
+
+    def reveal(name):
+        item = find_item(window, name)
+        scroll = find_item(window, "settingsProviderScroll")
+        offset = item.mapToItem(scroll, QPointF(0, 0)).y()
+        scroll.setProperty(
+            "contentY",
+            min(
+                max(0, scroll.property("contentY") + offset - 8),
+                max(0, scroll.property("contentHeight") - scroll.height()),
+            ),
+        )
+        QTest.qWait(30)
+
+    reveal("applySettingsToChat")
+    click(window, "applySettingsToChat")
+    assert not find_item(window, "applySettingsToChat").property("checked")
+    click(window, "saveProviderSettings")
+    until(
+        lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged
+    )
+    assert controller.selection["provider"] == "desktop-test"
+    assert json.loads((home / "settings.json").read_text())["provider"] == "desktop-second"
+    click(window, "closeSettingsButton")
+    previous = controller.chatId
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != previous, controller.changed)
+    assert controller.selection["provider"] == "desktop-second"
+    type_message(window, "Verify the saved provider")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.status == "running" and len(model_server) == 1, controller.changed)
+    assert model_server[0].request["model"] == "fixture"
+    click(window, "settingsButton")
+    until(
+        lambda: window.findChild(QObject, "settingsDialog").property("ready"),
+        controller.providerSettingsChanged,
+    )
+    assert not find_item(window, "applySettingsToChat").property("enabled")
+    assert not find_item(window, "applySettingsToChat").property("checked")
+    model.setProperty("text", "fixture-reasoning")
+    click(window, "saveProviderSettings")
+    until(
+        lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged
+    )
+    assert controller.selection["model"] == "fixture" and controller.status == "running"
+    assert json.loads((home / "settings.json").read_text())["model"] == "fixture-reasoning"
+    click(window, "closeSettingsButton")
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+
+    click(window, "settingsButton")
+    until(
+        lambda: window.findChild(QObject, "settingsDialog").property("ready"),
+        controller.providerSettingsChanged,
+    )
+    reveal("removeProviderKey")
+    click(window, "removeProviderKey")
+    until(
+        lambda: "removed" in controller.providerSettingsState["notice"],
+        controller.providerSettingsChanged,
+    )
+    assert "desktop-second" not in json.loads((home / "auth.json").read_text())
+    assert not key.property("text")
+    window.setWidth(800)
+    window.setHeight(600)
+    until(
+        lambda: window.findChild(QObject, "settingsDialog").property("width") <= 752
+        and not visible_rect(window, find_item(window, "saveProviderSettings")).isEmpty(),
+        window.frameSwapped,
+    )
+    save_screenshot(window, "settings-narrow")
+    assert not visible_rect(window, find_item(window, "saveProviderSettings")).isEmpty()
+    click(window, "settingsGeneralTab")
+    click(window, "darkThemeButton")
+    click(window, "settingsProvidersTab")
+    save_screenshot(window, "settings-provider-dark")
+
+
+def test_desktop_settings_theme_and_keyboard_search(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    first = controller.chatId
+    type_message(window, "Keep this draft")
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != first, controller.changed)
+    click(window, "settingsButton")
+    click(window, "readingSizePicker")
+    QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert controller.readingSize == 17
+    click(window, "darkThemeButton")
+    assert window.property("dark")
+    controller.settings.sync()
+    stored = QSettings(controller.settings.fileName(), QSettings.Format.IniFormat)
+    assert stored.value("ui/dark", False, type=bool)
+    save_screenshot(window, "settings-dark")
+    click(window, "lightThemeButton")
+    assert not window.property("dark")
+    save_screenshot(window, "settings-light")
+    click(window, "closeSettingsButton")
+    controller._transcript.append("assistant", "Ava", "**更清晰的中文**与可调整字号。")
+    until(lambda: bool(find_item(window, "assistantMarkdown")), window.frameSwapped)
+    assert find_item(window, "assistantMarkdown").property("font").pixelSize() == 17
+    assert stored.value("ui/readingSize", 15, type=int) == 17
+    click(window, "searchChatsButton")
+    field = find_item(window, "chatSearchField")
+    field.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Down)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.chatId == first and controller.connected, controller.changed)
+    assert controller.draft == "Keep this draft"
+
+
+def test_desktop_review_stage_unstage_and_commit(desktop, model_server, project):
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=project, text=True, capture_output=True, check=True
+        ).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Ava fixture")
+    git("config", "user.email", "ava@example.invalid")
+    git("config", "commit.gpgsign", "false")
+    git("config", "core.hooksPath", "/dev/null")
+    source = project / "计算.py"
+    source.write_text("def answer():\n    return 1\n")
+    git("add", ".")
+    git("commit", "-qm", "Initial fixture")
+    source.write_text("def answer():\n    return 42\n")
+    (project / "[draft].md").write_text("# A new file\n")
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    until(lambda: controller.connected, controller.changed)
+    click(window, "reviewChangesButton")
+    until(lambda: bool(find_item(window, "reviewPane")), window.frameSwapped)
+    review = find_item(window, "reviewPane").property("review")
+    until(lambda: len(review.files) == 2, review.filesChanged)
+    click(window, "change_worktree:计算.py")
+    until(lambda: "+    return 42" in review.state["diff"], review.changed)
+    assert "-    return 1" in review.state["diff"]
+    save_screenshot(window, "review-working-tree")
+    click(window, "stageFileButton")
+    until(lambda: any(r["id"] == "staged:计算.py" for r in review.files), review.filesChanged)
+    assert "+    return 42" in git("diff", "--cached")
+    click(window, "change_staged:计算.py")
+    click(window, "unstageFileButton")
+    until(lambda: any(r["id"] == "worktree:计算.py" for r in review.files), review.filesChanged)
+    assert not git("diff", "--cached")
+    click(window, "change_worktree:[draft].md")
+    until(lambda: "+# A new file" in review.state["diff"], review.changed)
+    click(window, "stageFileButton")
+    until(lambda: any(r["id"] == "staged:[draft].md" for r in review.files), review.filesChanged)
+    click(window, "change_worktree:计算.py")
+    click(window, "stageFileButton")
+    until(lambda: all(r["scope"] == "staged" for r in review.files), review.filesChanged)
+    click(window, "commitChangesButton")
+    find_item(window, "commitMessageField").setProperty("text", "Improve the answer")
+    save_screenshot(window, "review-commit")
+    hooks = project / ".git" / "fixture-hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'Fixture validation failed' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    git("config", "core.hooksPath", str(hooks))
+    click(window, "confirmCommitButton")
+    until(lambda: bool(review.state["error"]) and not review.state["busy"], review.changed)
+    review.refresh()
+    status_job = review._jobs["status"]
+    until(lambda: "status" not in review._jobs, status_job.finished)
+    assert "Fixture validation failed" in review.state["error"]
+    assert find_item(window, "commitMessageField").property("text") == "Improve the answer"
+    assert len(review.files) == 2 and git("diff", "--cached")
+    hook.unlink()
+    click(window, "confirmCommitButton")
+    until(lambda: not review.files and not review.state["busy"], review.changed)
+    assert git("log", "-1", "--format=%s").strip() == "Improve the answer"
+    assert not git("status", "--porcelain")
+    assert source.read_text().endswith("return 42\n")
+    assert not review.state["error"]
 
 
 
 
 
 
+def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(project), *args], text=True)
 
+    (project / 'answer.py').write_text('answer = 1\n')
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.name', 'Ava fixture')
+    git('config', 'user.email', 'ava@example.invalid')
+    git('config', 'commit.gpgsign', 'false')
+    git('add', '.')
+    git('commit', '-qm', 'Initial answer')
+    (project / 'answer.py').write_text('answer = 99\n')
+    settings = json.loads((home / 'settings.json').read_text())
+    settings['model'] = 'fixture-remote-tools'
+    settings['providers']['desktop-test']['models']['fixture-remote-tools'] = {'context_window': 10000}
+    (home / 'settings.json').write_text(json.dumps(settings))
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    project_id = controller.projectId
+    assert find_item(window, 'newChatOptionsButton') is not None, 'New chat needs a worktree choice'
+    click(window, 'newChatOptionsButton')
+    click(window, 'newWorktreeAction')
+    until(lambda: bool(find_item(window, 'worktreeBranchField')), window.frameSwapped)
+    find_item(window, 'worktreeBranchField').setProperty('text', 'bad branch name')
+    click(window, 'createWorktreeChatButton')
+    until(lambda: bool(controller.worktreeState.get('error')), controller.worktreeChanged)
+    assert not controller.chatId and not controller.projects[0]['chats']
+    save_screenshot(window, 'worktree-invalid-branch')
+    find_item(window, 'worktreeBranchField').setProperty('text', 'ava/中文-review')
+    until(lambda: not controller.worktreeState['loading'], controller.worktreeChanged)
+    save_screenshot(window, 'worktree-dialog')
+    pulses = [time.perf_counter()]
+    heartbeat = QTimer()
+    heartbeat.setInterval(10)
+    heartbeat.timeout.connect(lambda: pulses.append(time.perf_counter()))
+    heartbeat.start()
+    click(window, 'createWorktreeChatButton')
+    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
+    heartbeat.stop()
+    max_pause = max(b - a for a, b in zip(pulses, pulses[1:], strict=False))
+    assert max_pause < 0.15
+    print('WORKTREE_CREATION', json.dumps({'max_ui_pause_ms': round(max_pause * 1000), 'ready_ms': round((pulses[-1] - pulses[0]) * 1000)}))
+    workspace = Path(controller.workspacePath)
+    assert workspace != project and controller.projectId == project_id
+    assert len(controller.projects) == 1
+    assert (workspace / 'answer.py').read_text() == 'answer = 1\n'
+    assert (project / 'answer.py').read_text() == 'answer = 99\n'
+    assert git('branch', '--show-current').strip() == 'main'
+    chat_id = controller.chatId
+    type_message(window, 'Work independently in this worktree')
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: (workspace / 'remote-test-proof.txt').exists(), controller.changed)
+    assert not (project / 'remote-test-proof.txt').exists()
+    model_server[-1].release.set()
+    until(lambda: controller.status == 'idle', controller.changed)
+    controller.browseFiles('answer.py')
+    until(lambda: bool(find_item(window, 'filePane')), window.frameSwapped)
+    assert find_item(window, 'filePane').property('rootPath') == str(workspace)
+    click(window, 'closeInspectorButton')
+    click(window, 'toggleTerminalButton')
+    until(lambda: bool(find_item(window, 'terminalPane')), window.frameSwapped)
+    terminal = find_item(window, 'terminalPane').property('session')
+    assert terminal.root == str(workspace)
+    click(window, 'hideTerminalButton')
+    save_screenshot(window, 'worktree-chat')
+    click(window, 'newChatButton')
+    until(lambda: controller.connected and controller.chatId != chat_id, controller.changed)
+    assert controller.workspacePath == str(project)
+    assert any(chat['id'] == chat_id for chat in controller.projects[0]['chats'])
+    controller.openChat(chat_id)
+    until(lambda: controller.connected and controller.workspacePath == str(workspace), controller.changed)
+    assert (workspace / 'remote-test-proof.txt').exists()
 
-
-
-
-
-
-
-
-
-
-
+    click(window, "skillsButton")
+    skills = controller.skillView
+    assert skills.project == chat_id, "The current worktree must be the initial skills workspace"
+    click(window, "newSkillButton")
+    find_item(window, "skillNameField").setProperty("text", "worktree-check")
+    find_item(window, "skillDescriptionField").setProperty("text", "Check this branch.")
+    find_item(window, "skillBodyField").setProperty("text", "# Check the branch\n\nInspect its changes.")
+    click(window, "saveSkillButton")
+    until(lambda: skills.detail.get("name") == "worktree-check" or bool(skills.editorError), skills.changed)
+    assert not skills.editorError
+    assert Path(skills.detail["path"]).is_relative_to(workspace)
+    assert not (project / ".agents/skills/worktree-check").exists()
+    assert skills.canUse
+    save_screenshot(window, "skills-worktree")
 
 
 def text_menu_item(caption):
@@ -2296,6 +3654,52 @@ def test_desktop_mcp_manage_and_call_tools(desktop, model_server, home, project)
     assert (project / "mcp-proof.json").exists(), "Removing an MCP connection must preserve workspace files"
 
 
+def test_desktop_mcp_real_catalog_virtualization(desktop, model_server, home, capfd):
+    from ava.tool.mcp import MCPServers, ServerConfig
+    from tests.test_mcp import FIXTURE
+
+    identity = MCPServers(home).save(ServerConfig(name="Workspace catalog", command=sys.executable,
+                                                args=[str(FIXTURE)], env={"MCP_TOOL_COUNT": "1000"}))
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "mcpButton")
+    servers = controller.mcpView
+    until(lambda: bool(servers.rows.rows), servers.changed)
+    click(window, "mcpServer_" + identity)
+    click(window, "connectMcpButton")
+    until(lambda: servers.detail.get("status") == "connected", servers.changed, timeout=20000)
+    click(window, "closeMcpButton")
+    pulses = [time.perf_counter()]
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: pulses.append(time.perf_counter()))
+    timer.start()
+    start = time.perf_counter()
+    click(window, "mcpButton")
+    until(lambda: servers.toolRows.rowCount() == 1000, servers.changed)
+    view = find_item(window, "mcpToolList")
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    open_ms = round((time.perf_counter() - start) * 1000)
+    resets = QSignalSpy(servers.toolRows.modelReset)
+    for fraction in (0.5, 1, 0):
+        view.setProperty("contentY", max(0, view.property("contentHeight") - view.height()) * fraction)
+        frame = QSignalSpy(window.frameSwapped)
+        window.update()
+        assert frame.count() or frame.wait(2000)
+    live = [item for item in view.childItems()[0].childItems() if item.objectName().startswith("mcpTool_")]
+    click(window, "refreshMcpButton")
+    until(lambda: not servers.loading, servers.changed)
+    assert resets.count() == 0
+    timer.stop()
+    metrics = {"tools": 1000, "open_ms": open_ms, "live_delegates": len(live),
+               "max_gui_ms": round(max(b-a for a, b in zip(pulses, pulses[1:], strict=False)) * 1000)}
+    with capfd.disabled():
+        print("MCP_BENCHMARK", json.dumps(metrics))
+    assert len(live) < 30 and open_ms < 1000 and metrics["max_gui_ms"] < 150
+    save_screenshot(window, "mcp-thousand")
 
 
 def test_desktop_skills_manage_and_affect_agent(desktop, model_server, project):
@@ -2357,3 +3761,173 @@ def test_desktop_skills_manage_and_affect_agent(desktop, model_server, project):
     click(window, "toggleSkillButton")
     until(lambda: view.detail.get("effective") and bool(view.rows.rows), view.changed)
     assert not view.error
+
+
+def test_desktop_skills_real_catalog_virtualization(desktop, model_server, project, capfd):
+    root = project / ".agents/skills"
+    for i in range(1000):
+        folder = root / f"check-{i:04}"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(f"---\nname: {folder.name}\ndescription: Review component {i}.\n---\n# Component {i}\n\nCheck **correctness**.\n")
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    pulses = [time.perf_counter()]
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: pulses.append(time.perf_counter()))
+    timer.start()
+    start = time.perf_counter()
+    click(window, "skillsButton")
+    skills = controller.skillView
+    until(lambda: skills.rows.rowCount() == 1000 or bool(skills.error), skills.changed)
+    assert not skills.error
+    view = find_item(window, "skillList")
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    open_ms = round((time.perf_counter() - start) * 1000)
+    resets = QSignalSpy(skills.rows.modelReset)
+    for fraction in (0.5, 1, 0):
+        view.setProperty("contentY", max(0, view.property("contentHeight") - view.height()) * fraction)
+        frame = QSignalSpy(window.frameSwapped)
+        window.update()
+        assert frame.count() or frame.wait(2000)
+    live = [item for item in view.childItems()[0].childItems() if item.objectName().startswith("skillRow_")]
+    click(window, "refreshSkillsButton")
+    until(lambda: not skills.busy, skills.changed)
+    assert resets.count() == 0
+    click(window, "skillRow_check-0000")
+    until(lambda: skills.detail.get("body"), skills.changed)
+    timer.stop()
+    metrics = {"skills": 1000, "open_ms": open_ms, "live_delegates": len(live),
+               "max_gui_ms": round(max(b-a for a, b in zip(pulses, pulses[1:], strict=False)) * 1000)}
+    with capfd.disabled():
+        print("SKILLS_BENCHMARK", json.dumps(metrics))
+    assert len(live) < 30 and open_ms < 1000 and metrics["max_gui_ms"] < 150
+    save_screenshot(window, "skills-thousand")
+
+
+
+
+
+
+def test_desktop_session_board_filters_and_virtualizes_large_summary_lists(desktop):
+    """Benchmark the native view with summaries; HTTP tests cover their durable source."""
+    from datetime import UTC, datetime, timedelta
+
+    controller, window = desktop
+    board = controller.board
+    machines = [{"id": key, "name": name, "online": True} for key, name in
+                (("local", "This Mac"), ("remote", "Development server"))]
+    projects: list[dict] = [{"id": f"p{i}", "name": f"Project {i}", "machine": machines[i % 2]["id"],
+                 "machine_name": machines[i % 2]["name"], "chats": []} for i in range(4)]
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for i in range(1000):
+        complete = i % 3 != 0
+        projects[i % 4]["chats"].append({
+            "id": f"c{i}", "title": f"Session {i} — 中文任务", "status": "idle" if complete else "running",
+            "completion_seq": 12 if complete else -1, "reviewed_through": 12 if i % 3 == 2 else -1,
+            "completed_at": (start + timedelta(minutes=i)).isoformat() if complete else "",
+            "started_at": (start + timedelta(minutes=i)).isoformat(), "completion_reason": "completed",
+        })
+    # One archived result must never appear in the board.
+    projects[1]["chats"].append({**projects[1]["chats"][0], "id": "archived", "archived": True})
+    board.update(machines, projects)
+    assert board.totals == [334, 333, 333]
+    assert board.needsReview.rowCount() == board.reviewedSessions.rowCount() == 20
+    resets = [QSignalSpy(model.modelReset) for model in (board.activeSessions, board.needsReview, board.reviewedSessions)]
+
+    def next_frame():
+        frames = QSignalSpy(window.frameSwapped)
+        window.update()
+        assert frames.count() or frames.wait(2000)
+
+    pulses = [time.perf_counter()]
+    heartbeat = QTimer()
+    heartbeat.setInterval(10)
+    heartbeat.timeout.connect(lambda: pulses.append(time.perf_counter()))
+    heartbeat.start()
+    opened = time.perf_counter()
+    click(window, "sessionBoardButton")
+    next_frame()
+    open_ms = (time.perf_counter() - opened) * 1000
+    assert board.needsReview.rows[0]["id"] == "c997"
+    live: list = []
+    for key in ("active", "review", "reviewed"):
+        view = find_item(window, "boardList_" + key)
+        for fraction in (0.5, 1, 0):
+            view.setProperty("contentY", max(0, view.property("contentHeight") - view.height()) * fraction)
+            next_frame()
+        live.extend(item for item in view.childItems()[0].childItems() if item.objectName().startswith("boardCard_"))
+    assert len(live) < 45
+    view = find_item(window, "boardList_review")
+    view.setProperty("contentY", max(0, view.property("contentHeight") - view.height()))
+    next_frame()
+    click(window, "boardMore_review")
+    assert board.needsReview.rowCount() == 40
+    assert len({row["id"] for row in board.needsReview.rows}) == 40
+    assert [row["id"] for row in board.needsReview.rows] == [f"c{i}" for i in range(997, 997 - 120, -3)]
+    # Use native combo interaction, then revisit the board after a summary refresh.
+    click(window, "boardMachineFilter")
+    QTest.keyClick(window, Qt.Key.Key_End)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert all(row["machine"] == "Development server" for row in board.needsReview.rows)
+    click(window, "boardProjectFilter")
+    QTest.keyClick(window, Qt.Key.Key_End)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert all(row["project_id"] == "p3" for row in board.needsReview.rows)
+    board.update(machines, projects)
+    next_frame()
+    assert find_item(window, "boardMachineFilter").property("currentValue") == "remote"
+    assert find_item(window, "boardProjectFilter").property("currentValue") == "p3"
+    click(window, "closeSessionBoardButton")
+    click(window, "sessionBoardButton")
+    assert find_item(window, "boardMachineFilter").property("currentValue") == "remote"
+    assert find_item(window, "boardProjectFilter").property("currentValue") == "p3"
+    next_frame()
+    heartbeat.stop()
+    metrics = {"summaries": 1000, "open_ms": round(open_ms), "max_gui_ms": round(max(b-a for a,b in zip(pulses, pulses[1:], strict=False)) * 1000), "live_delegates": len(live)}
+    print("BOARD_BENCHMARK", json.dumps(metrics))
+    assert open_ms < 500 and metrics["max_gui_ms"] < 150
+    assert all(spy.count() == 0 for spy in resets)
+    # Qt's exhaustive model checker is intentionally outside native performance timing.
+    board.filter("search", "Session 99")
+    testers = [QAbstractItemModelTester(model, QAbstractItemModelTester.FailureReportingMode.Warning)
+               for model in (board.activeSessions, board.needsReview, board.reviewedSessions)]
+    changed_projects = [{**p, "chats": [{**chat, "started_at": "2027"} if chat["id"] == "c99" else chat for chat in p["chats"]]}
+                        for p in projects]
+    board.update(machines, changed_projects)
+    board.update(machines, projects)
+    board.filter("search", "Session 999")
+    assert len(testers) == 3
+    save_screenshot(window, "board-filtered")
+    # A hidden project leaves no cards, and its now-invalid selected filter clears.
+    board.update(machines, projects[:3])
+    assert board.filters["project"] == ""
+    assert not any(row["project_id"] == "p3" for model in (board.activeSessions, board.needsReview, board.reviewedSessions) for row in model.rows)
+    board.filter("search", "")
+    board.filter("outcome", "attention")
+    stopped = {**projects[1], "chats": [
+        {**projects[1]["chats"][0], "id": "failed", "completion_reason": "provider_error"},
+        {**projects[1]["chats"][0], "id": "paused", "status": "paused", "completion_reason": "user_pause"},
+    ]}
+    board.update([{**m, "online": False} for m in machines], [stopped])
+    assert board.totals == [0, 2, 0]
+    outcomes = {row["id"]: row["label"] for row in board.needsReview.rows}
+    assert outcomes == {"failed": "Failed", "paused": "Paused"}
+    assert not board.needsReview.rows[0]["online"]
+    next_frame()
+    assert not find_item(window, "reviewBoardChat_failed").property("enabled")
+    save_screenshot(window, "board-offline")
+    # A pause is briefly active before its closing record is durable, rather than vanishing.
+    waiting_for_record = {**stopped, "chats": [{
+        **stopped["chats"][1], "completion_seq": -1, "completion_reason": "",
+    }]}
+    board.update(machines, [waiting_for_record])
+    assert board.totals == [1, 0, 0]
+    assert board.activeSessions.rows[0]["label"] == "Paused"
+    board.filter("outcome", "")
+    board.update(machines, [{**stopped, "chats": [{"id": "legacy", "title": "Legacy backend", "status": "running"}]}])
+    assert board.notice and board.activeSessions.rowCount() == 1
+    assert not board.needsReview.rowCount()
