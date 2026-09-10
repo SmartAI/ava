@@ -38,7 +38,7 @@ class AutomationView(QObject):
         self._snapshots: dict[str, list[dict]] = {}
         self._revisions: dict[str, tuple[str, int, str]] = {}
         self._fetched: dict[str, tuple[str, int, str]] = {}
-        self._pending: dict[str, Connection] = {}
+        self._pending: dict[str, tuple[Connection, object]] = {}
         self._active = False
         self._selected = ""
         self._detail: dict = {"runs": []}
@@ -151,17 +151,18 @@ class AutomationView(QObject):
 
     def _refresh(self, machine_id: str) -> None:
         connection = self._connection(machine_id)
-        if not connection or self._pending.get(machine_id) is connection:
+        if not connection or (machine_id in self._pending and self._pending[machine_id][0] is connection):
             return
         current = self.owner._machines[machine_id].runtime.info["instance_id"]
         expected = self._revisions.get(machine_id, (current, -1, ""))
         if self._fetched.get(machine_id) == expected and expected[0] == current:
             return
-        self._pending[machine_id] = connection
+        pending = (connection, object())
+        self._pending[machine_id] = pending
         self.changed.emit()
 
         def loaded(payload: Any, error: str) -> None:
-            if self._pending.get(machine_id) is not connection:
+            if self._pending.get(machine_id) is not pending:
                 return
             self._pending.pop(machine_id, None)
             if self._connection(machine_id) is not connection:
@@ -328,6 +329,7 @@ class AutomationView(QObject):
                 self._rebuild()
                 self._load_detail()
                 self.saved.emit()
+                self._pending.pop(machine_id, None)
                 self.refresh()
 
         connection.call("PUT" if identity else "POST", "/api/automations" + ("/" + identity if identity else ""), definition, finished)
@@ -364,6 +366,7 @@ class AutomationView(QObject):
                 if action == "remove":
                     self._selected, self._detail = "", {"runs": []}
                     self._runs.replace([])
+                self._pending.pop(machine_id, None)
                 self.refresh()
             self.changed.emit()
 

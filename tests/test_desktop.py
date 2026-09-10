@@ -3808,6 +3808,73 @@ def test_desktop_skills_real_catalog_virtualization(desktop, model_server, proje
     save_screenshot(window, "skills-thousand")
 
 
+def test_desktop_automation_creates_runs_and_opens_results(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    save_screenshot(window, "automation-entry")
+    assert find_item(window, "automationsButton") is not None, "Scheduled work needs a discoverable Automations entry"
+    click(window, "automationsButton")
+    click(window, "newAutomationButton")
+    find_item(window, "automationNameField").setProperty("text", "Daily project brief")
+    find_item(window, "automationPromptField").setProperty("text", "Summarize project progress and next steps.")
+    find_item(window, "automationCountField").setProperty("text", "3")
+    save_screenshot(window, "automation-editor")
+    click(window, "saveAutomationButton")
+    automation = controller.automations
+    until(lambda: len(automation.rows.rows) == 1 or bool(automation.editorState["error"]), automation.changed, automation.editorChanged)
+    assert not automation.editorState["error"]
+    assert automation.rows.rows[0]["remaining"] == 3
+    click(window, "runAutomationNowButton")
+    until(lambda: len(model_server) == 1, controller.changed, automation.changed, window.frameSwapped)
+    save_screenshot(window, "automation-running")
+    click(window, "pauseAutomationButton")
+    until(lambda: not automation.detail.get("enabled", True) or bool(automation.error), automation.changed)
+    assert not automation.error
+    assert automation.detail["runs"][0]["status"] == "running", "Pausing a schedule must leave the current run alone"
+    model_server[0].release.set()
+    until(lambda: bool(automation.detail["runs"]) and automation.detail["runs"][0]["status"] == "completed", automation.changed)
+    assert automation.rows.rows[0]["remaining"] == 3, "Manual tests must not consume scheduled repetitions"
+    click(window, "openAutomationRun_" + automation.detail["runs"][0]["id"])
+    until(lambda: controller.connected and any(r["body"] == "Hello 世界" for r in controller._transcript.rows), controller.changed)
+    assert controller.board.needsReview.rowCount() == 1
+    first_chat = controller.chatId
+    click(window, "automationsButton")
+    click(window, "pauseAutomationButton")
+    until(lambda: automation.detail.get("enabled"), automation.changed)
+    click(window, "runAutomationNowButton")
+    until(lambda: len(model_server) == 2 and len(automation.detail["runs"]) == 2, automation.changed, window.frameSwapped)
+    click(window, "stopAutomationRun_" + automation.detail["runs"][0]["id"])
+    until(lambda: automation.detail["runs"][0]["status"] == "stopped", automation.changed)
+    assert automation.detail["remaining"] == 3
+    model_server[1].release.set()
+    click(window, "editAutomationButton")
+    until(lambda: (item := find_item(window, "automationNameField")) is not None and item.isVisible(), automation.editRequested, window.frameSwapped)
+    find_item(window, "automationNameField").setProperty("text", "Weekly project brief · 中文")
+    click(window, "saveAutomationButton")
+    until(lambda: automation.detail.get("name") == "Weekly project brief · 中文", automation.changed)
+    assert automation.detail["remaining"] == 3
+    window.setProperty("dark", True)
+    window.setWidth(800)
+    window.setHeight(600)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    history = find_item(window, "automationRunHistory")
+    until(lambda: history.property("atYBeginning"), history.contentYChanged, window.frameSwapped)
+    assert history.property("atYBeginning"), (history.property("contentY"), history.property("originY"))
+    title = find_item(window, "automationDetailTitle")
+    assert title.height() >= title.implicitHeight() - 1, (title.height(), title.implicitHeight())
+    assert visible_rect(window, title).height() >= title.height() - 1, "Resizing must not clip the task heading"
+    save_screenshot(window, "automation-dark-narrow")
+    click(window, "editAutomationButton")
+    until(lambda: (item := find_item(window, "automationNameField")) is not None and item.isVisible(), automation.editRequested, window.frameSwapped)
+    save_screenshot(window, "automation-editor-narrow")
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    click(window, "removeAutomationButton")
+    click(window, "confirmRemoveAutomationButton")
+    until(lambda: not automation.rows.rows, automation.changed)
+    assert any(chat["id"] == first_chat for project in controller.projects for chat in project["chats"])
 
 
 
