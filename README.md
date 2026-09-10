@@ -51,25 +51,25 @@ See the [desktop usage guide](docs/usage.md#qt-quick-desktop-app) for setup and 
 
 ## Benchmark
 
-The latest iteration repaired Bash output truncation and process completion
-handling. On **three development tasks, five runs each**, using `gpt-5.6-sol`
-with `low` reasoning, updated Ava was compared with historical Pi 0.85.1 results.
+On September 8, 2026, Ava and Pi 0.85.1 completed **22 SWE-bench Pro development tasks across 11 repositories**, with one attempt per agent per task.
+Both used `gpt-6-astra` with `medium` reasoning through Codex OAuth.
 
-| Measure | Earlier Ava | Updated Ava | Pi |
-| --- | ---: | ---: | ---: |
-| Task passes, all 15 runs | 14/15 | 14/15 | 15/15 |
-| Estimated cost, 14 matching complete-usage runs | $1.1790 | $1.0577 | $1.0321 |
-| Cost difference from Pi on those 14 runs | +14.2% | +2.5% | Reference |
+| Measure | Ava | Pi |
+| --- | ---: | ---: |
+| Tasks solved | 11/22 (50.0%) | 10/22 (45.5%) |
+| Input tokens, including cached input | 4,571,720 | 4,275,286 |
+| Output tokens, including reasoning | 87,128 | 81,101 |
+| Tool calls | 515 | 475 |
+| Mean agent execution, minutes/task | 3.65 | 3.18 |
 
-That matched subset cost **10.3% less than earlier Ava**. One updated Ava run
-ended with a TLS error and unknown request usage, so full-cohort cost is unknown.
-The 14-run subset is diagnostic; these exposed tasks and historical comparisons
-do not establish general capability or cost parity.
+Both agents solved 10 tasks; Ava alone solved one.
+All 44 attempts were graded, including one interrupted Pi attempt.
+This small, equally weighted repository sample does not establish general superiority or a full 731-task benchmark score.
+Per-request subscription cost was not measured.
 
-Evaluation uses isolated environments, fixed model settings, independent task
-grading, and correctness, cost, token, tool-call and latency measurements.
-Failed attempts are retained. Detailed experiment records stay local; CI does
-not run evaluations.
+Evaluation uses fresh environments, matched model settings and budgets, reference and unchanged-workspace controls, and independent patch grading.
+Failed attempts are retained in scores and resource totals.
+Detailed experiment records stay local; CI does not run evaluations.
 
 [Benchmark results and limitations](docs/benchmark.md) ·
 [How to run evaluations](eval/README.md)
