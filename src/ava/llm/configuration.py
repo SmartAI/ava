@@ -585,6 +585,34 @@ def save_basic_configuration(
     return settings
 
 
+def save_provider_connection(
+    provider: str, *, custom: bool, family: str | None = None, base_url: str | None = None
+) -> None:
+    """Save connection details without changing defaults or model capabilities."""
+    if not _PROVIDER_ID.fullmatch(provider):
+        raise AvaError(ErrorKind.invalid_argument, "Use lowercase letters, digits, and hyphens for the provider name.")
+    if custom:
+        if provider in (*BUILTIN_PROVIDERS, "mock"):
+            raise AvaError(ErrorKind.invalid_argument, f"'{provider}' is reserved for a built-in provider")
+        if family not in ("anthropic", "openai") or not base_url:
+            raise AvaError(ErrorKind.invalid_argument, "Choose an API format and base URL.")
+        base_url = normalized_base_url(base_url)
+    elif provider not in BUILTIN_PROVIDERS:
+        raise AvaError(ErrorKind.invalid_argument, "Choose a supported built-in provider.")
+    document = read_configuration() or {}
+    providers = document.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise AvaError(ErrorKind.parse, "configuration field 'providers' must be an object")
+    existing = providers.get(provider, {})
+    if not isinstance(existing, dict):
+        raise AvaError(ErrorKind.parse, f"configuration field 'providers.{provider}' must be an object")
+    configured = dict(existing)
+    if custom:
+        configured.update(family=family, base_url=base_url)
+    providers[provider] = configured
+    _write_configuration(document)
+
+
 def remember_selection(selection: Selection) -> None:
     """Update the top-level selection fields atomically, preserving provider definitions."""
     if not selection.provider or not selection.model:

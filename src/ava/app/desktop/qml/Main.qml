@@ -796,86 +796,10 @@ ApplicationWindow {
         onArchivedRequested: sidebar.openSearch(true)
     }
 
-    NativeDialog {
+    ModelDialog {
         id: modelDialog
-        objectName: "modelDialog"
-        anchors.centerIn: parent
-        width: Math.min(480, window.width - 60)
-        modal: true
-        padding: 22
-        title: "Model & reasoning"
-        background: Rectangle {
-            radius: 20
-            color: window.palette.base
-            border.color: window.palette.mid
-        }
-        ColumnLayout {
-            width: parent.width
-            spacing: 14
-            Label {
-                Layout.fillWidth: true
-                text: "Changes apply at the next step."
-                color: palette.placeholderText
-                font.pixelSize: 12
-            }
-            Label {
-                text: window.backend.selection.provider || ""
-                font.weight: Font.Medium
-                font.pixelSize: 12
-            }
-            NativeCombo {
-                objectName: "modelPicker"
-                Layout.fillWidth: true
-                model: window.backend.modelChoices.models || []
-                displayText: window.backend.selection.model || "Loading models…"
-                enabled: !window.backend.selecting
-                onActivated: window.backend.selectModel(currentText)
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                NativeField {
-                    id: modelId
-                    objectName: "customModelField"
-                    Layout.fillWidth: true
-                    placeholderText: "Or enter a model ID"
-                    onAccepted: {
-                        if (text.trim())
-                            window.backend.selectModel(text.trim());
-                    }
-                }
-                NativeButton {
-                    text: "Use"
-                    enabled: !!modelId.text.trim() && !window.backend.selecting
-                    onClicked: window.backend.selectModel(modelId.text.trim())
-                }
-            }
-            Label {
-                text: "Reasoning effort"
-                font.pixelSize: 12
-            }
-            NativeCombo {
-                objectName: "effortPicker"
-                Layout.fillWidth: true
-                model: ["none"].concat(window.backend.modelChoices.effort_values || [])
-                displayText: window.backend.selection.effort || "none"
-                enabled: !window.backend.selecting
-                onActivated: window.backend.selectEffort(currentText)
-            }
-            Label {
-                Layout.fillWidth: true
-                text: window.backend.error
-                visible: !!text
-                color: "#b3664e"
-                wrapMode: Text.Wrap
-            }
-            NativeButton {
-                objectName: "closeModelButton"
-                Layout.alignment: Qt.AlignRight
-                text: "Done"
-                primary: true
-                onClicked: modelDialog.close()
-            }
-        }
+        backend: window.backend
+        onProvidersRequested: { settingsDialog.page = 1; settingsDialog.open(); }
     }
     ContextDialog {
         id: contextDialog

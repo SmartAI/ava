@@ -8,7 +8,7 @@ import os
 import re
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +99,7 @@ class Chat:
     completion_seq: int = -1
     completion_reason: str = ""
     reviewed_through: int = -1
+    model_configured: bool = False
     automation_id: str = ""
     automation_run: str = ""
     activity_subscription: Subscription | None = None
@@ -128,6 +129,7 @@ class Chat:
             "completion_seq": self.completion_seq,
             "completion_reason": self.completion_reason,
             "reviewed_through": self.reviewed_through,
+            **({"model_configured": True} if self.model_configured else {}),
             **({"automation_id": self.automation_id, "automation_run": self.automation_run} if self.automation_id else {}),
             **({"worktree": self.worktree, "cwd": str(self.agent.cwd)} if self.worktree else {}),
         }
@@ -314,8 +316,20 @@ class Registry:
                 or raw["id"] in chat_ids
             ):
                 raise _parse_error(self._state_path)
+            saved_selection = raw.get("selection")
+            if saved_selection is not None and (
+                not isinstance(saved_selection, dict)
+                or not isinstance(saved_selection.get("provider"), str)
+                or not saved_selection["provider"]
+                or not isinstance(saved_selection.get("model"), str)
+                or not saved_selection["model"]
+                or (saved_selection.get("effort") is not None and not isinstance(saved_selection["effort"], str))
+            ):
+                raise _parse_error(self._state_path)
             chat_ids.add(raw["id"])
             self._stored_sessions[session_id] = {
+                "selection": saved_selection,
+                "model_configured": raw.get("model_configured") is True,
                 "id": raw["id"],
                 "title": raw.get("title", ""),
                 "archived": raw.get("archived", False),
@@ -370,15 +384,21 @@ class Registry:
                 if error.kind == ErrorKind.parse:
                     continue
                 raise
-            durable_selection = _durable_selection(log)
+            stored = self._stored_sessions.get(candidate.header.id, {})
+            saved_selection = stored.get("selection")
+            durable_selection = (
+                ProviderSelection(saved_selection["provider"], saved_selection["model"], saved_selection.get("effort"))
+                if saved_selection else _durable_selection(log)
+            )
             derived_title, attachment_bytes, image_attachments = _restored_chat_details(log)
             try:
-                provider = provider_factory(selection, durable_selection, AuthRequirement.allow_missing)
+                provider = provider_factory(SelectionOverride() if saved_selection else selection, durable_selection, AuthRequirement.allow_missing)
             except AvaError as error:
                 provider = _UnavailableProvider(durable_selection, error)
             except BaseException:
                 log.close()
                 raise
+            provider.remembers_selection = False
             agent = Agent.reopen(provider, cwd, log, options)
             agent.state.mcp = self.mcp
             agent.state.owns_mcp = False
@@ -396,6 +416,7 @@ class Registry:
                 attachment_bytes=attachment_bytes,
                 image_attachments=image_attachments,
                 reviewed_through=stored.get("reviewed_through", -1),
+                model_configured=stored.get("model_configured", False),
                 automation_id=candidate.header.labels.get("automation_id", ""),
                 automation_run=candidate.header.labels.get("automation_run", ""),
             )
@@ -433,6 +454,8 @@ class Registry:
                     "title": chat.title,
                     "archived": chat.archived,
                     "reviewed_through": chat.reviewed_through,
+                    "selection": asdict(chat.agent.current_selection()) if chat.model_configured else None,
+                    "model_configured": chat.model_configured,
                 }
         document = {
             "version": _WEB_STATE_VERSION,
@@ -559,7 +582,8 @@ class WebState:
             body.model or self.selection.model,
             body.effort or self.selection.effort,
         )
-        provider = self.provider_factory(selected, None, AuthRequirement.required)
+        provider = self.provider_factory(selected, None, AuthRequirement.allow_missing if not labels else AuthRequirement.required)
+        provider.remembers_selection = False
         record = None
         agent = None
         try:

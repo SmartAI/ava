@@ -39,6 +39,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "AVA_CONFIG",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "CODEX_HOME",
     ):
         monkeypatch.delenv(name, raising=False)
     yield home

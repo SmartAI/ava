@@ -68,7 +68,7 @@ export function Sidebar({ projects, current, status, selection, open, archiveOpe
           <span className="min-w-0 flex-1">
             <span className="block text-ink">Settings</span>
             <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-faint">
-              {selection ? `${selection.provider} · ${selection.model}` : 'Provider and model'}
+              Provider connections & appearance
             </span>
           </span>
         </button>

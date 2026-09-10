@@ -188,7 +188,7 @@ ColumnLayout {
                     Layout.maximumWidth: Math.max(0, Math.min(280, content.width - 126))
                     enabled: composer.backend.connected
                     tip: "Model and reasoning effort"
-                    onClicked: { composer.backend.loadModels(); composer.models() }
+                    onClicked: composer.models()
                 }
                 NativeButton {
                     objectName: "sendButton"

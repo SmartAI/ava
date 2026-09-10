@@ -1,11 +1,13 @@
 import React, { useEffect, useRef } from 'react'
 
 import { BackIcon, CloseIcon, FolderIcon, UpIcon } from './Icons'
+import { useDialogFocus } from '../useDialogFocus'
 
 const iconButtonClass = 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-quiet hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 const pickerRowClass = 'flex w-full items-center gap-2.5 rounded-lg px-2 py-2.25 text-left text-ink hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent'
 
 export function Modal({ modal, projects, onClose, onBack, onBrowse, onUseFolder, onStartChat, onConfirm }) {
+  const dialogRef = useDialogFocus(Boolean(modal))
   const inputRef = useRef(null)
   const listRef = useRef(null)
   const picker = modal?.kind === 'projects'
@@ -32,7 +34,7 @@ export function Modal({ modal, projects, onClose, onBack, onBrowse, onUseFolder,
     : modal.note || '')
 
   return <div className="fixed inset-0 z-40 flex items-center justify-center bg-mask" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
-    <div className="flex max-h-[min(560px,calc(100vh-64px))] w-[min(520px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-line-strong bg-menu shadow-float" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div className="flex max-h-[min(560px,calc(100vh-64px))] w-[min(520px,calc(100vw-32px))] flex-col overflow-hidden rounded-2xl border border-line-strong bg-menu shadow-float" ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div className="flex shrink-0 items-center gap-2.5 px-4 pt-4 pb-3">
         {browsing && !addOnly && <button className={iconButtonClass} title="Back" aria-label="Back" onClick={onBack}><BackIcon /></button>}
         <span className="min-w-0 flex-1 text-[15px] font-semibold" id="modal-title">{title}</span>

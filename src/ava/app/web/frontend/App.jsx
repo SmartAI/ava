@@ -7,6 +7,7 @@ import { Header } from './components/Header'
 import { Modal } from './components/Modal'
 import { Sidebar } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
+import { ModelModal } from './components/ModelModal'
 import { StatusBar } from './components/StatusBar'
 import { Transcript } from './components/Transcript'
 import { emptyPending, applyPendingEvent } from './pending'
@@ -303,16 +304,39 @@ export default function App() {
   }
 
   const saveSettings = async values => {
-    const { font_size: nextFontSize, ...providerSettings } = values
-    const result = await api.saveSettings({ ...providerSettings, chat_id: currentRef.current })
+    const settings = await api.saveSettings(values)
+    setModal(value => value?.kind === 'settings' ? { ...value, settings } : value)
+  }
+
+  const removeProviderKey = async provider => {
+    await api.logout(provider)
+    const settings = await api.settings()
+    setModal(value => value?.kind === 'settings' ? { ...value, settings } : value)
+  }
+
+  const saveFontSize = nextFontSize => {
     document.documentElement.dataset.fontSize = nextFontSize
     saveLocal('ava-font-size', nextFontSize)
     setFontSize(nextFontSize)
-    if (result.applied_to_current) setModelSelection(result.selection)
-    closeModal()
-    if (currentRef.current) {
-      addNotice(result.warning || `Settings saved · ${result.provider} · ${result.model}`)
+  }
+
+  const openModelSettings = async () => {
+    const chatId = currentRef.current
+    if (!chatId) return
+    setModal({ kind: 'model', chatId, selection: modelSelectionRef.current, catalog: null, error: '' })
+    try {
+      const catalog = await api.models(chatId)
+      setModal(value => value?.kind === 'model' && value.chatId === chatId ? { ...value, catalog } : value)
+    } catch (error) {
+      setModal(value => value?.kind === 'model' && value.chatId === chatId ? { ...value, error: String(error.message || error) } : value)
     }
+  }
+
+  const saveConversationModel = async body => {
+    const chatId = modal.chatId
+    const selection = await api.selectModel(chatId, body)
+    if (currentRef.current === chatId) setModelSelection(selection)
+    closeModal()
   }
 
   const browse = async path => {
@@ -425,25 +449,11 @@ export default function App() {
       if (name === 'model') {
         if (!currentRef.current) return
         if (argument) return await applySelection({ model: argument })
-        const listed = await api.models(currentRef.current)
-        showModal({
-          title: 'Choose a model',
-          note: listed.catalog_available
-            ? `${listed.provider}: the provider catalog plus configured aliases`
-            : `${listed.provider}: the catalog was unavailable; configured choices only`,
-          rows: listed.models.map(model => ({ label: model, selected: model === listed.model, run: () => { closeModal(); applySelection({ model }) } })),
-        })
+        await openModelSettings()
       } else if (name === 'effort') {
         if (!currentRef.current) return
         if (argument) return await applySelection({ effort: argument === 'none' ? null : argument })
-        const listed = await api.models(currentRef.current)
-        const values = listed.effort_values || []
-        if (!values.length) return addNotice('The current model does not advertise reasoning effort')
-        showModal({
-          title: 'Reasoning effort',
-          note: listed.model,
-          rows: [...values, 'none'].map(value => ({ label: value, selected: (listed.effort ?? 'none') === value, run: () => { closeModal(); applySelection({ effort: value === 'none' ? null : value }) } })),
-        })
+        await openModelSettings()
       } else if (name === 'compact') {
         if (!currentRef.current) return
         addNotice((await api.compact(currentRef.current)).message)
@@ -884,6 +894,18 @@ export default function App() {
       onClose={closeModal}
       onRetry={openSettings}
       onSave={saveSettings}
+      onRemove={removeProviderKey}
+      onFontSize={saveFontSize}
+    /> : modal?.kind === 'model' ? <ModelModal
+      key={modal.chatId}
+      catalog={modal.catalog}
+      selection={modal.selection}
+      busy={status !== 'idle'}
+      loadError={modal.error}
+      onRetry={openModelSettings}
+      onClose={closeModal}
+      onSettings={openSettings}
+      onApply={saveConversationModel}
     /> : <Modal
       modal={modal}
       projects={projects}

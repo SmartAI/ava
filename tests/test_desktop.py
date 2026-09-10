@@ -2104,21 +2104,20 @@ def test_desktop_models_attachments_skills_markdown_and_files(
 
     # A mouse-opened picker changes both model and advertised reasoning effort.
     click(window, "modelButton")
-    until(lambda: bool(controller.modelChoices), controller.changed)
+    until(lambda: bool(controller.modelChoices.get("providers")), controller.changed)
     click(window, "modelPicker")
     QTest.keyClick(window, Qt.Key.Key_Down)
     QTest.keyClick(window, Qt.Key.Key_Return)
-    until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
-    until(
-        lambda: controller.modelChoices.get("effort_values") == ["low", "high"], controller.changed
-    )
+    assert controller.selection.get("model") == "fixture"
     click(window, "effortPicker")
     QTest.keyClick(window, Qt.Key.Key_Down)
     QTest.keyClick(window, Qt.Key.Key_Down)
     QTest.keyClick(window, Qt.Key.Key_Return)
-    until(lambda: controller.selection.get("effort") == "high", controller.changed)
     save_screenshot(window, "models")
-    click(window, "closeModelButton")
+    click(window, "applyConversationModel")
+    until(lambda: controller.selection.get("effort") == "high", controller.changed)
+    assert controller.selection["model"] == "fixture-reasoning"
+    until(lambda: not window.findChild(QObject, "modelDialog").property("visible"), window.frameSwapped)
 
     click(window, "toggleRightSidebar")
     assert controller.fileState.get("kind") == "directory", (
@@ -3767,16 +3766,16 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
         lambda: window.findChild(QObject, "settingsDialog").property("ready"),
         controller.providerSettingsChanged,
     )
-    model = find_item(window, "settingsModel")
+    assert find_item(window, "settingsModel") is None
+    assert find_item(window, "settingsEffort") is None
+    assert find_item(window, "applySettingsToChat") is None
     url = find_item(window, "settingsBaseUrl")
     key = find_item(window, "settingsApiKey")
     original = (home / "settings.json").read_text()
     original_url = url.property("text")
-    assert model.property("text") == "fixture"
+    assert "verified" in find_item(window, "providerConnectionStatus").property("text")
     assert find_item(window, "settingsProviderName").property("text") == "desktop-test"
     save_screenshot(window, "provider-settings")
-    model.setProperty("text", "fixture-reasoning")
-    find_item(window, "settingsEffort").setProperty("text", "high")
     key.setProperty("text", "desktop-test-new-key")
     key.forceActiveFocus()
     QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
@@ -3794,7 +3793,6 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     )
     assert "HTTPS" in controller.providerSettingsState["error"]
     assert key.property("text") == "desktop-test-new-key"
-    assert model.property("text") == "fixture-reasoning"
     assert (home / "settings.json").read_text() == original
     save_screenshot(window, "settings-validation")
     url.setProperty("text", original_url)
@@ -3802,11 +3800,11 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     until(
         lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged
     )
-    until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
-    assert controller.selection["effort"] == "high"
+    assert controller.selection["model"] == "fixture"
+    assert controller.selection["effort"] is None
     assert not key.property("text")
     stored = json.loads((home / "settings.json").read_text())
-    assert stored["model"] == "fixture-reasoning"
+    assert stored["model"] == "fixture"
     assert (
         stored["providers"]["desktop-test"]["models"]
         == json.loads(original)["providers"]["desktop-test"]["models"]
@@ -3822,25 +3820,22 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
         lambda: window.findChild(QObject, "settingsDialog").property("ready"),
         controller.providerSettingsChanged,
     )
-    assert model.property("text") == "fixture-reasoning" and not key.property("text")
+    assert not key.property("text")
 
-    # Built-in auth modes are visible without making an external provider request.
-    click(window, "builtinProviderType")
-    picker = find_item(window, "settingsProviderPicker")
-    builtins = window.findChild(QObject, "settingsDialog").property("builtIns")
-    if isinstance(builtins, QJSValue):
-        builtins = builtins.toVariant()
-    click(window, "settingsProviderPicker")
-    QTest.keyClick(window, Qt.Key.Key_Home)
-    for _ in range(next(i for i, item in enumerate(builtins) if item["id"] == "codex")):
-        QTest.keyClick(window, Qt.Key.Key_Down)
-    QTest.keyClick(window, Qt.Key.Key_Return)
-    assert picker.property("currentValue") == "codex"
+    def choose(name, index):
+        click(window, name)
+        QTest.keyClick(window, Qt.Key.Key_Home)
+        for _ in range(index):
+            QTest.keyClick(window, Qt.Key.Key_Down)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+
+    connections = window.findChild(QObject, "settingsDialog").property("connections").toVariant()
+    choose("settingsProviderPicker", next(i for i, item in enumerate(connections) if item["id"] == "codex"))
+    assert find_item(window, "settingsProviderPicker").property("currentValue") == "codex"
     assert not key.isVisible()
     save_screenshot(window, "settings-codex-login")
     click(window, "customProviderType")
     find_item(window, "settingsProviderName").setProperty("text", "desktop-second")
-    model.setProperty("text", "fixture")
     url.setProperty("text", original_url)
     key.setProperty("text", "second-test-key")
 
@@ -3857,19 +3852,34 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
         )
         QTest.qWait(30)
 
-    reveal("applySettingsToChat")
-    click(window, "applySettingsToChat")
-    assert not find_item(window, "applySettingsToChat").property("checked")
     click(window, "saveProviderSettings")
     until(
         lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged
     )
     assert controller.selection["provider"] == "desktop-test"
-    assert json.loads((home / "settings.json").read_text())["provider"] == "desktop-second"
+    assert json.loads((home / "settings.json").read_text())["provider"] == "desktop-test"
     click(window, "closeSettingsButton")
+    click(window, "modelButton")
+    until(lambda: len(controller.modelChoices.get("providers", [])) == 2, controller.changed)
+    assert [item["id"] for item in controller.modelChoices["providers"]] == ["desktop-test", "desktop-second"]
+    choose("conversationProviderPicker", 1)
+    assert not find_item(window, "effortPicker").property("enabled")
+    assert controller.selection["provider"] == "desktop-test"
+    click(window, "closeModelButton")
+    assert controller.selection["provider"] == "desktop-test"
+    click(window, "modelButton")
+    until(lambda: len(controller.modelChoices.get("providers", [])) == 2, controller.changed)
+    choose("conversationProviderPicker", 1)
+    click(window, "applyConversationModel")
+    until(lambda: controller.selection.get("provider") == "desktop-second", controller.changed)
+    until(lambda: not window.findChild(QObject, "modelDialog").property("visible"), window.frameSwapped)
+    save_screenshot(window, "conversation-provider")
     previous = controller.chatId
     click(window, "newChatButton")
     until(lambda: controller.connected and controller.chatId != previous, controller.changed)
+    assert controller.selection["provider"] == "desktop-test"
+    controller.openChat(previous)
+    until(lambda: controller.chatId == previous and controller.connected, controller.changed)
     assert controller.selection["provider"] == "desktop-second"
     type_message(window, "Verify the saved provider")
     QTest.keyClick(window, Qt.Key.Key_Return)
@@ -3880,15 +3890,13 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
         lambda: window.findChild(QObject, "settingsDialog").property("ready"),
         controller.providerSettingsChanged,
     )
-    assert not find_item(window, "applySettingsToChat").property("enabled")
-    assert not find_item(window, "applySettingsToChat").property("checked")
-    model.setProperty("text", "fixture-reasoning")
+    assert find_item(window, "settingsModel") is None
     click(window, "saveProviderSettings")
     until(
         lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged
     )
     assert controller.selection["model"] == "fixture" and controller.status == "running"
-    assert json.loads((home / "settings.json").read_text())["model"] == "fixture-reasoning"
+    assert json.loads((home / "settings.json").read_text())["model"] == "fixture"
     click(window, "closeSettingsButton")
     model_server[0].release.set()
     until(lambda: controller.status == "idle", controller.changed)
@@ -3901,7 +3909,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     reveal("removeProviderKey")
     click(window, "removeProviderKey")
     until(
-        lambda: "removed" in controller.providerSettingsState["notice"],
+        lambda: not controller.providerSettingsState["saving"] and not controller.providerSettingsState["loading"],
         controller.providerSettingsChanged,
     )
     assert "desktop-second" not in json.loads((home / "auth.json").read_text())

@@ -186,8 +186,8 @@ async def test_settings_route_saves_custom_provider_configuration(
     client: httpx.AsyncClient, home: Path
 ):
     initial = (await client.get("/api/settings")).json()
-    assert initial["provider_type"] == "builtin"
-    assert initial["provider"] == "anthropic"
+    assert "model" not in initial and "effort" not in initial
+    assert all(not entry["valid"] for entry in initial["providers"])
     assert {item["id"] for item in initial["built_in_providers"]} == {
         "anthropic",
         "openai",
@@ -205,36 +205,24 @@ async def test_settings_route_saves_custom_provider_configuration(
             "base_url": "https://gateway.example.com/v1/",
             "model": "company-model",
             "effort": None,
-            "api_key": "sk-private",
+            "api_key": None,
         },
     )
     assert saved.status_code == 200
-    assert saved.json() | {"built_in_providers": []} == {
-        "provider_type": "custom",
-        "provider": "company-gateway",
-        "model": "company-model",
-        "effort": None,
-        "family": "openai",
-        "base_url": "https://gateway.example.com/v1",
-        "built_in_providers": [],
-        "applied_to_current": False,
-        "warning": None,
-        "selection": {
-            "provider": "company-gateway",
-            "model": "company-model",
-            "effort": None,
-        },
-    }
-    assert (await client.get("/api/settings")).json()["provider"] == "company-gateway"
+    entry = next(item for item in saved.json()["providers"] if item["id"] == "company-gateway")
+    assert entry["provider_type"] == "custom"
+    assert entry["base_url"] == "https://gateway.example.com/v1"
+    assert entry["status"] == "Not configured" and not entry["valid"]
+    assert saved.json()["saved_provider"] == "company-gateway"
     settings_text = (home / "settings.json").read_text()
     document = json.loads(settings_text)
     assert document["providers"]["company-gateway"] == {
         "family": "openai",
         "base_url": "https://gateway.example.com/v1",
     }
-    assert "sk-private" not in settings_text
-    assert json.loads((home / "auth.json").read_text())["company-gateway"]["key"] == ("sk-private")
+    assert "provider" not in document and "model" not in document
     assert "api_key" not in saved.json()
+    assert (await client.get("/api/settings")).headers["cache-control"] == "no-store"
 
     invalid = await client.put(
         "/api/settings",
@@ -250,7 +238,7 @@ async def test_settings_route_saves_custom_provider_configuration(
     assert "reserved" in invalid.json()["error"]
 
 
-async def test_settings_apply_to_the_current_idle_chat(client: httpx.AsyncClient, scripted):
+async def test_settings_do_not_change_the_current_idle_chat(client: httpx.AsyncClient, scripted):
     assert (await client.post("/api/chats", json={"project_id": "workspace"})).status_code == 201
     original = scripted[0]
     saved = await client.put(
@@ -266,16 +254,10 @@ async def test_settings_apply_to_the_current_idle_chat(client: httpx.AsyncClient
         },
     )
     assert saved.status_code == 200
-    assert saved.json()["applied_to_current"] is True
-    assert saved.json()["selection"] == {
-        "provider": "company-gateway",
-        "model": "company-model",
-        "effort": "high",
-    }
-    assert original.closed is True
-    replacement = client_agent(client, "c1").state.provider
-    assert replacement is scripted[1]
-    assert replacement.selection == Selection("company-gateway", "company-model", "high")
+    assert "selection" not in saved.json()
+    assert original.closed is False
+    assert client_agent(client, "c1").state.provider is original
+    assert original.selection == Selection("scripted", "scripted-model")
 
 
 async def test_projects_chats_and_archive(client: httpx.AsyncClient, project: Path):
@@ -920,42 +902,56 @@ async def test_pause_resume_and_abort_controls(client: httpx.AsyncClient, script
 
 
 async def test_model_and_effort_selection_apply_at_the_next_step(
-    client: httpx.AsyncClient, scripted
+    client: httpx.AsyncClient, scripted, monkeypatch
 ):
     from ava.llm import ModelCapabilities
 
-    await client.post("/api/chats", json={"project_id": "workspace"})
-    provider = scripted[0]
-    provider.model_overrides["scripted-model"] = ModelCapabilities(effort_values=["low", "high"])
-    provider.model_overrides["other-model"] = ModelCapabilities(effort_values=["max"])
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
+    profiles = {
+        "scripted-model": ModelCapabilities(effort_values=["low", "high"]),
+        "other-model": ModelCapabilities(effort_values=["max"]),
+    }
+
+    async def list_models(self, *args):
+        return list(profiles)
+
+    def catalog_provider(*args, **kwargs):
+        provider = ScriptedProvider([text_response("selected answer")])
+        provider.id = "openai"
+        provider.model_overrides = dict(profiles)
+        return provider
+
+    monkeypatch.setattr(ScriptedProvider, "list_models", list_models)
+    monkeypatch.setattr("ava.app.web.providers.provider_from_environment", catalog_provider)
+    monkeypatch.setattr("ava.app.web.providers.provider_names", lambda: ["openai"])
+    await client.post("/api/chats", json={"project_id": "workspace", "provider": "openai", "model": "scripted-model"})
     listed = (await client.get("/api/chats/c1/models")).json()
-    assert listed["model"] == "scripted-model" and listed["effort"] is None
-    assert listed["effort_values"] == ["low", "high"] and listed["catalog_available"] is False
-    assert "scripted-model" in listed["models"]
-    assert (await client.post("/api/chats/c1/model", json={"effort": "max"})).status_code == 400
-    chosen = await client.post(
-        "/api/chats/c1/model", json={"model": "other-model", "effort": "max"}
-    )
-    assert chosen.json() == {"provider": "scripted", "model": "other-model", "effort": "max"}
+    assert listed["effort_values"] == ["low", "high"] and listed["catalog_available"]
+    assert [entry["id"] for entry in listed["providers"]] == ["openai"]
+    bad = await client.post("/api/chats/c1/model", json={"model": "other-model", "effort": "high"})
+    assert bad.status_code == 400
+    assert client_agent(client, "c1").current_selection().model == "scripted-model"
+    chosen = await client.post("/api/chats/c1/model", json={"model": "other-model", "effort": "max"})
+    assert chosen.json() == {"provider": "openai", "model": "other-model", "effort": "max"}
     assert (await client.post("/api/chats/c1/model", json={"model": ""})).status_code == 400
+    provider = client_agent(client, "c1").state.provider
+    provider.gate = asyncio.Event()
     await client.post("/api/chats/c1/messages", json={"text": "go"})
+    await asyncio.wait_for(provider.started.wait(), 5)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-key")
+    busy = await client.post("/api/chats/c1/model", json={"provider": "deepseek", "model": "other-model"})
+    assert busy.status_code == 409
+    pending = await client.post("/api/chats/c1/model", json={"model": "scripted-model", "effort": "low"})
+    assert pending.status_code == 200 and pending.json()["effort"] == "low"
+    assert client_agent(client, "c1").state.provider is provider and not provider.closed
+    provider.gate.set()
     events = await _events_until(client, "c1", "turn/end")
     selection = next(e for e in events if e["kind"] == "selection")
     assert selection["model"] == "other-model" and selection["effort"] == "max"
+    provider = client_agent(client, "c1").state.provider
     assert provider.selection.model == "other-model"
-
-    await client.post("/api/chats/c1/model", json={"model": "scripted-model"})
-    status_count = 0
-
-    def after_replay(event: dict) -> bool:
-        nonlocal status_count
-        if event["kind"] == "status":
-            status_count += 1
-        return status_count == 2
-
-    replay = await _events_until(client, "c1", after_replay)
-    assert any(event["kind"] == "selection" and event["model"] == "other-model" for event in replay)
-    assert replay[-1]["kind"] == "status" and replay[-1]["model"] == "scripted-model"
+    assert client_agent(client, "c1").current_selection() == Selection("openai", "scripted-model", "low")
+    assert not provider.remembers_selection
 
 
 async def test_compact_now_appends_a_seed_and_refuses_while_busy(

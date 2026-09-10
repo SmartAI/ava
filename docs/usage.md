@@ -31,9 +31,9 @@ uv run --extra desktop ava-desktop --project .
 `--provider`, `--model`, and `--effort` override the model for new desktop conversations;
 existing conversations retain their saved selections and other clients keep their defaults.
 For example, an existing Codex CLI login can be used with `--provider codex`.
-Configure providers and credentials in **Settings → Models**, through the settings file,
-or in the Web UI. The desktop supports built-in providers and custom OpenAI-compatible
-or Anthropic-compatible endpoints. An existing Codex CLI login is reused for Codex.
+Configure provider connections and credentials in **Settings → Providers**, through the settings file, or in the Web UI.
+The desktop supports built-in providers and custom OpenAI-compatible or Anthropic-compatible endpoints.
+An existing Codex CLI login is reused for Codex.
 
 Choose a project folder, create or reopen a conversation, and send a message.
 Enter sends; Shift+Enter inserts a newline. While Ava runs, Enter steers the current
@@ -173,13 +173,17 @@ Drafts and staged attachments are kept separately for each conversation while th
 - Both sidebars can be hidden and resized by dragging their separators. Visibility,
   manually chosen widths, and light/dark theme are remembered. Ctrl+B toggles the left
   sidebar and Ctrl+Alt+B toggles the inspector (Command replaces Ctrl on macOS).
-  Settings in the sidebar (Command/Ctrl+,) groups appearance, models and shortcuts.
-  Chat text size has Small, Default and Large options with a Chinese/English preview;
-  appearance changes are saved automatically. Archived chats can be restored from General.
-  Models lets you save the default provider, model, reasoning effort, endpoint and API key.
-  Leave the key blank to keep the stored credential, or use **Remove stored key** to remove it.
-  **Apply to current chat** also changes the open idle conversation; during a run, settings
-  apply to new conversations. Save failures retain the form for correction and retry.
+  Settings in the sidebar (Command/Ctrl+,) groups appearance, providers and shortcuts.
+  Chat text size has Small, Default and Large options with a Chinese/English preview; appearance changes are saved automatically.
+  Archived chats can be restored from General.
+  Providers stores connection details and credentials, without changing conversation models or defaults.
+  Connection checks read provider model catalogs without sending a chat request.
+  Leave the key blank to keep existing credentials, or use **Remove stored key** to remove the saved key.
+  Environment credentials take precedence over saved keys; the active credential source and connection status are displayed.
+  Click the model name in a conversation to choose a connected provider, one of its models, and supported reasoning effort, then click **Apply**.
+  The choice is saved for that session, even before sending a message, and does not affect other conversations.
+  Model and effort changes during a run apply at the next step; provider changes require an idle conversation.
+  Providers with missing credentials, rejected credentials, or unavailable catalogs are excluded until their connection check succeeds.
 - Open the integrated terminal with the header button, Command/Ctrl+J, or `/terminal`.
   Each `+` tab starts an interactive shell in the current project; switching projects or
   hiding the panel preserves existing shells. Drag the divider to resize it. ANSI colors,
@@ -238,7 +242,7 @@ uv run ava-backend service-uninstall
 
 Each Ava home has a separate service. Installation records the current Python environment, so keep
 that environment available; after moving it, run `service-install` from the new installation while
-tasks are idle. Store provider credentials in **Settings → Models** before enabling startup. Service
+tasks are idle. Store provider credentials in **Settings → Providers** before enabling startup. Service
 definitions preserve provider/model/effort, an absolute `AVA_CONFIG` path, and basic path/locale
 settings; they do not copy shell-only API keys or the whole shell environment. Explicit `stop` leaves
 the service installed but stopped until the next desktop connection or login. Crashed tasks retain

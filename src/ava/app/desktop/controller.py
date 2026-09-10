@@ -101,6 +101,7 @@ class Controller(QObject):
     loginRequested = Signal(str)
     providerSettingsChanged = Signal()
     providerSettingsLoaded = Signal(dict)
+    modelSelectionSaved = Signal()
     providerKeyRemoved = Signal()
     readingSizeChanged = Signal()
     browserRequested = Signal(str)
@@ -565,7 +566,6 @@ class Controller(QObject):
             "notice": "",
         }
         self.providerSettingsChanged.emit()
-        identity = values.get("chat_id")
         machine_id = self._active_machine
 
         def saved(payload: Any, error: str) -> None:
@@ -573,14 +573,8 @@ class Controller(QObject):
                 return
             self._provider_settings_state.update(saving=False, error=error)
             if not error:
-                self._provider_settings_state["notice"] = (
-                    payload.get("warning") or "Settings saved."
-                )
-                if payload.get("applied_to_current") and identity == self._chat_id:
-                    self._update_selection(payload["selection"])
-                    self._model_revision += 1
-                    self.loadModels()
-                    self.changed.emit()
+                entry: dict[str, Any] = next((item for item in payload.get("providers", []) if item["id"] == payload.get("saved_provider")), {})
+                self._provider_settings_state["notice"] = "Connection saved. " + entry.get("message", "")
                 self.providerSettingsLoaded.emit(payload)
             self.providerSettingsChanged.emit()
 
@@ -767,6 +761,7 @@ class Controller(QObject):
             or found[1]["title"]
             or found[1]["archived"]
             or found[1].get("worktree")
+            or found[1].get("model_configured")
             or self.preference(f"pinned/{identity}", False)
             or self._drafts.get(identity, "")
             or self._attachments.get(identity, [])
@@ -1073,18 +1068,25 @@ class Controller(QObject):
 
     @Slot()
     def loadModels(self) -> None:
-        if self._selecting:
+        if self._selecting or not self._connection or not self._chat_id:
             return
         self._model_revision += 1
         revision = self._model_revision
+        epoch = self._epoch
+        self._models = {"loading": True}
+        self._error = ""
+        self.changed.emit()
 
-        def loaded(payload: dict) -> None:
-            if revision != self._model_revision:
+        def loaded(payload: Any, error: str) -> None:
+            if revision != self._model_revision or epoch != self._epoch:
                 return
-            self._models = payload
-            self._update_selection(payload)
+            self._models = payload if not error else {}
+            self._error = error
+            if not error:
+                self._update_selection(payload)
+            self.changed.emit()
 
-        self._chat_call("GET", "models", None, loaded)
+        self._connection.call("GET", f"/api/chats/{self._chat_id}/models", None, loaded)
 
     def _update_selection(self, payload: dict) -> None:
         self._selection = {key: payload.get(key) for key in ("provider", "model", "effort")}
@@ -1105,10 +1107,18 @@ class Controller(QObject):
             self._error = error
             if not error:
                 self._update_selection(payload)
-                self.loadModels()
+                for project in self._projects:
+                    for chat in project["chats"]:
+                        if chat["id"] == self._chat_id:
+                            chat["model_configured"] = True
+                self.modelSelectionSaved.emit()
             self.changed.emit()
 
         self._connection.call("POST", f"/api/chats/{self._chat_id}/model", body, selected)
+
+    @Slot(str, str, str)
+    def selectConversationModel(self, provider: str, model: str, effort: str) -> None:
+        self._select({"provider": provider, "model": model, "effort": effort or None})
 
     @Slot(str)
     def selectModel(self, model: str) -> None:
@@ -1449,13 +1459,11 @@ class Controller(QObject):
             if argument:
                 self.selectModel(argument)
             else:
-                self.loadModels()
                 self.panelRequested.emit("model")
         elif name == "effort":
             if argument:
                 self.selectEffort(argument)
             else:
-                self.loadModels()
                 self.panelRequested.emit("model")
         elif name == "skills":
             self.skillsRequested.emit()

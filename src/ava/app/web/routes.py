@@ -28,15 +28,9 @@ from ava.llm import (
     make_image_block,
     make_text_block,
 )
-from ava.llm.configuration import (
-    BUILTIN_PROVIDER_DEFAULT_MODELS,
-    BUILTIN_PROVIDERS,
-    ProviderSettings,
-    load_saved_provider_settings,
-    save_basic_configuration,
-)
+from ava.llm.configuration import save_provider_connection
 from ava.llm.credentials import delete_api_key, save_api_key
-from ava.llm.provider import Selection, SelectionOverride
+from ava.llm.provider import Selection
 
 from . import worktrees
 from .models import (
@@ -53,6 +47,7 @@ from .models import (
     SettingsBody,
     parse_body,
 )
+from .providers import conversation_catalog, open_catalog, provider_names, settings_payload
 from .registry import Project, WebState, title_from_text
 from .streaming import begin_drive, event_stream
 
@@ -68,36 +63,6 @@ COMPACTION_MESSAGES = {
     CompactNowOutcome.failed: "compaction failed; the conversation is unchanged",
     CompactNowOutcome.disabled: "compaction is disabled for this run",
 }
-BUILTIN_PROVIDER_LABELS = {
-    "anthropic": "Anthropic",
-    "openai": "OpenAI",
-    "deepseek": "DeepSeek",
-    "codex": "Codex",
-    "llamacpp": "llama.cpp",
-}
-
-
-def settings_payload(settings: ProviderSettings) -> dict[str, Any]:
-    selection = settings.selection
-    custom = selection.provider not in BUILTIN_PROVIDERS
-    return {
-        "provider_type": "custom" if custom else "builtin",
-        "provider": selection.provider,
-        "model": selection.model,
-        "effort": selection.effort,
-        "family": settings.family if custom else None,
-        "base_url": settings.base_url if custom else None,
-        "built_in_providers": [
-            {
-                "id": provider,
-                "label": BUILTIN_PROVIDER_LABELS[provider],
-                "default_model": BUILTIN_PROVIDER_DEFAULT_MODELS[provider],
-            }
-            for provider in BUILTIN_PROVIDERS
-        ],
-    }
-
-
 def error_response(status: int, message: str) -> JSONResponse:
     return JSONResponse(
         {"error": message}, status_code=status, headers={"cache-control": "no-store"}
@@ -221,7 +186,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
     @app.get("/api/settings")
     async def settings() -> Response:
         try:
-            return JSONResponse(settings_payload(load_saved_provider_settings()))
+            return JSONResponse(await settings_payload(), headers={"cache-control": "no-store"})
         except AvaError as error:
             return error_response(503, error.message)
 
@@ -230,29 +195,18 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         body = await parse_body(request, SettingsBody)
         if body is None:
             return error_response(400, "settings must be a valid JSON object")
-        found = registry.find_chat(body.chat_id) if body.chat_id is not None else None
-        if body.chat_id is not None and found is None:
-            return error_response(404, "no such chat")
-
         provider_name = body.provider.strip()
-        model = body.model.strip()
-        effort = body.effort.strip() if body.effort is not None else None
-        effort = effort or None
-        family = body.family
         base_url = body.base_url.strip() if body.base_url is not None else None
-        if not provider_name or not model:
-            return error_response(400, "provider and model must not be empty")
         if body.api_key and provider_name == "codex":
             return error_response(
                 400, "the codex provider reuses the Codex CLI login; run 'codex login' instead"
             )
 
-        selected = Selection(provider_name, model, effort)
         try:
-            saved = save_basic_configuration(
-                selected,
+            save_provider_connection(
+                provider_name,
                 custom=body.provider_type == "custom",
-                family=family,
+                family=body.family,
                 base_url=base_url,
             )
             if body.api_key:
@@ -261,59 +215,10 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             status = 400 if error.kind in (ErrorKind.invalid_argument, ErrorKind.parse) else 503
             return error_response(status, error.message)
 
-        payload = settings_payload(saved)
-        payload.update(
-            applied_to_current=False,
-            warning=None,
-            selection={
-                "provider": selected.provider,
-                "model": selected.model,
-                "effort": selected.effort,
-            },
-        )
-        if found is None:
-            return JSONResponse(payload)
-
-        chat = found[1]
-        if chat.status != "idle" or chat.drive.running:
-            payload["warning"] = (
-                "Defaults were saved, but the current chat is busy and was not changed."
-            )
-            return JSONResponse(payload)
-        try:
-            replacement = state.provider_factory(
-                SelectionOverride(
-                    provider=selected.provider,
-                    model=selected.model,
-                    effort=selected.effort,
-                ),
-                None,
-                AuthRequirement.allow_missing,
-            )
-            # A blank effort is an explicit UI choice, even if an AVA_EFFORT override exists.
-            replacement.selection = Selection(selected.provider, selected.model, selected.effort)
-        except AvaError as error:
-            payload["warning"] = (
-                f"Defaults were saved, but the current chat was not changed: {error.message}"
-            )
-            return JSONResponse(payload)
-        try:
-            await chat.agent.replace_provider(replacement)
-        except AvaError as error:
-            await replacement.aclose()
-            payload["warning"] = (
-                f"Defaults were saved, but the current chat was not changed: {error.message}"
-            )
-            return JSONResponse(payload)
-        current_selection = chat.agent.current_selection()
-        payload["applied_to_current"] = True
-        payload["selection"] = {
-            "provider": current_selection.provider,
-            "model": current_selection.model,
-            "effort": current_selection.effort,
-        }
-        chat.notify_status()
-        return JSONResponse(payload)
+        await reload_provider(provider_name, AuthRequirement.allow_missing)
+        payload = await settings_payload()
+        payload["saved_provider"] = provider_name
+        return JSONResponse(payload, headers={"cache-control": "no-store"})
 
     @app.post("/api/projects")
     async def add_project(request: Request) -> Response:
@@ -516,7 +421,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         if found is None:
             return error_response(404, "no such chat")
         project, chat = found
-        if chat.worktree or chat.title or chat.archived or chat.status != "idle" or chat.agent.turn_open:
+        if chat.worktree or chat.title or chat.archived or chat.model_configured or chat.status != "idle" or chat.agent.turn_open:
             return error_response(409, "only an unused chat can be removed")
         session_path = chat.agent.session_path
         if session_path is None:
@@ -689,20 +594,11 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         found = registry.find_chat(chat_id)
         if found is None:
             return error_response(404, "no such chat")
-        agent = found[1].agent
-        choices = await agent.model_choices()
-        selection = agent.current_selection()
-        capabilities = agent.current_capabilities()
-        return JSONResponse(
-            {
-                "provider": selection.provider,
-                "model": selection.model,
-                "effort": selection.effort,
-                "effort_values": capabilities.effort_values,
-                "models": choices.models,
-                "catalog_available": choices.provider_catalog_available,
-            }
-        )
+        try:
+            payload = await conversation_catalog(found[1].agent.current_selection())
+        except AvaError as error:
+            return error_response(503, error.message)
+        return JSONResponse(payload, headers={"cache-control": "no-store"})
 
     @app.post("/api/chats/{chat_id}/model")
     async def select_model(chat_id: str, request: Request) -> Response:
@@ -712,20 +608,46 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         body = await parse_body(request, SelectionBody)
         if body is None:
             return error_response(400, "body must be a JSON object")
-        agent = found[1].agent
+        chat = found[1]
+        agent = chat.agent
+        previous = agent.current_selection()
+        provider_name = body.provider or previous.provider
+        replacement = None
         try:
-            if "model" in body.model_fields_set:
-                if body.model is None:
-                    return error_response(400, "model must be a JSON string")
-                agent.select_model(body.model)
-            if "effort" in body.model_fields_set:
-                agent.select_effort(body.effort)
+            if provider_name not in provider_names():
+                return error_response(400, "Configure this provider in Settings first.")
+            entry, replacement = await open_catalog(provider_name)
+            if replacement is None:
+                return error_response(400, entry["message"])
+            model = body.model if "model" in body.model_fields_set else previous.model
+            if not model or model not in {item["id"] for item in entry["models"]}:
+                return error_response(400, "Choose a model from this provider's catalog.")
+            changed_model = provider_name != previous.provider or model != previous.model
+            effort = body.effort if "effort" in body.model_fields_set else None if changed_model else previous.effort
+            selection = Selection(provider_name, model, effort)
+            replacement.validate_selection(selection)
+            if provider_name == previous.provider and (chat.status != "idle" or chat.drive.running):
+                # Validate the complete draft before touching either pending field.
+                agent.state.provider.model_overrides[model] = replacement.capabilities(model)
+                agent.select_model(model)
+                agent.select_effort(effort)
+            else:
+                if chat.drive.running:
+                    return error_response(409, "Wait for this conversation to finish before changing providers.")
+                replacement.selection = selection
+                replacement.context_window = replacement.capabilities(model).context_window_tokens or 0
+                replacement.selection_model_may_be_alias = False
+                await agent.replace_provider(replacement)
+                replacement = None
+            chat.model_configured = True
+            registry.persist()
+            chat.notify_status()
         except AvaError as error:
-            return error_response(400, error.message)
-        selection = agent.current_selection()
-        return JSONResponse(
-            {"provider": selection.provider, "model": selection.model, "effort": selection.effort}
-        )
+            return error_response(409 if "busy" in error.message else 400, error.message)
+        finally:
+            if replacement is not None:
+                await replacement.aclose()
+        return JSONResponse(asdict(selection))
 
     @app.post("/api/chats/{chat_id}/compact")
     async def compact(chat_id: str) -> Response:

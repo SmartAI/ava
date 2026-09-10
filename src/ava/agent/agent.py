@@ -568,6 +568,7 @@ class Agent:
             raise AvaError(ErrorKind.invalid_argument, "cannot reload credentials while busy")
         old_provider = state.provider
         new_provider = provider_from_environment(None, old_provider.selection, auth_requirement)
+        new_provider.remembers_selection = old_provider.remembers_selection
         state.provider = new_provider
         if new_provider is not old_provider:
             await old_provider.aclose()

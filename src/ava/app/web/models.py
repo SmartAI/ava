@@ -57,6 +57,7 @@ class CancelBody(RequestBody):
 
 
 class SelectionBody(RequestBody):
+    provider: str | None = Field(default=None, min_length=1)
     model: str | None = None
     effort: str | None = None
 
@@ -69,12 +70,9 @@ class CredentialsBody(RequestBody):
 class SettingsBody(RequestBody):
     provider_type: Literal["builtin", "custom"]
     provider: str = Field(min_length=1)
-    model: str = Field(min_length=1)
-    effort: str | None = None
     family: Literal["anthropic", "openai"] | None = None
     base_url: str | None = None
     api_key: str | None = None
-    chat_id: str | None = None
 
 
 async def parse_body[Body: RequestBody](request: Request, body_type: type[Body]) -> Body | None:

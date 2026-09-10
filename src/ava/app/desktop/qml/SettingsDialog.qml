@@ -12,12 +12,13 @@ NativeDialog {
     property int page: 0
     property bool ready: false
     property bool custom: false
-    property var builtIns: []
+    property var connections: []
+    property string selectedProvider: ""
+    readonly property var connection: connections.find(item => item.id === selectedProvider) || ({})
     readonly property var state: backend.providerSettingsState
     readonly property var startup: backend.serviceState
-    readonly property string provider: custom ? providerName.text.trim() : (providerPicker.currentValue || "")
+    readonly property string provider: custom ? providerName.text.trim() : selectedProvider
     readonly property bool storesKey: custom || ["codex", "llamacpp"].indexOf(provider) < 0
-    readonly property bool supportsEffort: custom ? familyPicker.currentValue === "openai" : ["openai", "deepseek", "codex"].indexOf(provider) >= 0
     signal darkRequested(bool value)
     signal archivedRequested
     anchors.centerIn: parent
@@ -34,32 +35,28 @@ NativeDialog {
         border.color: dialog.palette.mid
     }
     function load(values) {
-        builtIns = values.built_in_providers || [];
-        custom = values.provider_type === "custom";
-        providerPicker.currentIndex = Math.max(0, builtIns.findIndex(item => item.id === values.provider));
-        providerName.text = custom ? values.provider : "";
-        modelName.text = values.model || "";
-        effort.text = values.effort || "";
-        familyPicker.currentIndex = values.family === "anthropic" ? 1 : 0;
-        baseUrl.text = values.base_url || "";
-        apiKey.clear();
+        connections = (values.providers || []).map(item => Object.assign({}, item, {display: item.label + " · " + item.status}));
+        const preferred = values.saved_provider || selectedProvider || backend.selection.provider;
+        providerPicker.currentIndex = Math.max(0, connections.findIndex(item => item.id === preferred));
+        selectProvider();
         ready = true;
     }
     function selectProvider() {
-        const item = builtIns[providerPicker.currentIndex];
-        modelName.text = item ? item.default_model : "";
-        effort.clear();
+        const item = connections[providerPicker.currentIndex] || {};
+        selectedProvider = item.id || "";
+        custom = item.provider_type === "custom";
+        providerName.text = custom ? selectedProvider : "";
+        familyPicker.currentIndex = item.family === "anthropic" ? 1 : 0;
+        baseUrl.text = item.base_url || "";
         apiKey.clear();
     }
     function selectType(value) {
-        if (custom === value)
-            return;
         custom = value;
         apiKey.clear();
-        effort.clear();
         if (custom) {
+            selectedProvider = "";
+            providerPicker.currentIndex = -1;
             providerName.clear();
-            modelName.clear();
             baseUrl.clear();
             familyPicker.currentIndex = 0;
             providerName.forceActiveFocus();
@@ -71,18 +68,14 @@ NativeDialog {
         backend.saveProviderSettings({
             provider_type: custom ? "custom" : "builtin",
             provider: provider,
-            model: modelName.text.trim(),
-            effort: supportsEffort ? (effort.text.trim() || null) : null,
             family: custom ? familyPicker.currentValue : null,
             base_url: custom ? baseUrl.text.trim() : null,
-            api_key: storesKey ? (apiKey.text || null) : null,
-            chat_id: applyCurrent.checked ? (backend.chatId || null) : null
+            api_key: storesKey ? (apiKey.text || null) : null
         });
     }
     onOpened: {
         ready = false;
         apiKey.clear();
-        applyCurrent.checked = !!backend.chatId && backend.status === "idle";
         backend.loadProviderSettings();
         backend.loadServiceState();
     }
@@ -95,6 +88,7 @@ NativeDialog {
         }
         function onProviderKeyRemoved() {
             apiKey.clear();
+            dialog.backend.loadProviderSettings();
         }
     }
     header: Item {
@@ -131,7 +125,7 @@ NativeDialog {
             Repeater {
                 model: [
                     {label: "General", name: "settingsGeneralTab", icon: "settings"},
-                    {label: "Models", name: "settingsProvidersTab", icon: "model"},
+                    {label: "Providers", name: "settingsProvidersTab", icon: "model"},
                     {label: "Shortcuts", name: "settingsShortcutsTab", icon: "command"}
                 ]
                 delegate: NativeButton {
@@ -326,10 +320,10 @@ NativeDialog {
                     id: providers
                     width: parent.width - 12
                     spacing: 16
-                    Label { text: "Models & providers"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                    Label { text: "Provider connections"; font.pixelSize: 16; font.weight: Font.DemiBold }
                     Label {
                         Layout.fillWidth: true
-                        text: "Choose the default model for new conversations."
+                        text: "Manage credentials here. Choose a model and reasoning effort from the model name in each conversation."
                         font.pixelSize: 12
                         color: palette.placeholderText
                         wrapMode: Text.WordWrap
@@ -352,19 +346,42 @@ NativeDialog {
                         enabled: !dialog.state.saving && !dialog.state.loading
                         Layout.fillWidth: true
                         spacing: 16
+                        NativeCombo {
+                            id: providerPicker
+                            objectName: "settingsProviderPicker"
+                            Layout.fillWidth: true
+                            model: dialog.connections
+                            textRole: "display"
+                            valueRole: "id"
+                            onActivated: dialog.selectProvider()
+                            Accessible.name: "Provider connections"
+                        }
                         RowLayout {
                             NativeButton {
-                                objectName: "builtinProviderType"
-                                text: "Built-in"
-                                primary: !dialog.custom
-                                onClicked: dialog.selectType(false)
-                            }
-                            NativeButton {
                                 objectName: "customProviderType"
-                                text: "Custom"
-                                primary: dialog.custom
+                                text: "Add custom provider"
                                 onClicked: dialog.selectType(true)
                             }
+                            NativeButton {
+                                text: "Refresh status"
+                                quiet: true
+                                onClicked: dialog.backend.loadProviderSettings()
+                            }
+                        }
+                        Label {
+                            objectName: "providerConnectionStatus"
+                            Layout.fillWidth: true
+                            text: dialog.connection.message || "Connect an OpenAI-compatible or Anthropic endpoint."
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 12
+                            color: palette.placeholderText
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: !!dialog.connection.credential_source
+                            text: "Credentials: " + (dialog.connection.credential_source || "")
+                            font.pixelSize: 11
+                            color: palette.placeholderText
                         }
                         GridLayout {
                             Layout.fillWidth: true
@@ -374,18 +391,8 @@ NativeDialog {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
-                                Label { text: dialog.custom ? "Provider name" : "Provider"; font.pixelSize: 12 }
-                                NativeCombo {
-                                    id: providerPicker
-                                    objectName: "settingsProviderPicker"
-                                    Layout.fillWidth: true
-                                    visible: !dialog.custom
-                                    model: dialog.builtIns
-                                    textRole: "label"
-                                    valueRole: "id"
-                                    onActivated: dialog.selectProvider()
-                                    Accessible.name: "Provider"
-                                }
+                                visible: dialog.custom
+                                Label { text: "Provider name"; font.pixelSize: 12 }
                                 NativeField {
                                     id: providerName
                                     objectName: "settingsProviderName"
@@ -408,33 +415,7 @@ NativeDialog {
                                     model: [{label: "OpenAI-compatible", value: "openai"}, {label: "Anthropic", value: "anthropic"}]
                                     textRole: "label"
                                     valueRole: "value"
-                                    onActivated: effort.clear()
                                     Accessible.name: "API format"
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 6
-                                Label { text: "Model"; font.pixelSize: 12 }
-                                NativeField {
-                                    id: modelName
-                                    objectName: "settingsModel"
-                                    Layout.fillWidth: true
-                                    placeholderText: "Model ID"
-                                    Accessible.name: "Model"
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 6
-                                Label { text: "Reasoning effort"; font.pixelSize: 12 }
-                                NativeField {
-                                    id: effort
-                                    objectName: "settingsEffort"
-                                    Layout.fillWidth: true
-                                    enabled: dialog.supportsEffort
-                                    placeholderText: enabled ? "Provider default" : "Not supported"
-                                    Accessible.name: "Reasoning effort"
                                 }
                             }
                         }
@@ -463,7 +444,7 @@ NativeDialog {
                                     text: "Remove stored key"
                                     quiet: true
                                     implicitHeight: 24
-                                    enabled: /^[a-z][a-z0-9-]*$/.test(dialog.provider)
+                                    enabled: dialog.connection.has_stored_key === true && dialog.provider === dialog.selectedProvider
                                     onClicked: dialog.backend.removeProviderKey(dialog.provider)
                                 }
                             }
@@ -483,38 +464,6 @@ NativeDialog {
                             font.pixelSize: 12
                             color: palette.placeholderText
                             wrapMode: Text.WordWrap
-                        }
-                        CheckBox {
-                            id: applyCurrent
-                            objectName: "applySettingsToChat"
-                            enabled: !!dialog.backend.chatId && dialog.backend.status === "idle"
-                            text: "Apply to this conversation"
-                            font.pixelSize: 12
-                            spacing: 8
-                            indicator: Rectangle {
-                                x: applyCurrent.leftPadding
-                                y: (applyCurrent.height - height) / 2
-                                width: 18
-                                height: 18
-                                radius: 5
-                                color: applyCurrent.checked ? dialog.palette.highlight : dialog.palette.base
-                                border.color: applyCurrent.visualFocus ? dialog.palette.highlight : dialog.palette.mid
-                                Label {
-                                    anchors.centerIn: parent
-                                    visible: applyCurrent.checked
-                                    text: "✓"
-                                    font.pixelSize: 12
-                                    color: dialog.palette.highlightedText
-                                }
-                            }
-                        }
-                        Label {
-                            visible: !!dialog.backend.chatId && dialog.backend.status !== "idle"
-                            Layout.fillWidth: true
-                            text: "This conversation is active. Saved defaults will apply to new chats."
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                            color: palette.placeholderText
                         }
                     }
                 }
@@ -571,7 +520,7 @@ NativeDialog {
             Label {
                 objectName: "providerSettingsFeedback"
                 Layout.fillWidth: true
-                text: dialog.page === 1 ? (dialog.state.error || dialog.state.notice || "Save defaults for new chats.") : "Appearance changes are saved automatically."
+                text: dialog.page === 1 ? (dialog.state.error || dialog.state.notice || "Credentials are stored separately from settings. Conversations are unchanged.") : "Appearance changes are saved automatically."
                 font.pixelSize: 11
                 color: dialog.page === 1 && dialog.state.error ? (dialog.dark ? "#ecc4b4" : "#8b3e2d") : dialog.palette.placeholderText
                 wrapMode: Text.Wrap
@@ -586,10 +535,10 @@ NativeDialog {
             }
             NativeButton {
                 objectName: "saveProviderSettings"
-                text: dialog.state.saving ? "Saving…" : "Save"
+                text: dialog.state.saving ? "Checking…" : "Save connection"
                 primary: true
                 visible: dialog.page === 1
-                enabled: dialog.ready && !dialog.state.loading && !dialog.state.saving && !!dialog.provider && !!modelName.text.trim() && (!dialog.custom || !!baseUrl.text.trim())
+                enabled: dialog.ready && !dialog.state.loading && !dialog.state.saving && !!dialog.provider && (!dialog.custom || !!baseUrl.text.trim())
                 onClicked: dialog.save()
             }
         }
