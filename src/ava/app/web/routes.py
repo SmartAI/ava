@@ -370,7 +370,7 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                 if existing.creation_key == key:
                     if owner.id != project.id or existing.worktree != (body.branch if body.workspace == "worktree" else "") or existing.creation_base != body.base_ref:
                         return error_response(409, "This request already created a different workspace.")
-                    return JSONResponse({**existing.summary(), "revision": registry.revision})
+                    return JSONResponse(existing.summary())
         try:
             chat = await state.create_chat(project, body, key)
             return JSONResponse(chat.summary(), status_code=201)
