@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ from .models import (
     CancelBody,
     CreateChatBody,
     CredentialsBody,
+    EnvironmentBody,
     MessageBody,
     RenameChatBody,
     ReviewBody,
@@ -47,7 +49,13 @@ from .models import (
     SettingsBody,
     parse_body,
 )
-from .providers import conversation_catalog, open_catalog, provider_names, settings_payload
+from .providers import (
+    conversation_catalog,
+    credential_environment,
+    open_catalog,
+    provider_names,
+    settings_payload,
+)
 from .registry import Project, WebState, title_from_text
 from .streaming import begin_drive, event_stream
 
@@ -693,6 +701,48 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                 except AvaError as error:
                     failed[chat.id] = error.message
         return {"provider": provider, "reloaded": reloaded, "failed": failed}
+
+    _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    @app.post("/api/system/environment")
+    async def update_environment(request: Request) -> Response:
+        body = await parse_body(request, EnvironmentBody)
+        if body is None or any(not name or not value for name, value in body.variables.items()):
+            return error_response(
+                400, "variables must map environment variable names to non-empty strings"
+            )
+        try:
+            provider_envs = credential_environment()
+        except AvaError as error:
+            return error_response(503, error.message)
+        allowed = set(provider_envs.values())
+        invalid = next(
+            (
+                name
+                for name in body.variables
+                if not _ENV_NAME.fullmatch(name) or name not in allowed
+            ),
+            None,
+        )
+        if invalid is not None:
+            return error_response(
+                400, f"environment variable is not a configured provider credential: {invalid}"
+            )
+        changed = {
+            name: value
+            for name, value in body.variables.items()
+            if os.environ.get(name) != value
+        }
+        for name, value in changed.items():
+            os.environ[name] = value
+        providers = [provider for provider, name in provider_envs.items() if name in changed]
+        results = [
+            await reload_provider(provider, AuthRequirement.required) for provider in providers
+        ]
+        return JSONResponse(
+            {"updated": sorted(changed), "providers": results},
+            headers={"cache-control": "no-store"},
+        )
 
     @app.post("/api/credentials")
     async def login(request: Request) -> Response:

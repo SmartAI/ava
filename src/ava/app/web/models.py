@@ -67,6 +67,10 @@ class CredentialsBody(RequestBody):
     key: str = Field(min_length=1)
 
 
+class EnvironmentBody(RequestBody):
+    variables: dict[str, str] = Field(default_factory=dict)
+
+
 class SettingsBody(RequestBody):
     provider_type: Literal["builtin", "custom"]
     provider: str = Field(min_length=1)

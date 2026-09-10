@@ -69,9 +69,37 @@ Per-request subscription cost was not measured.
 
 Evaluation uses fresh environments, matched model settings and budgets, reference and unchanged-workspace controls, and independent patch grading.
 Failed attempts are retained in scores and resource totals.
-Detailed experiment records stay local; CI does not run evaluations.
+Detailed experiment records are maintained in the private `ava-evals` repository; CI does not run model evaluations.
+
+### What evaluation changed
+
+Earlier studies used `gpt-5.6-sol` with low reasoning. Each row below is a separate
+comparison on exposed development tasks; the savings must not be added together.
+Dollar figures are API-equivalent estimates, not subscription charges.
+
+| Harness change | Observed result | Evidence limit |
+| --- | --- | --- |
+| Stable Codex session affinity | Estimated cost −37.7%; both versions passed 20/22 matching complete-usage attempts | Total input increased 50.9%; two interrupted attempts made full-cohort cost unknown |
+| Multiple tool calls per response | Model requests 194 → 165; estimated cost −9.6% on 22 matched attempts | Tool calls increased; savings were concentrated in a task that still failed |
+| Quieter progress and batch edits | Estimated cost −9.2%, output tokens −16.1%; both passed 22/24 | Ava still cost 13.3% more than historical Pi |
+| Bash and file-tool contract repairs | Estimated cost −10.3%; gap versus Pi narrowed from +14.2% to +2.5% on 14 matching slots | Full Ava cohort passed 14/15 with one TLS interruption and incomplete usage |
+
+The tool repairs separated display truncation from command execution, so verbose
+commands could finish without forcing the agent to repair interrupted work.
+Multiple calls per response reduced model round trips while tools still executed
+in order. Batch edits validated all replacements before writing the file.
+
+Rejected experiments matter too: batch reads reduced calls but increased total
+input, and aggressive output previews did not preserve their synthetic savings on
+real coding tasks. In the newer SWE-bench Pro follow-up, a general review prompt
+and fresh baseline each solved 0/11 previously failed tasks; the candidate used
+more tools and time and was not retained.
+
+These results support measuring correct delivery and the cost of every attempt,
+including failures. They do not establish general superiority or cost parity.
 
 [Benchmark results and limitations](docs/benchmark.md) ·
+[Detailed study report (private)](https://github.com/SmartAI/ava-evals/blob/main/studies/2026-09-ava-harness/REPORT.md) ·
 [How to run evaluations](eval/README.md)
 
 ## Documentation

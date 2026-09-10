@@ -52,6 +52,51 @@ def connect(home: Path) -> dict[str, Any] | None:
     return info
 
 
+def _credential_environment_values() -> dict[str, str]:
+    """Return only API-key variables present in this process's environment."""
+    from ava.app.web.providers import credential_environment
+
+    try:
+        configured = credential_environment()
+    except AvaError:
+        return {}
+    return {
+        name: value
+        for name in set(configured.values())
+        if name and (value := os.environ.get(name))
+    }
+
+
+def _sync_environment(info: dict[str, Any]) -> bool:
+    """Copy fresh shell credentials into a running backend without persisting them.
+
+    Returns False when an old backend was stopped so the caller can start one that
+    inherits this process's environment.
+    """
+    variables = _credential_environment_values()
+    if not variables:
+        return True
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{info['port']}/api/system/environment",
+            headers={"Authorization": "Bearer " + info["token"]},
+            json={"variables": variables},
+            timeout=5,
+            trust_env=False,
+        )
+    except httpx.TransportError:
+        return True
+    if response.status_code == 200:
+        return True
+    # The running backend predates live credential sync. Restart it when it is idle;
+    # active tasks are intentionally left alone.
+    try:
+        stop(ava_home())
+    except AvaError:
+        return True
+    return False
+
+
 def ensure_running(cwd: Path | None) -> dict[str, Any]:
     home = ava_home()
     from ava.app.backend_service import start_installed
@@ -59,12 +104,12 @@ def ensure_running(cwd: Path | None) -> dict[str, Any]:
     with startup_lock(home):
         deadline = time.monotonic() + 30
         info = connect(home)
-        if info is not None:
+        if info is not None and _sync_environment(info):
             return info
         if start_installed(home):
             while time.monotonic() < deadline:
                 info = connect(home)
-                if info is not None:
+                if info is not None and _sync_environment(info):
                     return info
                 time.sleep(0.05)
             raise AvaError(ErrorKind.network, "Ava background service is not ready. Check its service log.")
@@ -87,7 +132,7 @@ def ensure_running(cwd: Path | None) -> dict[str, Any]:
                     detail = log.read(4096).decode("utf-8", "replace").strip()
                 raise AvaError(ErrorKind.network, "Ava backend failed to start.", detail)
             info = connect(home)
-            if info is not None:
+            if info is not None and _sync_environment(info):
                 return info
             time.sleep(0.05)
         # Do not terminate a backend another desktop could already be using.

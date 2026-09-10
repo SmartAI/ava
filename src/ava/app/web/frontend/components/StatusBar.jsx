@@ -1,5 +1,6 @@
 import React from 'react'
 
+import { textButton } from '../ui'
 import { formatTokenCount } from '../utils'
 
 const formatLatency = milliseconds => milliseconds < 1000
@@ -19,7 +20,7 @@ export function StatusBar({ info, selection, onModel, onContext }) {
 
   return <div className="flex min-h-6.5 w-full max-w-[780px] flex-wrap items-center gap-x-2.5 gap-y-1 px-3 pt-1 font-mono text-[11px] text-faint" aria-label="Chat status">
     <div className="flex min-w-0 flex-1 items-center gap-2">
-      {selection && <button className="max-w-[45%] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-inherit hover:text-muted focus-visible:rounded-sm focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-accent" title={modelTitle} aria-label={`Configure conversation model: ${selection.model}`} onClick={onModel}>{selection.model}{selection.effort ? ` · ${selection.effort}` : ''} ⌄</button>}
+      {selection && <button className={`${textButton} max-w-[45%] shrink-0 overflow-hidden text-ellipsis whitespace-nowrap text-inherit hover:text-muted`} title={modelTitle} aria-label={`Configure conversation model: ${selection.model}`} onClick={onModel}>{selection.model}{selection.effort ? ` · ${selection.effort}` : ''} ⌄</button>}
       <span className="shrink-0 text-line-heavy" aria-hidden="true">·</span>
       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" title={info.cwd || ''}>{info.cwd || ''}</span>
     </div>
@@ -30,6 +31,6 @@ export function StatusBar({ info, selection, onModel, onContext }) {
     </span>}
     {cacheAvailable && <span className="shrink-0 whitespace-nowrap [font-variant-numeric:tabular-nums]" title="Cached input tokens as a percentage of all input tokens">Cache {info.cache_hit_percent}%</span>}
     {ttftAvailable && <span className="shrink-0 whitespace-nowrap [font-variant-numeric:tabular-nums]" title={`${info.ttft_ms} ms from dispatch to the first content token in the latest request`}>TTFT {formatLatency(info.ttft_ms)}</span>}
-    {contextAvailable && <button className="shrink-0 whitespace-nowrap text-inherit [font-variant-numeric:tabular-nums] hover:text-muted focus-visible:rounded-sm focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-accent" title={`About ${formatTokenCount(info.context_used_tokens)} of ${formatTokenCount(info.context_window_tokens)} tokens used. Show context details (/context)`} onClick={onContext}>Context {info.context_remaining_percent}% left</button>}
+    {contextAvailable && <button className={`${textButton} shrink-0 whitespace-nowrap text-inherit [font-variant-numeric:tabular-nums] hover:text-muted`} title={`About ${formatTokenCount(info.context_used_tokens)} of ${formatTokenCount(info.context_window_tokens)} tokens used. Show context details (/context)`} onClick={onContext}>Context {info.context_remaining_percent}% left</button>}
   </div>
 }

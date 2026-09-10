@@ -224,6 +224,9 @@ The backend listens on loopback and requires a fresh bearer token for each proce
 the desktop reconnects without automatically resending prompts. `ava-backend serve --project PATH`
 runs in the foreground; `serve --no-project` restores registered projects without adding a startup folder.
 Without a startup service, the desktop starts a detached backend on demand and inherits its environment.
+When a backend is already running, `ava-backend connect` copies the current shell's provider
+API-key environment variables into it and reloads idle conversations; busy conversations keep
+their existing credentials for that run.
 `ava-backend connect` is a private bootstrap command whose stdout
 contains connection credentials, so it should not be logged or shared.
 

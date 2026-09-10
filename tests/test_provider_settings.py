@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -85,6 +86,29 @@ async def test_provider_readiness_and_credentials_are_separate_from_defaults(hom
         assert (await client.delete("/api/credentials/invalid")).status_code == 200
         assert "invalid" not in [entry["id"] for entry in (await client.get("/api/chats/c1/models")).json()["providers"]]
         assert all(path == "/v1/models" for path, _ in requests)
+
+
+async def test_environment_sync_accepts_only_configured_provider_credentials(home, project, monkeypatch):
+    configuration = {
+        "providers": {
+            "shell": connection("http://127.0.0.1:1/v1", api_key_env="AVA_TEST_SHELL_KEY"),
+        }
+    }
+    (home / "settings.json").write_text(json.dumps(configuration))
+    monkeypatch.setenv("AVA_TEST_SHELL_KEY", "old-key")
+    async with _running_client(create_app(project)) as client:
+        updated = await client.post(
+            "/api/system/environment", json={"variables": {"AVA_TEST_SHELL_KEY": "new-key"}}
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["updated"] == ["AVA_TEST_SHELL_KEY"]
+        assert os.environ["AVA_TEST_SHELL_KEY"] == "new-key"
+
+        invalid = await client.post(
+            "/api/system/environment", json={"variables": {"NOT_A_PROVIDER_KEY": "x"}}
+        )
+        assert invalid.status_code == 400
+        assert "not a configured provider credential" in invalid.json()["error"]
 
 
 async def test_selection_is_atomic_session_scoped_and_survives_restart(home, project, catalog_server):

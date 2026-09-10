@@ -82,6 +82,45 @@ def command(project, *args):
     )
 
 
+def test_connect_refreshes_credential_environment_without_restart(home, project, monkeypatch):
+    (home / "settings.json").write_text(json.dumps({"provider": "deepseek", "model": "deepseek-v4-pro"}))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    first = command(project, "connect")
+    assert first.returncode == 0, first.stderr
+    endpoint = json.loads(first.stdout)
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fresh-key")
+    refreshed = command(project, "connect")
+    assert refreshed.returncode == 0, refreshed.stderr
+    second = json.loads(refreshed.stdout)
+    assert second["instance_id"] == endpoint["instance_id"]
+
+    with httpx.Client(
+        base_url=f"http://127.0.0.1:{second['port']}",
+        headers={"Authorization": "Bearer " + second["token"]},
+        trust_env=False,
+    ) as client:
+        check = client.post(
+            "/api/system/environment",
+            json={"variables": {"DEEPSEEK_API_KEY": "fresh-key"}},
+        )
+        assert check.status_code == 200, check.text
+        assert check.json()["updated"] == []
+
+
+def test_environment_sync_restarts_an_idle_legacy_backend(home, monkeypatch):
+    from ava.app.backend import _sync_environment
+    from ava.base import ava_home
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fresh-key")
+    response = httpx.Response(404, request=httpx.Request("POST", "http://127.0.0.1:1/api/system/environment"))
+    monkeypatch.setattr("ava.app.backend.httpx.post", lambda *_args, **_kwargs: response)
+    stopped: list[object] = []
+    monkeypatch.setattr("ava.app.backend.stop", lambda *_args, **_kwargs: stopped.append(ava_home()))
+    assert _sync_environment({"port": 1, "token": "token"}) is False
+    assert stopped == [ava_home()]
+
+
 def test_concurrent_clients_reuse_one_authenticated_backend(home, project):
     with ThreadPoolExecutor(max_workers=3) as workers:
         results = list(workers.map(lambda _: command(project, "connect"), range(3)))

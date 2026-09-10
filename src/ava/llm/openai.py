@@ -374,7 +374,7 @@ class OpenAIProvider(Provider):
 
         response = await self._transport.post_sse(request, on_event, cancel)
         if not 200 <= response.status < 300:
-            raise response_error("OpenAI", response.status, response.body)
+            raise response_error(self.display_name, response.status, response.body)
         if stream_error is not None:
             raise stream_error
         if stop_reason is not None:
@@ -391,8 +391,8 @@ class OpenAIProvider(Provider):
         )
         response = await self._transport.get(request, cancel)
         if not 200 <= response.status < 300:
-            raise response_error("OpenAI", response.status, response.body)
-        return parse_model_ids(response.body, "OpenAI")
+            raise response_error(self.display_name, response.status, response.body)
+        return parse_model_ids(response.body, self.display_name)
 
     async def aclose(self) -> None:
         await self._transport.aclose()

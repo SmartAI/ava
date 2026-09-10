@@ -37,12 +37,15 @@ NativeDialog {
     function load(values) {
         connections = (values.providers || []).map(item => Object.assign({}, item, {display: item.label + " · " + item.status}));
         const preferred = values.saved_provider || selectedProvider || backend.selection.provider;
-        providerPicker.currentIndex = Math.max(0, connections.findIndex(item => item.id === preferred));
-        selectProvider();
+        const index = Math.max(0, connections.findIndex(item => item.id === preferred));
+        providerPicker.currentIndex = index;
+        selectProvider(index);
         ready = true;
     }
-    function selectProvider() {
-        const item = connections[providerPicker.currentIndex] || {};
+    function selectProvider(index) {
+        if (index === undefined)
+            index = providerPicker.currentIndex;
+        const item = connections[index] || {};
         selectedProvider = item.id || "";
         custom = item.provider_type === "custom";
         providerName.text = custom ? selectedProvider : "";
@@ -353,7 +356,7 @@ NativeDialog {
                             model: dialog.connections
                             textRole: "display"
                             valueRole: "id"
-                            onActivated: dialog.selectProvider()
+                            onActivated: (index) => dialog.selectProvider(index)
                             Accessible.name: "Provider connections"
                         }
                         RowLayout {

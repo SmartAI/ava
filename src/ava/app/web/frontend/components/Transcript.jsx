@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react'
 import { activityLabel, groupTranscriptEntries } from '../activity'
 import { STATUS_LABELS } from '../constants'
 import { renderMarkdown } from '../markdown'
+import { disclosureButton, emptyState, toolCard, transcriptUser } from '../ui'
 import { summarize } from '../utils'
 import { AttachmentChip } from './AttachmentChip'
 import { BashIcon, ChevronIcon, FileIcon } from './Icons'
@@ -24,7 +25,7 @@ const durationLabel = elapsed => {
 function ToolResult({ entry }) {
   const summary = summarize(entry.tool, entry.args)
   const duration = durationLabel(entry.elapsed)
-  return <div className="overflow-hidden rounded-xl bg-code">
+  return <div className={toolCard}>
     <div className="flex min-w-0 items-start gap-2 border-b border-line-strong px-3.5 py-2 text-sm text-muted">
       <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet">
         {entry.tool === 'bash' ? <BashIcon /> : <FileIcon />}
@@ -35,7 +36,7 @@ function ToolResult({ entry }) {
     </div>
     <pre className={`m-0 max-h-90 overflow-auto px-3.5 py-2.5 font-mono text-xs leading-5 whitespace-pre ${entry.isError ? 'text-danger' : 'text-muted'}`}>{entry.text || '…'}</pre>
     {entry.images?.length > 0 && <div className="flex flex-wrap gap-2 px-3.5 pb-3">
-      {entry.images.map(image => <a key={image.path} className="rounded-lg border border-line-strong px-3 py-2 text-sm text-muted hover:bg-hover" href={image.url} target="_blank" rel="noreferrer">View image · {image.display_path}</a>)}
+      {entry.images.map(image => <a key={image.path} className="rounded-lg border border-line-strong px-3 py-2 text-sm text-muted transition-[background-color,border-color] duration-150 hover:bg-hover" href={image.url} target="_blank" rel="noreferrer">View image · {image.display_path}</a>)}
     </div>}
   </div>
 }
@@ -49,7 +50,7 @@ function ActivityDisclosure({ entries }) {
 
   const panelId = `activity-details-${entries[0].id}`
   return <div className="min-w-0">
-    <button className="flex h-6 w-full min-w-0 items-center rounded-md border-0 bg-transparent p-0 text-left text-sm text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={panelId}>
+    <button className={`${disclosureButton} h-6 text-sm`} type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={panelId}>
       <span className="relative mr-1.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><ChevronIcon open={open} /></span>
       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap leading-6 font-medium">{activityLabel(entries)}</span>
     </button>
@@ -64,7 +65,7 @@ function ReasoningDisclosure({ entries }) {
   const panelId = `reasoning-details-${entries[0].id}`
   const html = entries.map(entry => renderMarkdown(entry.text)).join('')
   return <div className="min-w-0">
-    <button className="flex h-6 w-full min-w-0 items-center rounded-md border-0 bg-transparent p-0 text-left text-sm text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={panelId}>
+    <button className={`${disclosureButton} h-6 text-sm`} type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={panelId}>
       <span className="relative mr-1.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-quiet"><ChevronIcon open={open} /></span>
       <span className="leading-6 font-medium">Reasoning</span>
     </button>
@@ -77,7 +78,7 @@ function MessageRow({ entry }) {
     const blocks = entry.blocks || []
     const text = blocks.filter(block => block.kind === 'text').map(block => block.text).join('\n')
     const attachments = blocks.filter(block => block.kind === 'image' || block.kind === 'file_text')
-    return <div className="flex justify-end"><div className="max-w-[min(525px,82%)] [overflow-wrap:anywhere] whitespace-pre-wrap rounded-[22px] bg-bubble px-4 py-2.5 text-base leading-6">
+    return <div className="flex justify-end"><div className={transcriptUser}>
       {text}
       {attachments.length > 0 && <span className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-visible">{attachments.map((block, index) => <AttachmentChip key={`${block.display_path}-${index}`} name={block.display_path} kind={block.kind} size={block.byte_size} />)}</span>}
     </div></div>
@@ -107,7 +108,7 @@ function WorkingStatus({ status }) {
 }
 
 function EmptyState({ project }) {
-  return <div className="mx-auto mt-30 text-center text-sm text-faint">
+  return <div className={emptyState}>
     <div className="mb-1.5 text-xl font-medium text-ink">{project ? project.name : 'New chat'}</div>
     <div>{project ? `ava will work in ${project.path}` : 'Pick a project directory to start.'}</div>
   </div>

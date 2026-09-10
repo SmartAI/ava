@@ -26,6 +26,25 @@ def provider_names() -> list[str]:
     return list(dict.fromkeys([*BUILTIN_PROVIDERS, *configured]))
 
 
+def credential_environment() -> dict[str, str]:
+    """The environment variable each configured provider reads for its API key."""
+    configured = (read_configuration() or {}).get("providers", {})
+    if not isinstance(configured, dict):
+        raise AvaError(ErrorKind.parse, "configuration field 'providers' must be an object")
+    names = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+    }
+    for provider, entry in configured.items():
+        if not isinstance(entry, dict):
+            continue
+        api_key_env = entry.get("api_key_env")
+        if isinstance(api_key_env, str) and api_key_env:
+            names[provider] = api_key_env
+    return names
+
+
 async def open_catalog(name: str) -> tuple[dict[str, Any], Provider | None]:
     """Return a verified catalog and its owned provider, or a safe diagnostic."""
     custom = name not in BUILTIN_PROVIDERS
