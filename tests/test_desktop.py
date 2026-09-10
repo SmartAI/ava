@@ -2416,6 +2416,217 @@ def test_desktop_session_title_is_single_line(desktop, model_server):
 
 
 
+def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project):
+    import shutil
+
+    fixtures = Path(__file__).parent / "fixtures"
+    source = project / "中文报告.pdf"
+    shutil.copyfile(fixtures / "preview.pdf", source)
+    shutil.copyfile(fixtures / "preview-locked.pdf", project / "locked.pdf")
+    (project / "broken.pdf").write_bytes(b"%PDF-1.7\nThis is not a valid PDF.")
+    (project / "notes.txt").write_text("Back to a normal text preview")
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_中文报告.pdf")), window.frameSwapped)
+    click(window, "file_中文报告.pdf")
+    assert controller.fileState["kind"] == "pdf", controller.fileState
+    until(lambda: find_item(window, "pdfView") is not None, window.frameSwapped)
+    view = find_item(window, "pdfView")
+    until(lambda: view.property("currentPageRenderingStatus") == 1, window.frameSwapped)
+    until(
+        lambda: all(
+            image.mapToItem(view, QPointF()).x() >= 0
+            and image.mapToItem(view, QPointF(image.width(), 0)).x() <= view.width()
+            for image in pdf_page_images(view)
+        ),
+        window.frameSwapped,
+    )
+    assert find_item(window, "pdfPageCount").property("text") == "/ 3"
+    assert not find_item(window, "attachPreviewButton").isVisible()
+    save_screenshot(window, "pdf")
+    image = next(image for image in pdf_page_images(view) if image.property("currentFrame") == 0)
+    point = image.mapToScene(QPointF(image.width() / 2, image.height() * 0.75)).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.Copy))
+    assert "中文文件预览" in QGuiApplication.clipboard().text()
+    save_screenshot(window, "pdf-selected")
+    QTest.mouseClick(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point)
+    click_text_menu("Copy")
+    assert "A clearer workspace" in QGuiApplication.clipboard().text()
+    window.setProperty("dark", True)
+    QTest.keyClick(window, Qt.Key.Key_F10, Qt.KeyboardModifier.ShiftModifier)
+    until(lambda: text_menu_item("Copy") is not None, window.frameSwapped)
+    assert text_menu_item("Paste") is None
+    save_screenshot(text_menu_item("Copy")[0], "pdf-context-dark")
+    click_text_menu("Copy")
+    assert "中文文件预览" in QGuiApplication.clipboard().text()
+    window.setProperty("dark", False)
+
+    click(window, "pdfNextPage")
+    until(lambda: view.property("currentPage") == 1, window.frameSwapped)
+    page = find_item(window, "pdfPageNumber")
+    click(window, "pdfPageNumber")
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
+    QTest.keyClick(window, Qt.Key.Key_3)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: view.property("currentPage") == 2, window.frameSwapped)
+    assert page.property("text") == "3"
+    assert not find_item(window, "pdfNextPage").property("enabled")
+    scale = view.property("renderScale")
+    click(window, "pdfZoomIn")
+    until(lambda: view.property("renderScale") > scale, window.frameSwapped)
+    assert view.property("currentPage") == 2
+    click(window, "pdfFitButton")
+    click(window, "pdfActualSize")
+    until(lambda: view.property("renderScale") == 1, window.frameSwapped)
+    page.forceActiveFocus()
+    page.setProperty("text", "1")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: view.property("currentPage") == 0, window.frameSwapped)
+    table = find_item(window, "pdfPages")
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    before_scroll = table.property("contentY")
+    position = visible_rect(window, view).center()
+    QTest.wheelEvent(window, position, QPoint(0, -40))
+    until(lambda: table.property("contentY") > before_scroll, window.frameSwapped)
+    until(lambda: not table.property("moving"), window.frameSwapped)
+    image = next(image for image in pdf_page_images(view) if image.property("currentFrame") == 0)
+    before_zoom = -image.mapToItem(view, QPointF()).y() / view.property("renderScale")
+    assert before_zoom > 0
+    click(window, "pdfZoomIn")
+    until(lambda: view.property("renderScale") == 1.25, window.frameSwapped)
+    until(lambda: view.property("currentPageRenderingStatus") == 1, window.frameSwapped)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    image = next(image for image in pdf_page_images(view) if image.property("currentFrame") == 0)
+    after_zoom = -image.mapToItem(view, QPointF()).y() / view.property("renderScale")
+    assert abs(after_zoom - before_zoom) < 3, (before_zoom, after_zoom)
+    page.forceActiveFocus()
+    page.setProperty("text", "3")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: view.property("currentPage") == 2, window.frameSwapped)
+    click(window, "pdfFitButton")
+    click(window, "pdfFitPage")
+    until(lambda: view.property("renderScale") < 1, window.frameSwapped)
+    click(window, "pdfPreviousPage")
+    until(lambda: view.property("currentPage") == 1, window.frameSwapped)
+    click(window, "pdfPreviousPage")
+    until(lambda: view.property("currentPage") == 0, window.frameSwapped)
+    click(window, "pdfLink_0")
+    until(lambda: view.property("currentPage") == 2, window.frameSwapped)
+    until(
+        lambda: view.property("currentPageRenderingStatus") == 1
+        and any(
+            image.property("currentFrame") == 2 and not visible_rect(window, image).isEmpty()
+            for image in pdf_page_images(view)
+        ),
+        window.frameSwapped,
+    )
+    saved_scale = view.property("renderScale")
+    saved_position = find_item(window, "pdfPages").property("contentY")
+
+    click(window, "addInspectorTab")
+    click(window, "newFilesTab")
+    until(lambda: bool(find_item(window, "file_locked.pdf")), window.frameSwapped)
+    click(window, "file_locked.pdf")
+    try:
+        until(
+            lambda: bool(find_item(window, "pdfPassword"))
+            and find_item(window, "pdfPassword").isVisible(),
+            window.frameSwapped,
+        )
+    except AssertionError:
+        save_screenshot(window, "pdf-password-failure")
+        pane_state = find_item(window, "filePane").property("fileState")
+        if isinstance(pane_state, QJSValue):
+            pane_state = pane_state.toVariant()
+        preview = find_item(window, "pdfPreview")
+        pytest.fail(str({"file": pane_state, "error": controller.error, "preview": {
+            key: preview.property(key) for key in ("source", "ready", "passwordNeeded", "opened")
+        } if preview else None}))
+    locked = find_item(window, "pdfPreview")
+    password = find_item(window, "pdfPassword")
+    click(window, "pdfPassword")
+    entry = QInputMethodEvent()
+    entry.setCommitString("wrong-password")
+    QCoreApplication.sendEvent(password, entry)
+    click(window, "pdfUnlock")
+    until(lambda: "Incorrect password" in find_item(window, "pdfNotice").property("text"), window.frameSwapped)
+    assert password.property("text") == ""
+    window.setProperty("dark", True)
+    save_screenshot(window, "pdf-password")
+    click(window, "pdfCancelUnlock")
+    assert find_item(window, "pdfNotice").property("text") == "Preview canceled"
+    click(window, "pdfRetry")
+    until(lambda: password.isVisible(), window.frameSwapped)
+    click(window, "pdfPassword")
+    entry = QInputMethodEvent()
+    entry.setCommitString("ava-test")
+    QCoreApplication.sendEvent(password, entry)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: locked.property("ready"), window.frameSwapped)
+    assert password.property("text") == ""
+    until(lambda: find_item(window, "pdfView") != view, window.frameSwapped)
+    second = find_item(window, "pdfView")
+    assert second.property("currentPage") == 0
+    until(lambda: second.property("currentPageRenderingStatus") == 1, window.frameSwapped)
+    save_screenshot(window, "pdf-unlocked")
+    click(window, "filesTab")
+    assert find_item(window, "pdfView") == view
+    assert view.property("currentPage") == 2
+    assert view.property("renderScale") == saved_scale
+    assert find_item(window, "pdfPages").property("contentY") == saved_position
+    click(window, "closeInspectorTab_2")
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not isValid(second) and not isValid(locked)
+
+    window.setWidth(800)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    until(lambda: view.width() < 300, window.frameSwapped)
+    until(lambda: view.property("currentPageRenderingStatus") == 1, window.frameSwapped)
+    save_screenshot(window, "pdf-narrow")
+    for name in ("pdfPreviousPage", "pdfPageNumber", "pdfNextPage", "pdfZoomIn", "pdfFitButton", "pdfZoomValue"):
+        control = find_item(window, name)
+        panel = find_item(window, "fileContentPanel")
+        bounds = control.mapRectToItem(panel, QRectF(0, 0, control.width(), control.height()))
+        assert QRectF(0, 0, panel.width(), panel.height()).contains(bounds), name
+    window.setWidth(1280)
+
+    click(window, "file_broken.pdf")
+    until(lambda: "Cannot open this PDF" in find_item(window, "pdfNotice").property("text"), window.frameSwapped)
+    save_screenshot(window, "pdf-damaged")
+    click(window, "file_notes.txt")
+    until(lambda: find_item(window, "pdfPreview") is None, window.frameSwapped)
+    assert not isValid(view)
+    click(window, "file_中文报告.pdf")
+    until(lambda: find_item(window, "pdfView") is not None, window.frameSwapped)
+    source.write_bytes(b"damaged on disk")
+    click(window, "refreshFilesButton")
+    until(lambda: "Cannot open this PDF" in find_item(window, "pdfNotice").property("text"), window.frameSwapped)
+    shutil.copyfile(fixtures / "preview.pdf", source)
+    click(window, "pdfRetry")
+    until(lambda: find_item(window, "pdfPreview").property("ready"), window.frameSwapped)
+    assert not controller.error and not model_server
+
+    # Switch away while resized page images are still being requested. This
+    # exercised a Qt image-worker use-after-free in the original renderer.
+    for i in range(20):
+        click(window, "file_中文报告.pdf")
+        until(lambda: find_item(window, "pdfView") is not None, window.frameSwapped)
+        window.setWidth(800 if i % 2 else 1280)
+        click(window, "file_broken.pdf")
+        until(lambda: "Cannot open this PDF" in find_item(window, "pdfNotice").property("text"), window.frameSwapped)
+    click(window, "file_notes.txt")
+    until(lambda: find_item(window, "pdfPreview") is None, window.frameSwapped)
+    assert not controller.pdf_images._sources
 
 
 

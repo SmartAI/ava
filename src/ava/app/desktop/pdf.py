@@ -7,11 +7,13 @@ import os
 import struct
 import subprocess
 import sys
-from threading import Lock, Thread
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Event, Lock, Thread
 from typing import IO
 from uuid import uuid4
 
-from PySide6.QtCore import QSize, QUrl
+from PySide6.QtCore import Property, QObject, QSize, QUrl, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
@@ -141,3 +143,74 @@ class PdfImages(QQuickImageProvider):
             finally:
                 with self._lock:
                     self._render_key = ""
+
+
+class PdfSource(QObject):
+    """Copy on a worker so Qt never parses a file another process can truncate."""
+
+    changed = Signal()
+    _completed = Signal(object, str)
+
+    def __init__(self, source: str, parent: QObject) -> None:
+        super().__init__(parent)
+        self._closed = Event()
+        self._temporary: TemporaryDirectory | None = None
+        self._source = ""
+        self._error = ""
+        self._completed.connect(self._loaded)
+        Thread(target=self._copy, args=(source,), name="ava-pdf-source", daemon=True).start()
+
+    @Property(str, notify=changed)
+    def source(self) -> str:
+        return self._source
+
+    @Property(str, notify=changed)
+    def error(self) -> str:
+        return self._error
+
+    def _copy(self, source: str) -> None:
+        temporary = TemporaryDirectory(prefix="ava-pdf-")
+        error = ""
+        try:
+            path = Path(QUrl(source).toLocalFile())
+            with path.open("rb") as incoming, (Path(temporary.name) / "document.pdf").open("wb") as output:
+                before = os.fstat(incoming.fileno())
+                header = incoming.read(1024)
+                incoming.seek(max(0, before.st_size - 65536))
+                if b"%PDF-" not in header or b"%%EOF" not in incoming.read(65536):
+                    raise ValueError("The file is incomplete or invalid.")
+                incoming.seek(0)
+                while not self._closed.is_set():
+                    data = incoming.read(1024 * 1024)
+                    if not data:
+                        break
+                    output.write(data)
+                after = os.fstat(incoming.fileno())
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise ValueError("The file changed while opening. Refresh the preview.")
+        except (OSError, ValueError) as failure:
+            error = "Cannot open this PDF. " + str(failure)
+        if self._closed.is_set():
+            temporary.cleanup()
+            return
+        try:
+            self._completed.emit(temporary, error)
+        except RuntimeError:
+            temporary.cleanup()
+
+    @Slot(object, str)
+    def _loaded(self, temporary: TemporaryDirectory, error: str) -> None:
+        if self._closed.is_set():
+            temporary.cleanup()
+            return
+        self._temporary = temporary
+        self._error = error
+        if not error:
+            self._source = QUrl.fromLocalFile(str(Path(temporary.name) / "document.pdf")).toString()
+        self.changed.emit()
+
+    def close(self) -> None:
+        self._closed.set()
+        if self._temporary is not None:
+            self._temporary.cleanup()
+            self._temporary = None

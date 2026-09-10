@@ -15,6 +15,7 @@ Pane {
     readonly property int pageCount: pdfDocument ? pdfDocument.pageCount : 0
     readonly property bool ready: opened && !!pdfDocument && pdfDocument.status === PdfDocument.Ready && pageCount > 0
     readonly property bool empty: !!pdfDocument && pdfDocument.status === PdfDocument.Ready && pageCount === 0
+    property var snapshot: null
     property bool opened: false
     property bool passwordNeeded: false
     property bool passwordTried: false
@@ -32,13 +33,14 @@ Pane {
         opened = false;
         if (rasterId) backend.releasePdf(rasterId);
         rasterId = "";
-        documentLoader.active = false;
+        if (snapshot) backend.releasePreview(snapshot);
+        snapshot = null;
         password.clear();
         passwordNeeded = false;
         passwordTried = false;
         canceled = false;
         fitMode = "width";
-        documentLoader.active = true;
+        snapshot = backend.createPdfSource(source.toString());
         opened = true;
     }
     function fit() {
@@ -64,18 +66,18 @@ Pane {
     }
     onSourceChanged: sourceTimer.restart()
     Component.onCompleted: sourceTimer.restart()
-    Component.onDestruction: { if (backend && rasterId) backend.releasePdf(rasterId); }
+    Component.onDestruction: { if (backend) { if (rasterId) backend.releasePdf(rasterId); if (snapshot) backend.releasePreview(snapshot); } }
     onVisibleChanged: {
         if (!visible) password.clear();
         else if (passwordNeeded) password.forceActiveFocus();
     }
     Loader {
         id: documentLoader
-        active: false
+        active: preview.opened && !!preview.snapshot && !!preview.snapshot.source
         sourceComponent: PdfDocument {
             id: pdfSourceDocument
             objectName: "pdfDocument"
-            Component.onCompleted: source = preview.source
+            Component.onCompleted: source = preview.snapshot.source
             onPasswordRequired: {
                 preview.passwordNeeded = true;
                 if (preview.visible)
@@ -238,12 +240,12 @@ Pane {
             ColumnLayout {
                 anchors.centerIn: parent
                 width: Math.max(0, parent.width - 24)
-                visible: !preview.ready && (preview.passwordNeeded || preview.canceled || preview.empty || preview.pdfDocument && preview.pdfDocument.status === PdfDocument.Error)
+                visible: !preview.ready && (preview.snapshot && preview.snapshot.error || preview.passwordNeeded || preview.canceled || preview.empty || preview.pdfDocument && preview.pdfDocument.status === PdfDocument.Error)
                 spacing: 10
                 Label {
                     objectName: "pdfNotice"
                     Layout.fillWidth: true
-                    text: preview.canceled ? "Preview canceled" : preview.passwordNeeded ? (preview.passwordTried ? "Incorrect password. Try again." : "This PDF is password protected.") : preview.empty ? "This PDF contains no pages." : "Cannot open this PDF.\n" + (preview.pdfDocument ? preview.pdfDocument.error : "")
+                    text: preview.snapshot && preview.snapshot.error ? preview.snapshot.error : preview.canceled ? "Preview canceled" : preview.passwordNeeded ? (preview.passwordTried ? "Incorrect password. Try again." : "This PDF is password protected.") : preview.empty ? "This PDF contains no pages." : "Cannot open this PDF.\n" + (preview.pdfDocument ? preview.pdfDocument.error : "")
                     wrapMode: Text.Wrap
                     horizontalAlignment: Text.AlignHCenter
                     font.pixelSize: 12
@@ -268,7 +270,7 @@ Pane {
                         Layout.fillWidth: true
                         objectName: "pdfCancelUnlock"
                         text: "Cancel"
-                        onClicked: { preview.canceled = true; preview.opened = false; password.clear(); documentLoader.active = false; }
+                        onClicked: { preview.canceled = true; preview.opened = false; password.clear(); }
                     }
                     NativeButton {
                         Layout.fillWidth: true

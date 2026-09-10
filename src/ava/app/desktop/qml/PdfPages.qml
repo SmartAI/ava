@@ -1,11 +1,13 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Pdf
 import QtQuick.Shapes
 
 FocusScope {
     id: pages
+    readonly property var hostWindow: Window.window
     required property PdfDocument document
     required property string rasterId
     // The preview supplies its initial fit after layout. Creating sheets sooner
@@ -238,7 +240,7 @@ FocusScope {
     }
     NativeMenu {
         id: selectionMenu
-        onClosed: pages.forceActiveFocus()
+        onClosed: Qt.callLater(function() { pages.hostWindow.requestActivate(); pages.forceActiveFocus(); })
         NativeMenuItem {
             objectName: "pdfCopySelection"
             text: "Copy"

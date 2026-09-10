@@ -1397,6 +1397,14 @@ class Controller(QObject):
         self._preview_objects.append(model)
         return model
 
+    @Slot(str, result=QObject)
+    def createPdfSource(self, source: str) -> QObject:
+        from .pdf import PdfSource
+
+        snapshot = PdfSource(source, self)
+        self._preview_objects.append(snapshot)
+        return snapshot
+
     @Slot(str, str, result=str)
     def registerPdf(self, source: str, password: str) -> str:
         return self.pdf_images.add(source, password)
