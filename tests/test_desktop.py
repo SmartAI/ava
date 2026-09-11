@@ -6,6 +6,7 @@ import gc
 import json
 import os
 import plistlib
+import queue
 import re
 import shlex
 import sqlite3
@@ -109,6 +110,7 @@ def qt_app():
 class Exchange:
     request: dict
     release: threading.Event = field(default_factory=threading.Event)
+    chunks: queue.Queue[str | None] = field(default_factory=queue.Queue)
 
 
 @pytest.fixture
@@ -235,6 +237,13 @@ def model_server(home, monkeypatch):
                 self.wfile.flush()
 
             try:
+                if request.get("model") == "fixture-stream":
+                    while (delta := exchange.chunks.get()) is not None:
+                        chunk({"content": delta})
+                    chunk({}, "stop")
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
                 if request.get("model") == "fixture-browser-guards":
                     results = [message for message in request["messages"] if message["role"] == "tool"]
                     number = len(results)
@@ -372,6 +381,7 @@ def model_server(home, monkeypatch):
         shutting_down.set()
         for exchange in exchanges:
             exchange.release.set()
+            exchange.chunks.put(None)
         server.shutdown()
         server.server_close()
         thread.join(2)
@@ -2034,13 +2044,14 @@ def save_screenshot(window, suffix):
     if QGuiApplication.focusWindow() != window:
         window.raise_()
         window.requestActivate()
+    assert QTest.qWaitForWindowExposed(window, 2000), "screenshot window was not exposed"
     # Deliver pending native resize events before waiting for the next rendered
     # frame. A frame already queued at the old size is not a layout checkpoint.
     QCoreApplication.processEvents()
     window.contentItem().ensurePolished()
     presented = QSignalSpy(window.frameSwapped)
     window.update()
-    assert presented.wait(2000), (
+    assert presented.count() or presented.wait(2000), (
         f"screenshot frame was not presented: exposed={window.isExposed()}, "
         f"active={window.isActive()}, app={QGuiApplication.applicationState()}"
     )
@@ -3767,6 +3778,175 @@ def test_desktop_activity_is_lazy_and_preserves_reading_position(desktop, model_
     model.append("error", "bash", "Invalid command argument", '{"command":123}')
     model.append("error", "read", "Invalid read argument", "null")
     save_screenshot(window, "activity")
+
+
+@pytest.mark.parametrize("interval", [5, 25])
+def test_desktop_switch_to_running_session_keeps_rendered_frames_stable(
+    desktop, model_server, home, project, interval
+):
+    from ava.llm.types import Item, Role, make_reasoning_block, make_text_block
+    from ava.session import (
+        AssistantMessage,
+        Log,
+        StepEnd,
+        StepEndReason,
+        StepStart,
+        TurnEnd,
+        TurnEndReason,
+        TurnStart,
+        UserMessage,
+    )
+
+    # Durable mixed-height history must be replayed through the real backend/SSE,
+    # not injected into the view model after switching sessions.
+    settings_path = home / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["model"] = "fixture-stream"
+    settings["providers"]["desktop-test"]["models"]["fixture-stream"] = {"context_window": 200000}
+    settings_path.write_text(json.dumps(settings))
+    log = Log.create_default(project, "desktop-test", "fixture-stream")
+    try:
+        for index in range(12):
+            body = "## Completed work\n\n" + "Completed 中文段落。\n\n" * (70 if index in (0, 11) else index % 3 + 1)
+            log.append_batch([
+                TurnStart(index + 1), StepStart(index + 1, 1),
+                UserMessage(Item(role=Role.user, blocks=[make_text_block(f"Check step {index}")])),
+                AssistantMessage(str(index), Item(role=Role.assistant, blocks=[
+                    make_text_block(body),
+                    *[make_reasoning_block("{}", "Checked the configuration") for _ in range(3)],
+                ])),
+                StepEnd(index + 1, 1, StepEndReason.completed),
+                TurnEnd(index + 1, TurnEndReason.completed),
+            ])
+    finally:
+        log.close()
+    controller, window = desktop
+    controller.start()
+    until(lambda: controller.connected and bool(controller.transcript.rows), controller.changed)
+    identity = controller.chatId
+    type_message(window, "Check the existing MCP configuration")
+    click(window, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
+    exchange = model_server[0]
+    prefix = (
+        "## 实时 Markdown\n\n**粗体**与 `inline_code`。\n\n"
+        "```python\nprint('你好 👋')\n```\n\n"
+        "> 引用内容。\n\n- 第一项\n- 第二项\n\n"
+        "| 名称 | 内容 |\n| --- | --- |\n| 状态 | **已完成** |\n\n"
+        + "已经完成的段落，不应在后续输出时重新改变行高。\n\n" * 20
+        + "Frozen anchor\n\n"
+    )
+    model = controller.transcript
+
+    # The reported gesture: leave a running session and click it in the sidebar.
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != identity, controller.changed)
+    click(window, "session_" + identity)
+    until(
+        lambda: controller.connected and controller.chatId == identity
+        and bool(model.rows) and model.rows[-1]["body"] == "Check the existing MCP configuration",
+        controller.changed,
+    )
+    assert controller.status == "running"
+    view = find_item(window, "transcriptView")
+    QTest.qWait(150)
+    frames = []
+
+    def record():
+        tail = view.property("currentItem")
+        if tail is None:
+            frames.append((float("inf"), 0, 0))
+            return
+        bottom = tail.mapToScene(QPointF(0, tail.height())).y()
+        viewport_bottom = view.mapToScene(QPointF(0, view.height())).y()
+        frames.append((
+            bottom + find_item(window, "runStatus").height() - viewport_bottom,
+            bottom - tail.height(), getCppPointer(tail)[0],
+        ))
+
+    window.frameSwapped.connect(record)
+    try:
+        # Hold the provider open without tokens: layout must converge, not oscillate.
+        QTest.qWait(800)
+    finally:
+        window.frameSwapped.disconnect(record)
+    assert len(frames) >= 10
+    assert max(abs(frame[0]) for frame in frames) <= 1, frames
+    assert max(frame[1] for frame in frames) - min(frame[1] for frame in frames) <= 1, frames
+    assert len({frame[2] for frame in frames}) == 1
+
+    exchange.chunks.put(prefix)
+    until(lambda: model.rows[-1]["body"] == prefix, controller.changed)
+    QTest.qWait(150)
+    output = find_item(window, "assistantMarkdown")
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert document.begin().blockFormat().headingLevel() == 2
+    assert document.find("粗体").charFormat().fontWeight() >= 600
+    assert any(isinstance(frame, QTextTable) for frame in document.rootFrame().childFrames())
+    anchor_y = document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y()
+    anchors = []
+    resets = QSignalSpy(model.modelReset)
+    insertions = QSignalSpy(model.rowsInserted)
+    tail_id = getCppPointer(view.property("currentItem"))[0]
+    frames.clear()
+
+    def record_stream():
+        record()
+        anchors.append(document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y())
+
+    suffix = "".join(f"新内容 {index}：持续输出时保持视口稳定。\n\n" for index in range(45))
+    chunks = iter(suffix[index:index + 18] for index in range(0, len(suffix), 18))
+    timer = QTimer()
+    timer.setInterval(interval)
+
+    def emit_chunk():
+        chunk = next(chunks, None)
+        if chunk is None:
+            timer.stop()
+        else:
+            exchange.chunks.put(chunk)
+
+    timer.timeout.connect(emit_chunk)
+    window.frameSwapped.connect(record_stream)
+    timer.start()
+    try:
+        until(lambda: model.rows[-1]["body"] == prefix + suffix and not timer.isActive(), window.frameSwapped)
+        QTest.qWait(80)
+    finally:
+        timer.stop()
+        window.frameSwapped.disconnect(record_stream)
+    assert len(frames) >= 10
+    assert max(abs(frame[0]) for frame in frames) <= 1, frames
+    assert max(abs(anchor - anchor_y) for anchor in anchors) <= 1, anchors
+    assert {frame[2] for frame in frames} == {tail_id}, "Streaming must not rebuild the active delegate"
+    assert all(b[1] <= a[1] + 1 for a, b in zip(frames, frames[1:], strict=False)), frames
+    assert not resets.count() and not insertions.count()
+
+    # Reading older output must still opt out of following; jumping resumes it.
+    position = view.mapToScene(QPointF(view.width() / 2, view.height() / 2))
+    QTest.wheelEvent(window, position, QPoint(0, 1200))
+    until(lambda: not view.property("moving"), view.movingChanged)
+    assert not view.property("follow")
+    reading_y = view.property("contentY")
+    extra = "后续输出，不打断阅读。\n\n" * 15 + "**Split bold**\n\n```python\nprint('SSE')\n```\n"
+    # Transport fragments can split Markdown delimiters; they are not paragraphs.
+    for start in range(0, len(extra), 3):
+        exchange.chunks.put(extra[start:start + 3])
+    exchange.chunks.put(None)
+    until(lambda: controller.status == "idle", controller.changed)
+    QTest.qWait(80)
+    assert abs(view.property("contentY") - reading_y) <= 1
+    assert model.rows[-1]["body"] == prefix + suffix + extra
+    click(window, "jumpToLatest")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    assert view.property("follow")
+    output = find_item(window, "assistantMarkdown")
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert document.find("Split bold").charFormat().fontWeight() >= 600
+    assert "```" not in document.toPlainText()
+    save_screenshot(window, f"stable-session-switch-{interval}ms")
 
 
 def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server):

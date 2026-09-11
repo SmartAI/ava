@@ -28,7 +28,9 @@ TextArea {
         decorations = backend.formatMarkdown(textDocument, linkColor, codeBackground, codeFont);
         formatting = false;
     }
-    onTextChanged: scheduleFormat()
+    // Style before ListView measures this update, not a frame later: otherwise
+    // every streamed chunk briefly restores Qt's unstyled paragraph heights.
+    onTextChanged: formatDocument()
     onTextFormatChanged: {
         decorations = [];
         scheduleFormat();
