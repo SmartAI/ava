@@ -5278,6 +5278,116 @@ def test_desktop_skills_real_catalog_virtualization(desktop, model_server, proje
     save_screenshot(window, "skills-thousand")
 
 
+def test_desktop_automation_catalog_discards_stale_responses(desktop, model_server, monkeypatch):
+    controller, _ = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    automation = controller.automations
+    callbacks = []
+    connection = automation._connection("local")
+    assert connection is not None
+
+    def call(method, path, body, done):
+        assert (method, path, body) == ("GET", "/api/settings", None)
+        callbacks.append(done)
+
+    monkeypatch.setattr(connection, "call", call)
+    payload = {"providers": [{"id": "valid", "configured": True, "valid": True, "models": [{"id": "model"}]}]}
+    automation.loadModelOptions("local")
+    automation.loadModelOptions("offline-machine")
+    callbacks.pop()(payload, "")
+    assert not automation.providerChoices and not automation.modelOptionsLoading
+    assert "Connect" in automation.modelOptionsError
+    automation.loadModelOptions("local")
+    automation.loadModelOptions("local")
+    callbacks[1](payload, "")
+    callbacks[0](None, "old failure")
+    assert automation.providerChoices == payload["providers"]
+    assert not automation.modelOptionsError
+    automation.loadModelOptions("local")
+    assert not automation.providerChoices
+    callbacks[-1](None, "Connection failed")
+    assert automation.modelOptionsError == "Connection failed"
+    assert not automation.modelOptionsLoading
+
+
+def test_desktop_automation_model_options_use_connected_provider_catalog(desktop, model_server, home):
+    settings = json.loads((home / "settings.json").read_text())
+    settings["providers"]["desktop-second"] = {
+        **settings["providers"]["desktop-test"], "models": {"second-only": {"context_window": 10000}},
+    }
+    settings["providers"]["unconfigured"] = {
+        **settings["providers"]["desktop-test"], "api_key_env": "AVA_MISSING_TEST_KEY",
+    }
+    (home / "settings.json").write_text(json.dumps(settings))
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "automationsButton")
+    click(window, "newAutomationButton")
+    find_item(window, "automationNameField").setProperty("text", "Model-scoped brief")
+    find_item(window, "automationPromptField").setProperty("text", "Use the selected provider and model.")
+    automation = controller.automations
+    until(lambda: bool(automation.editorState["preview"]) and not automation.modelOptionsLoading, automation.editorChanged)
+
+    def reveal(name):
+        for _ in range(40):
+            scroll = find_item(window, "automationEditorScroll").property("contentItem")
+            item = find_item(window, name)
+            assert item is not None and scroll is not None
+            offset = item.mapToItem(scroll, QPointF(0, 0)).y()
+            maximum = max(0, scroll.property("contentHeight") - scroll.height())
+            scroll.setProperty("contentY", min(max(0, scroll.property("contentY") + offset - 8), maximum))
+            QTest.qWait(30)
+            if item.isVisible() and item.property("enabled") and visible_rect(window, item).height() >= item.height() - 1:
+                return
+        raise AssertionError(f"Could not reveal {name}")
+
+    reveal("automationModelOptionsButton")
+    click(window, "automationModelOptionsButton")
+    automation = controller.automations
+    until(lambda: bool(automation.providerChoices), automation.editorChanged)
+    assert [item["id"] for item in automation.providerChoices] == ["desktop-test", "desktop-second"]
+    assert [item["id"] for item in automation.providerChoices[0]["models"]] == ["fixture", "fixture-reasoning"]
+
+    def choose(name, index):
+        reveal(name)
+        click(window, name)
+        QTest.keyClick(window, Qt.Key.Key_Home)
+        for _ in range(index):
+            QTest.keyClick(window, Qt.Key.Key_Down)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+
+    choose("automationProviderChoice", 1)
+    until(lambda: find_item(window, "automationProviderChoice").property("currentValue") == "desktop-test", window.frameSwapped)
+    until(lambda: find_item(window, "automationModelChoice").property("enabled"), window.frameSwapped)
+    choose("automationModelChoice", 1)
+    choose("automationProviderChoice", 2)
+    models = find_item(window, "automationModelChoice")
+    until(lambda: models.property("count") == 3, window.frameSwapped)
+    choose("automationModelChoice", 2)
+    until(lambda: models.property("currentValue") == "second-only", window.frameSwapped)
+    choose("automationProviderChoice", 1)
+    until(lambda: models.property("currentValue") == "fixture" and models.property("count") == 2, window.frameSwapped)
+    choose("automationModelChoice", 1)
+    until(lambda: models.property("currentValue") == "fixture-reasoning", window.frameSwapped)
+    assert find_item(window, "automationProviderChoice").property("currentValue") == "desktop-test"
+    assert find_item(window, "automationModelChoice").property("currentValue") == "fixture-reasoning"
+    click(window, "saveAutomationButton")
+    until(lambda: len(automation.rows.rows) == 1 or bool(automation.editorState["error"]), automation.changed, automation.editorChanged)
+    assert not automation.editorState["error"]
+    assert automation.rows.rows[0]["provider"] == "desktop-test"
+    assert automation.rows.rows[0]["model"] == "fixture-reasoning"
+    click(window, "editAutomationButton")
+    until(lambda: (item := find_item(window, "automationNameField")) is not None and item.isVisible() and not automation.modelOptionsLoading, automation.editorChanged, window.frameSwapped)
+    assert models.property("currentValue") == "fixture-reasoning"
+    choose("automationProviderChoice", 0)
+    assert not models.property("enabled")
+    click(window, "saveAutomationButton")
+    until(lambda: "model" in automation.detail and automation.detail.get("provider") is None, automation.changed)
+    assert automation.detail["model"] is None
+
+
 def test_desktop_automation_creates_runs_and_opens_results(desktop, model_server):
     controller, window = desktop
     controller.start()

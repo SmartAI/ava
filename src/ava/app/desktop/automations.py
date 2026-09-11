@@ -52,6 +52,10 @@ class AutomationView(QObject):
         self._preview_epoch = 0
         self._manual_ids: dict[str, str] = {}
         self._create_id = ""
+        self._provider_choices: list[dict] = []
+        self._model_options_loading = False
+        self._model_options_error = ""
+        self._model_options_epoch = 0
         owner.machinesChanged.connect(self._navigation_changed)
         owner.navigationChanged.connect(self._navigation_changed)
 
@@ -108,6 +112,18 @@ class AutomationView(QObject):
     @Property(dict, notify=editorChanged)
     def editorState(self) -> dict:
         return {"busy": self._editor_busy, "error": self._editor_error, "preview": self._preview}
+
+    @Property(list, notify=editorChanged)
+    def providerChoices(self) -> list:
+        return self._provider_choices
+
+    @Property(bool, notify=editorChanged)
+    def modelOptionsLoading(self) -> bool:
+        return self._model_options_loading
+
+    @Property(str, notify=editorChanged)
+    def modelOptionsError(self) -> str:
+        return self._model_options_error
 
     def _connection(self, machine_id: str) -> Connection | None:
         machine = self.owner._machines.get(machine_id)
@@ -284,6 +300,40 @@ class AutomationView(QObject):
                 else:
                     self.editRequested.emit({**payload, "machine_id": machine})
             connection.call("GET", f"/api/automations/{identity}", None, loaded)
+
+    @Slot(str)
+    def loadModelOptions(self, machine_id: str) -> None:
+        """Load the execution machine's connected providers and their models."""
+        self._model_options_epoch += 1
+        epoch = self._model_options_epoch
+        self._provider_choices = []
+        connection = self._connection(machine_id)
+        self._model_options_loading = bool(connection)
+        if not connection:
+            self._model_options_error = "Connect to the execution machine to choose a model."
+            self.editorChanged.emit()
+            return
+        self._model_options_error = ""
+        self.editorChanged.emit()
+
+        def loaded(payload: Any, error: str) -> None:
+            if epoch != self._model_options_epoch:
+                return
+            self._model_options_loading = False
+            if self._connection(machine_id) is not connection:
+                error = "The execution machine disconnected. Refresh the provider connections."
+            if error:
+                self._provider_choices = []
+                self._model_options_error = error
+            else:
+                self._provider_choices = [
+                    entry for entry in (payload or {}).get("providers", [])
+                    if entry.get("configured") and entry.get("valid") and entry.get("models")
+                ]
+                self._model_options_error = ""
+            self.editorChanged.emit()
+
+        connection.call("GET", "/api/settings", None, loaded)
 
     @Slot(str, dict)
     def preview(self, machine_id: str, schedule: dict) -> None:

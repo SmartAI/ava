@@ -9,6 +9,14 @@ NativeDialog {
     readonly property var state: tasks.editorState
     property var draft: ({})
     property bool loadingDraft: false
+    property string provider: ""
+    property string modelId: ""
+    readonly property var providerChoices: tasks.providerChoices || []
+    readonly property var providerConnection: providerChoices.find(item => item.id === provider) || ({})
+    readonly property var modelChoices: providerConnection.models || []
+    readonly property var providerOptions: [{id: "", label: "Machine default"}].concat(providerChoices)
+    readonly property var modelOptions: provider ? modelChoices.map(item => ({id: item.id, label: item.id})) : [{id: "", label: "Machine default"}]
+    readonly property bool validSelection: !provider && !modelId || !!providerConnection.id && modelChoices.some(item => item.id === modelId)
     readonly property var projectOptions: tasks.projects.filter(project => project.machine === machine.currentValue)
     readonly property var cadences: ["once", "minutes", "hours", "days", "weeks"]
     parent: Overlay.overlay
@@ -24,8 +32,8 @@ NativeDialog {
     function requestPreview() { if (opened && !loadingDraft) previewDelay.restart(); }
     function save() {
         const body = {name: nameField.text.trim(), prompt: promptField.text.trim(), project_id: project.currentValue, workspace: workspace.currentIndex ? "worktree" : "current", base_ref: baseField.text.trim() || "HEAD", schedule: schedule()};
-        if (providerField.text.trim()) body.provider = providerField.text.trim();
-        if (modelField.text.trim()) body.model = modelField.text.trim();
+        if (provider) body.provider = provider;
+        if (modelId) body.model = modelId;
         if (effort.currentIndex) body.effort = effort.currentText;
         if (draft.id) body.version = draft.version;
         tasks.save(machine.currentValue, draft.id || "", body);
@@ -41,9 +49,11 @@ NativeDialog {
             project.currentIndex = dialog.projectOptions.findIndex(item => item.id === data.project_id);
             workspace.currentIndex = data.workspace === "worktree" ? 1 : 0;
             baseField.text = data.base_ref || "HEAD";
-            providerField.text = data.provider || "";
-            modelField.text = data.model || "";
+            dialog.provider = data.provider || "";
+            dialog.modelId = data.model || "";
+            modelDisclosure.checked = !!data.provider || !!data.model || !!data.effort;
             effort.currentIndex = Math.max(0, effort.model.indexOf(data.effort));
+            dialog.tasks.loadModelOptions(data.machine_id || machine.currentValue || "");
             const parts = data.schedule.start_local.split("T");
             dateField.text = parts[0];
             timeField.text = parts[1].endsWith(":00") ? parts[1].slice(0, 5) : parts[1];
@@ -62,6 +72,7 @@ NativeDialog {
         spacing: 16
         ScrollView {
             id: scroll
+            objectName: "automationEditorScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -121,7 +132,14 @@ NativeDialog {
                         textRole: "name"
                         valueRole: "id"
                         enabled: !dialog.draft.id
-                        onActivated: { project.currentIndex = 0; dialog.requestPreview(); }
+                        onActivated: {
+                            project.currentIndex = 0;
+                            dialog.provider = "";
+                            dialog.modelId = "";
+                            effort.currentIndex = 0;
+                            dialog.tasks.loadModelOptions(machine.currentValue || "");
+                            dialog.requestPreview();
+                        }
                     }
                     NativeCombo {
                         id: project
@@ -210,23 +228,95 @@ NativeDialog {
                     font.pixelSize: 11
                 }
                 NativeButton {
-                    id: modelOptions
+                    id: modelDisclosure
+                    objectName: "automationModelOptionsButton"
                     text: checked ? "⌄ Model options" : "› Model options"
                     quiet: true
                     checkable: true
                 }
                 GridLayout {
-                    visible: modelOptions.checked
+                    visible: modelDisclosure.checked
                     Layout.fillWidth: true
                     columns: 2
                     columnSpacing: 12
                     rowSpacing: 6
                     Label { text: "Provider · optional"; font.pixelSize: 12 }
                     Label { text: "Model · optional"; font.pixelSize: 12 }
-                    NativeField { id: providerField; Layout.fillWidth: true; placeholderText: "Machine default" }
-                    NativeField { id: modelField; Layout.fillWidth: true; placeholderText: "Machine default" }
+                    NativeCombo {
+                        id: providerCombo
+                        objectName: "automationProviderChoice"
+                        Layout.fillWidth: true
+                        model: dialog.providerOptions
+                        textRole: "label"
+                        valueRole: "id"
+                        currentIndex: dialog.providerOptions.findIndex(item => item.id === dialog.provider)
+                        displayText: currentIndex < 0 ? dialog.provider + " (unavailable)" : currentText
+                        enabled: !dialog.tasks.modelOptionsLoading
+                        onActivated: {
+                            dialog.provider = currentValue;
+                            dialog.modelId = dialog.provider ? (dialog.modelChoices.length ? dialog.modelChoices[0].id : "") : "";
+                            effort.currentIndex = 0;
+                        }
+                        Accessible.name: "Provider"
+                    }
+                    NativeCombo {
+                        id: modelCombo
+                        objectName: "automationModelChoice"
+                        Layout.fillWidth: true
+                        model: dialog.modelOptions
+                        textRole: "label"
+                        valueRole: "id"
+                        currentIndex: dialog.modelOptions.findIndex(item => item.id === dialog.modelId)
+                        displayText: currentIndex < 0 ? (dialog.modelId ? dialog.modelId + " (unavailable)" : "Choose a model") : currentText
+                        enabled: !dialog.tasks.modelOptionsLoading && dialog.provider !== ""
+                        onActivated: { dialog.modelId = currentValue; effort.currentIndex = 0; }
+                        Accessible.name: "Model"
+                    }
                     Label { text: "Reasoning effort"; font.pixelSize: 12; Layout.topMargin: 6 }
                     NativeCombo { id: effort; Layout.fillWidth: true; model: ["Machine default", "low", "medium", "high", "xhigh", "max"] }
+                    NativeButton {
+                        text: "Refresh providers"
+                        quiet: true
+                        Layout.columnSpan: 2
+                        enabled: !dialog.tasks.modelOptionsLoading
+                        onClicked: dialog.tasks.loadModelOptions(machine.currentValue || "")
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.columnSpan: 2
+                        visible: dialog.tasks.modelOptionsLoading
+                        text: "Checking provider connections…"
+                        color: palette.placeholderText
+                        font.pixelSize: 11
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.columnSpan: 2
+                        visible: !dialog.tasks.modelOptionsLoading && !dialog.providerChoices.length
+                        text: "No connected providers. Add credentials in Settings, then choose a model."
+                        wrapMode: Text.WordWrap
+                        color: palette.placeholderText
+                        font.pixelSize: 11
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.columnSpan: 2
+                        visible: !dialog.tasks.modelOptionsLoading && !dialog.validSelection
+                        text: "Choose an available provider and model, or use the machine default."
+                        wrapMode: Text.WordWrap
+                        color: Theme.warning
+                        font.pixelSize: 11
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.columnSpan: 2
+                        visible: !!dialog.tasks.modelOptionsError
+                        text: dialog.tasks.modelOptionsError || ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WordWrap
+                        color: Theme.danger
+                        font.pixelSize: 11
+                    }
                 }
             }
         }
@@ -247,7 +337,7 @@ NativeDialog {
                 objectName: "saveAutomationButton"
                 text: dialog.state.busy ? "Saving…" : "Save automation"
                 primary: true
-                enabled: !dialog.state.busy && !!nameField.text.trim() && !!promptField.text.trim() && !!project.currentValue
+                enabled: !dialog.state.busy && dialog.validSelection && !!nameField.text.trim() && !!promptField.text.trim() && !!project.currentValue
                 onClicked: dialog.save()
             }
         }
