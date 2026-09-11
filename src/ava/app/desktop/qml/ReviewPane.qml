@@ -82,7 +82,7 @@ Pane {
             text: pane.gitState.error || pane.gitState.refreshError || ""
             wrapMode: Text.Wrap
             font.pixelSize: 12
-            color: "#b3664e"
+            color: Theme.danger
             textFormat: Text.PlainText
         }
         SplitView {
@@ -110,9 +110,11 @@ Pane {
                     width: files.width
                     height: 40
                     highlighted: pane.gitState.selected === modelData.id
-                    background: Rectangle {
-                        radius: 8
-                        color: change.highlighted ? pane.palette.alternateBase : change.hovered ? pane.palette.light : "transparent"
+                    background: Surface {
+                        radius: Theme.controlRadius
+                        border.width: 0
+                        focused: change.visualFocus
+                        color: change.highlighted ? Theme.selection : change.hovered ? Theme.hover : "transparent"
                     }
                     contentItem: RowLayout {
                         spacing: 8
@@ -120,7 +122,7 @@ Pane {
                             text: change.modelData.status === "?" ? "A" : change.modelData.status
                             font.family: pane.codeFont
                             font.pixelSize: 11
-                            color: change.modelData.status === "D" ? "#c45a5a" : "#498363"
+                            color: change.modelData.status === "D" ? Theme.danger : Theme.success
                         }
                         Label {
                             Layout.fillWidth: true
@@ -227,11 +229,6 @@ Pane {
         modal: true
         padding: 20
         closePolicy: pane.gitState.busy ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle {
-            radius: 16
-            color: pane.palette.base
-            border.color: pane.palette.mid
-        }
         ColumnLayout {
             width: parent.width
             spacing: 12
@@ -252,18 +249,14 @@ Pane {
                 selectByMouse: true
                 padding: 10
                 font.pixelSize: 13
-                background: Rectangle {
-                    color: pane.palette.base
-                    radius: 10
-                    border.color: pane.palette.mid
-                }
+                background: Surface { radius: Theme.controlRadius; focused: commitMessage.activeFocus }
             }
             Label {
                 Layout.fillWidth: true
                 text: pane.gitState.error || ""
                 visible: !!text
                 wrapMode: Text.Wrap
-                color: "#b3664e"
+                color: Theme.danger
                 font.pixelSize: 12
                 textFormat: Text.PlainText
             }

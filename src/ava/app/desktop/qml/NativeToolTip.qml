@@ -12,13 +12,14 @@ ToolTip {
         objectName: "nativeToolTipText"
         text: tip.text
         color: tip.palette.text
-        font.pixelSize: 11
+        font.pixelSize: Theme.caption
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
     }
-    background: Rectangle {
+    background: Surface {
         objectName: "nativeToolTipBackground"
-        radius: 8
+        elevation: 1
+        radius: Theme.controlRadius
         color: tip.palette.base
         border.color: tip.palette.mid
     }

@@ -11,17 +11,12 @@ NativeDialog {
     title: state.name || "Image"
     modal: true
     focus: true
-    padding: 20
+    padding: Theme.spaceXl
     topPadding: 0
     bottomPadding: 8
     anchors.centerIn: parent
     width: Math.min(980, parent.width - 40)
     height: Math.min(760, parent.height - 40)
-    background: Rectangle {
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
-        radius: 18
-    }
     header: Item {
         implicitHeight: 60
         RowLayout {
@@ -33,7 +28,7 @@ NativeDialog {
                 text: dialog.title
                 textFormat: Text.PlainText
                 elide: Text.ElideMiddle
-                font.pixelSize: 16
+                font.pixelSize: Theme.sectionTitle
                 font.weight: Font.DemiBold
             }
             NativeButton {
@@ -63,8 +58,8 @@ NativeDialog {
     contentItem: Item {
         Rectangle {
             anchors.fill: parent
-            radius: 10
-            color: dialog.palette.alternateBase
+            radius: Theme.controlRadius
+            color: Theme.inset
         }
         Image {
             id: image

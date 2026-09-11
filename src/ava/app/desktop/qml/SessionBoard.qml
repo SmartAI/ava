@@ -14,33 +14,18 @@ Pane {
     signal openChat(string identity)
     signal closeRequested
     signal sidebarRequested
-    padding: narrow ? 16 : 24
+    padding: narrow ? Theme.spaceLg : Theme.spaceXl
     background: Rectangle { color: board.palette.window }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 18
-        RowLayout {
+        PageHeader {
             Layout.fillWidth: true
-            NativeButton {
-                visible: !board.sidebarVisible
-                icon.source: "icons/left.svg"
-                quiet: true
-                tip: "Show sidebar"
-                onClicked: board.sidebarRequested()
-            }
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                Label { text: "Session board"; font.pixelSize: 23; font.weight: Font.DemiBold }
-                Label {
-                    Layout.fillWidth: true
-                    text: "Keep track of work across your projects."
-                    color: palette.placeholderText
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 12
-                }
-            }
+            title: "Session board"
+            description: "Keep track of work across your projects."
+            sidebarVisible: board.sidebarVisible
+            onSidebarRequested: board.sidebarRequested()
             NativeButton {
                 objectName: "closeSessionBoardButton"
                 text: "Back to chat"
@@ -125,9 +110,9 @@ Pane {
             spacing: 14
             Repeater {
                 model: [
-                    {name: "In progress", key: "active", entries: board.summaries.activeSessions, color: "#4b9b70", empty: "No work in progress", note: "Running and paused sessions appear here."},
-                    {name: "Needs review", key: "review", entries: board.summaries.needsReview, color: "#ba884b", empty: "You're all caught up", note: "Results you have not seen in a conversation wait here."},
-                    {name: "Reviewed", key: "reviewed", entries: board.summaries.reviewedSessions, color: "#8a8a91", empty: "No reviewed results", note: "Opening a result here marks it reviewed; you can also use Mark reviewed."}
+                    {name: "In progress", key: "active", entries: board.summaries.activeSessions, color: Theme.success, empty: "No work in progress", note: "Running and paused sessions appear here."},
+                    {name: "Needs review", key: "review", entries: board.summaries.needsReview, color: Theme.warning, empty: "You're all caught up", note: "Results you have not seen in a conversation wait here."},
+                    {name: "Reviewed", key: "reviewed", entries: board.summaries.reviewedSessions, color: Theme.secondaryText, empty: "No reviewed results", note: "Opening a result here marks it reviewed; you can also use Mark reviewed."}
                 ]
                 Rectangle {
                     id: column
@@ -136,8 +121,8 @@ Pane {
                     visible: !board.narrow || board.selectedColumn === index
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    radius: 14
-                    color: board.palette.window.hslLightness < 0.5 ? "#242424" : "#f7f7f8"
+                    radius: Theme.cardRadius
+                    color: Theme.inset
                     border.color: board.palette.mid
                     ColumnLayout {
                         anchors.fill: parent
@@ -167,7 +152,7 @@ Pane {
                                 width: sessions.width
                                 implicitHeight: contents.implicitHeight + 24
                                 padding: 12
-                                background: Rectangle { radius: 11; color: board.palette.base; border.color: board.palette.mid }
+                                background: Surface {}
                                 ColumnLayout {
                                     id: contents
                                     width: parent.width
@@ -193,7 +178,7 @@ Pane {
                                     Label {
                                         Layout.fillWidth: true
                                         text: card.entry.online ? card.entry.label : "Offline · last known: " + card.entry.label
-                                        color: card.entry.attention ? "#ba884b" : palette.placeholderText
+                                        color: card.entry.attention ? Theme.warning : palette.placeholderText
                                         font.pixelSize: 11
                                         wrapMode: Text.WordWrap
                                     }
@@ -237,13 +222,12 @@ Pane {
                                     onClicked: board.summaries.more(column.modelData.key)
                                 }
                             }
-                            ColumnLayout {
+                            EmptyState {
                                 anchors.centerIn: parent
                                 width: parent.width - 24
                                 visible: board.summaries.totals[column.index] === 0
-                                spacing: 8
-                                Label { Layout.fillWidth: true; text: column.modelData.empty; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 13 }
-                                Label { Layout.fillWidth: true; text: column.modelData.note; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 12; color: palette.placeholderText }
+                                title: column.modelData.empty
+                                description: column.modelData.note
                             }
                         }
                     }

@@ -18,7 +18,7 @@ Pane {
     property int skillsLimit: 8
     signal closeRequested
     signal sidebarRequested
-    padding: narrow ? 18 : 28
+    padding: narrow ? Theme.spaceLg : Theme.spaceXl
     background: Rectangle { color: pane.palette.window }
     Component.onCompleted: analytics.activate(true)
     Component.onDestruction: { if (analytics) analytics.activate(false); }
@@ -40,7 +40,7 @@ Pane {
         required property string value
         required property string detail
         padding: 16
-        background: Rectangle { color: pane.palette.base; radius: 14; border.color: pane.palette.mid }
+        background: Surface {}
         contentItem: ColumnLayout {
             spacing: 8
             Label { text: card.title; color: palette.placeholderText; font.pixelSize: 12 }
@@ -51,15 +51,12 @@ Pane {
     ColumnLayout {
         anchors.fill: parent
         spacing: 20
-        RowLayout {
+        PageHeader {
             Layout.fillWidth: true
-            NativeButton { visible: !pane.sidebarVisible; icon.source: "icons/left.svg"; quiet: true; tip: "Show sidebar"; onClicked: pane.sidebarRequested() }
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 5
-                Label { text: "Analytics"; font.pixelSize: 25; font.weight: Font.DemiBold }
-                Label { Layout.fillWidth: true; text: "Your work with Ava, over time."; color: palette.placeholderText; font.pixelSize: 12; wrapMode: Text.WordWrap }
-            }
+            title: "Analytics"
+            description: "Your work with Ava, over time."
+            sidebarVisible: pane.sidebarVisible
+            onSidebarRequested: pane.sidebarRequested()
             NativeButton { objectName: "closeAnalytics"; text: "Back to chat"; onClicked: pane.closeRequested() }
         }
         GridLayout {
@@ -123,7 +120,7 @@ Pane {
                 Pane {
                     Layout.fillWidth: true
                     padding: 18
-                    background: Rectangle { radius: 14; color: pane.palette.base; border.color: pane.palette.mid }
+                    background: Surface {}
                     contentItem: ColumnLayout {
                         spacing: 16
                         Label { text: "Daily activity"; font.pixelSize: 15; font.weight: Font.DemiBold }

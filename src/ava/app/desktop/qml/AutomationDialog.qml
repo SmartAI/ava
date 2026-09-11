@@ -16,10 +16,8 @@ NativeDialog {
     width: Math.min(680, parent.width - 40)
     height: Math.min(760, parent.height - 40)
     modal: true
-    padding: 22
     title: draft.id ? "Edit automation" : "New automation"
     closePolicy: state.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
-    background: Rectangle { radius: 16; color: dialog.palette.base; border.color: dialog.palette.mid }
     function schedule() {
         return {start_local: dateField.text.trim() + "T" + timeField.text.trim() + (timeField.text.trim().length === 5 ? ":00" : ""), timezone: zoneField.text.trim(), cadence: cadences[cadence.currentIndex], every: cadence.currentIndex ? Number(everyField.text) : 1, count: cadence.currentIndex ? Number(countField.text) : 1};
     }
@@ -103,7 +101,7 @@ NativeDialog {
                             font.pixelSize: 13
                             padding: 10
                             ContextMenu.menu: TextMenu { editor: promptField }
-                            background: Rectangle { radius: 9; color: dialog.palette.base; border.color: promptField.activeFocus ? dialog.palette.highlight : dialog.palette.mid }
+                            background: Surface { radius: Theme.controlRadius; focused: promptField.activeFocus }
                         }
                     }
                 }
@@ -181,7 +179,7 @@ NativeDialog {
                     Layout.fillWidth: true
                     implicitHeight: previewContents.implicitHeight + 24
                     radius: 11
-                    color: dialog.palette.window.hslLightness < 0.5 ? "#292929" : "#f7f7f8"
+                    color: Theme.inset
                     ColumnLayout {
                         id: previewContents
                         anchors.fill: parent
@@ -238,7 +236,7 @@ NativeDialog {
             text: dialog.state.error || ""
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
-            color: "#bf5148"
+            color: Theme.danger
             font.pixelSize: 12
         }
         RowLayout {

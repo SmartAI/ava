@@ -11,10 +11,8 @@ NativeDialog {
     width: Math.min(660, parent.width - 40)
     height: Math.min(710, parent.height - 40)
     modal: true
-    padding: 22
     title: "New skill"
     closePolicy: skills.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
-    background: Rectangle { radius: 16; color: dialog.palette.base; border.color: dialog.palette.mid }
     onOpened: name.forceActiveFocus()
     Connections {
         target: dialog.skills
@@ -50,7 +48,7 @@ NativeDialog {
                     padding: 12
                     enabled: !dialog.skills.busy
                     ContextMenu.menu: TextMenu { editor: instructions }
-                    background: Rectangle { radius: 10; color: dialog.palette.base; border.color: instructions.activeFocus ? dialog.palette.highlight : dialog.palette.mid }
+                    background: Surface { radius: Theme.controlRadius; focused: instructions.activeFocus }
                 }
                 Label { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 11; color: palette.placeholderText; text: "Creates SKILL.md on the selected machine. Project skills live in .agents/skills; personal skills live in Ava's data folder." }
             }

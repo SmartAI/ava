@@ -3,15 +3,17 @@ import QtQuick.Controls
 
 TextField {
     id: control
-    implicitHeight: 34
-    padding: 9
+    implicitHeight: Theme.controlHeight
+    padding: Theme.spaceSm
+    leftPadding: Theme.spaceMd
+    rightPadding: Theme.spaceMd
     selectByMouse: true
     ContextMenu.menu: TextMenu { editor: control }
-    font.pixelSize: 12
+    font.pixelSize: Theme.body
     color: palette.text
-    background: Rectangle {
-        radius: 9
-        color: control.palette.base
-        border.color: control.activeFocus ? control.palette.highlight : control.palette.mid
+    background: Surface {
+        radius: Theme.controlRadius
+        focused: control.activeFocus
+        color: control.enabled ? Theme.surface : Theme.inset
     }
 }

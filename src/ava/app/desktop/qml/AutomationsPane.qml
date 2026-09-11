@@ -14,7 +14,7 @@ Pane {
     signal openChat(string identity)
     signal closeRequested
     signal sidebarRequested
-    padding: narrow ? 16 : 24
+    padding: narrow ? Theme.spaceLg : Theme.spaceXl
     background: Rectangle { color: page.palette.window }
     Component.onCompleted: tasks.activate(true)
     Component.onDestruction: { if (tasks) tasks.activate(false); }
@@ -32,27 +32,12 @@ Pane {
     ColumnLayout {
         anchors.fill: parent
         spacing: 18
-        RowLayout {
+        PageHeader {
             Layout.fillWidth: true
-            NativeButton {
-                visible: !page.sidebarVisible
-                icon.source: "icons/left.svg"
-                quiet: true
-                tip: "Show sidebar"
-                onClicked: page.sidebarRequested()
-            }
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                Label { text: "Automations"; font.pixelSize: 23; font.weight: Font.DemiBold }
-                Label {
-                    Layout.fillWidth: true
-                    text: "Schedule work. Come back to the results."
-                    color: palette.placeholderText
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 12
-                }
-            }
+            title: "Automations"
+            description: "Schedule work. Come back to the results."
+            sidebarVisible: page.sidebarVisible
+            onSidebarRequested: page.sidebarRequested()
             NativeButton {
                 objectName: "newAutomationButton"
                 text: page.narrow ? "+ New" : "+ New automation"
@@ -117,15 +102,12 @@ Pane {
                     spacing: 6
                     model: page.tasks.rows
                     ScrollBar.vertical: ScrollBar {}
-                    Label {
+                    EmptyState {
                         anchors.centerIn: parent
                         width: parent.width - 24
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.WordWrap
                         visible: !taskList.count
-                        text: page.tasks.loading ? "Loading tasks…" : "No tasks here yet.\nCreate an automation to get started."
-                        color: palette.placeholderText
-                        font.pixelSize: 13
+                        title: page.tasks.loading ? "Loading tasks…" : "No tasks here yet"
+                        description: page.tasks.loading ? "" : "Create an automation to get started."
                     }
                     delegate: ItemDelegate {
                         id: task
@@ -135,10 +117,10 @@ Pane {
                         height: 94
                         padding: 12
                         onClicked: page.tasks.select(entry.id)
-                        background: Rectangle {
-                            radius: 11
-                            color: page.tasks.selected === task.entry.id ? page.palette.alternateBase : task.hovered ? page.palette.light : "transparent"
-                            border.color: task.activeFocus ? page.palette.highlight : "transparent"
+                        background: Surface {
+                            border.width: 0
+                            focused: task.visualFocus
+                            color: page.tasks.selected === task.entry.id ? Theme.selection : task.hovered ? Theme.hover : "transparent"
                         }
                         contentItem: ColumnLayout {
                             spacing: 5
@@ -160,7 +142,7 @@ Pane {
                             }
                             Label {
                                 text: (task.entry.online ? "" : "Offline · ") + page.statusLabel(task.entry.active_run || task.entry.state)
-                                color: task.entry.active_run ? "#4b9b70" : palette.placeholderText
+                                color: task.entry.active_run ? Theme.success : palette.placeholderText
                                 font.pixelSize: 11
                             }
                         }
@@ -247,7 +229,7 @@ Pane {
                             Layout.fillWidth: true
                             implicitHeight: scheduleInfo.implicitHeight + 24
                             radius: 12
-                            color: page.palette.window.hslLightness < 0.5 ? "#292929" : "#f7f7f8"
+                            color: Theme.inset
                             ColumnLayout {
                                 id: scheduleInfo
                                 anchors.fill: parent
@@ -332,7 +314,7 @@ Pane {
                         width: history.width
                         padding: 12
                         implicitHeight: runContents.implicitHeight + 24
-                        background: Rectangle { radius: 11; color: page.palette.base; border.color: page.palette.mid }
+                        background: Surface {}
                         ColumnLayout {
                             id: runContents
                             width: parent.width
@@ -372,7 +354,7 @@ Pane {
                                 text: run.entry.error || ""
                                 textFormat: Text.PlainText
                                 wrapMode: Text.WrapAnywhere
-                                color: "#ba884b"
+                                color: Theme.warning
                                 font.pixelSize: 12
                             }
                         }
@@ -395,7 +377,6 @@ Pane {
         modal: true
         title: "Remove automation?"
         padding: 22
-        background: Rectangle { radius: 16; color: page.palette.base; border.color: page.palette.mid }
         ColumnLayout {
             width: parent.width
             spacing: 18

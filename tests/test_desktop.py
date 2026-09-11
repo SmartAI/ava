@@ -2347,11 +2347,9 @@ def test_desktop_message_composer_alignment(desktop, width, left_open, right_ope
     QTest.qWait(100)
     message = find_item(window, "assistantMarkdown")
     user_message = find_item(window, "messageBody")
-    composer = find_item(window, "composer").parentItem()
-    # The input lives inside a ScrollView; locate its outer rounded card.
-    while composer.parentItem() and composer.property("radius") != 20:
-        composer = composer.parentItem()
-    assert composer.property("radius") == 20
+    # Locate the semantic surface rather than depending on a cosmetic corner radius.
+    composer = find_item(window, "composerCard")
+    assert composer is not None
     message_left = message.mapToScene(QPointF(0, 0)).x()
     composer_left = composer.mapToScene(QPointF(0, 0)).x()
     assert abs(message_left - composer_left) <= 1
@@ -3973,6 +3971,72 @@ def test_desktop_settings_theme_and_keyboard_search(desktop, model_server):
     assert controller.draft == "Keep this draft"
 
 
+@pytest.mark.parametrize("dark,width,height", [(False, 1280, 820), (True, 1280, 820), (False, 800, 600), (True, 800, 600)])
+def test_desktop_design_system_appearance_navigation_and_focus(desktop, dark, width, height):
+    from PySide6.QtQml import QQmlExpression, qmlContext
+
+    controller, window = desktop
+    window.setWidth(width)
+    window.setHeight(height)
+    window.setProperty("dark", dark)
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+
+    def theme(name):
+        expression = QQmlExpression(qmlContext(window), window, "Theme." + name)
+        value, undefined = expression.evaluate()
+        assert not expression.hasError(), expression.error().toString()
+        assert not undefined
+        return value
+
+    def luminance(color):
+        channels = color.getRgbF()[:3]
+        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in channels]
+        return sum(v * weight for v, weight in zip(linear, (0.2126, 0.7152, 0.0722), strict=True))
+
+    # Gate actual semantic color pairs, not screenshots that merely look plausible.
+    for foreground in ("text", "secondaryText", "danger", "warning", "success"):
+        for background in ("workspace", "sidebar", "surface", "inset", "selection"):
+            values = sorted((luminance(theme(foreground)), luminance(theme(background))))
+            assert (values[1] + 0.05) / (values[0] + 0.05) >= 4.5, (dark, foreground, background)
+    values = sorted((luminance(theme("primaryText")), luminance(theme("primary"))))
+    assert (values[1] + 0.05) / (values[0] + 0.05) >= 4.5
+
+    routes = [("board", "sessionBoardButton", "closeSessionBoardButton"),
+              ("automations", "automationsButton", "newAutomationButton"),
+              ("skills", "skillsButton", "newSkillButton"),
+              ("mcp", "mcpButton", "addMcpButton"),
+              ("analytics", "analyticsButton", "closeAnalytics")]
+    for page, navigation, action in routes:
+        click(window, navigation)
+        assert window.property("workspacePage") == page
+        until(lambda: find_item(window, "pageHeader") is not None, window.frameSwapped)
+        header = find_item(window, "pageHeader")
+        button = find_item(window, action)
+        assert button is not None and button.isVisible()
+        assert visible_rect(window, button).width() >= button.width() - 1
+        assert visible_rect(window, button).height() >= button.height() - 1
+        assert header.height() > 0
+        assert find_item(window, navigation).property("selected")
+        assert sum(bool(find_item(window, name).property("selected")) for _, name, _ in routes) == 1
+        save_screenshot(window, f"design-{page}-{'dark' if dark else 'light'}-{width}")
+        assert window.property("dark") == dark, "Screenshot capture must preserve appearance"
+
+    click(window, "settingsButton")
+    click(window, "reduceMotionSwitch")
+    assert window.property("reducedMotion")
+    assert controller.preference("reducedMotion", False)
+    assert theme("motionDuration") == 0
+    click(window, "closeSettingsButton")
+    click(window, "searchChatsButton")
+    field = find_item(window, "chatSearchField")
+    assert field.hasActiveFocus()
+    expression = QQmlExpression(qmlContext(field), field, "background.focused")
+    assert expression.evaluate()[0] is True
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    assert not field.isVisible()
+
+
 def test_desktop_review_stage_unstage_and_commit(desktop, model_server, project):
     def git(*args):
         return subprocess.run(
@@ -4200,7 +4264,8 @@ def test_desktop_terminal_interactive_tabs_resize_and_interrupt(
     command("printf alive > alive.txt", lambda: written("nested/alive.txt"))
     window.setProperty("dark", True)
     QTest.qWait(100)
-    assert terminal_evaluate(pane, "document.body.style.background") == "rgb(32, 32, 32)"
+    color = window.color()
+    assert terminal_evaluate(pane, "document.body.style.background") == f"rgb({color.red()}, {color.green()}, {color.blue()})"
     save_screenshot(window, "terminal-dark-tabs")
     click(window, "closeTerminalTab_0")
     until(lambda: first_session not in controller._terminals, first_session.closed)
@@ -4499,7 +4564,10 @@ def test_desktop_text_context_preserves_selection_and_pastes_images(desktop, mod
     open_text_context(window, composer)
     surface, paste = text_menu_item("Paste")
     assert not paste.property("enabled")
-    assert screen.contains(surface.geometry())
+    # Item popups share the app window; check the visible menu, not its host window.
+    menu = paste.parentItem()
+    top_left = surface.mapToGlobal(menu.mapToScene(QPointF(0, 0)).toPoint())
+    assert screen.contains(QRectF(top_left, menu.size()).toAlignedRect())
     save_screenshot(surface, "text-menu-dark-edge")
     QTest.keyClick(surface, Qt.Key.Key_Escape)
     until(lambda: composer.hasActiveFocus(), window.frameSwapped)
@@ -4529,7 +4597,7 @@ def test_desktop_readonly_text_context_copies_markdown_and_code(desktop, model_s
     assert output.property("selectedText") == selected
     assert text_menu_item("Paste") is None and text_menu_item("Cut") is None
     surface, item = text_menu_item("Copy")
-    assert item.height() == 30
+    assert item.height() == 32
     save_screenshot(surface, "readonly-text-menu")
     click_text_menu("Copy")
     assert QGuiApplication.clipboard().text() == selected.replace("\u2029", "\n").replace("\u2028", "\n")
@@ -4590,7 +4658,7 @@ def test_desktop_browser_text_context_edits_and_copies(desktop, model_server, ho
     until(lambda: browser.property("title") == "Selected:网页文字 selection", browser.titleChanged)
     save_screenshot(window, "browser-context-selected")
     open_text_context(window, browser, point=point)
-    assert text_menu_item("Copy")[1].height() == 30
+    assert text_menu_item("Copy")[1].height() == 32
     click_text_menu("Copy")
     until(lambda: QGuiApplication.clipboard().text() == "网页文字 selection", window.frameSwapped)
     QGuiApplication.clipboard().setText("更新后的文字")

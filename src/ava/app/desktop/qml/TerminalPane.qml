@@ -14,7 +14,8 @@ Pane {
     required property string codeFont
     property var session: null
     property bool loaded: false
-    readonly property bool dark: palette.window.hslLightness < 0.5
+    readonly property bool dark: Theme.dark
+    readonly property var terminalColors: ({background: Theme.workspace.toString(), foreground: Theme.text.toString(), cursor: Theme.text.toString(), selectionBackground: Theme.selection.toString()})
     property var evaluation: null
     signal evaluated
     padding: 0
@@ -27,7 +28,7 @@ Pane {
     }
     function appearance() {
         if (loaded)
-            browser.runJavaScript("window.avaTerminal.setAppearance(" + dark + "," + JSON.stringify(codeFont) + ")");
+            browser.runJavaScript("window.avaTerminal.setAppearance(" + dark + "," + JSON.stringify(codeFont) + "," + JSON.stringify(terminalColors) + "," + Theme.reducedMotion + ")");
     }
     function focusTerminal() {
         browser.forceActiveFocus();
@@ -60,7 +61,8 @@ Pane {
         if (session)
             session.close();
     }
-    onDarkChanged: appearance()
+    onTerminalColorsChanged: appearance()
+    Connections { target: Theme; function onReducedMotionChanged() { pane.appearance(); } }
     onCodeFontChanged: appearance()
     onVisibleChanged: {
         if (visible)

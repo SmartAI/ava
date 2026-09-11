@@ -3,7 +3,7 @@ import QtQuick.Controls
 
 MenuItem {
     id: control
-    implicitHeight: 30
+    implicitHeight: Theme.controlHeight
     leftPadding: 12
     rightPadding: 12
     contentItem: Text {
@@ -15,7 +15,7 @@ MenuItem {
         elide: Text.ElideRight
     }
     background: Rectangle {
-        radius: 6
+        radius: Theme.controlRadius
         color: control.highlighted ? control.palette.highlight : "transparent"
     }
 }

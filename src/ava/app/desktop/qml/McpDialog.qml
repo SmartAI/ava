@@ -12,10 +12,8 @@ NativeDialog {
     width: Math.min(660, parent.width - 40)
     height: Math.min(710, parent.height - 40)
     modal: true
-    padding: 22
     title: draft.id ? "Edit MCP server" : "Add MCP server"
     closePolicy: servers.saving ? Popup.NoAutoClose : Popup.CloseOnEscape
-    background: Rectangle { radius: 16; color: dialog.palette.base; border.color: dialog.palette.mid }
     ListModel { id: credentials }
     Connections {
         target: dialog.servers

@@ -206,6 +206,11 @@ following; the down-arrow button returns to the latest message. Outputs over 64,
 use the virtual source viewer. The interface uses rounded controls and native text rendering; Chinese
 uses PingFang on macOS when available, with platform CJK fallbacks elsewhere.
 
+The desktop [design system](desktop-design-system.md) defines shared light/dark surfaces,
+blue selection and focus states, consistent controls, and subtle elevation for the composer
+and overlays. **Settings → General → Reduce motion** disables control transitions, the
+running-status pulse, and terminal cursor blinking.
+
 The app shares durable history under `$AVA_HOME` and remembers the last selected project and conversation.
 Closing the window disconnects the desktop; agent tasks continue and their results remain in
 the same conversations. Reopening reconnects to the running backend. Desktop terminal tabs

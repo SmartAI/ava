@@ -9,6 +9,8 @@ NativeDialog {
     required property var backend
     required property string codeFont
     required property bool dark
+    required property bool reducedMotion
+    signal reducedMotionRequested(bool value)
     property int page: 0
     property bool ready: false
     property bool custom: false
@@ -29,11 +31,6 @@ NativeDialog {
     padding: 0
     closePolicy: state.saving ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
     title: "Settings"
-    background: Rectangle {
-        radius: 18
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
-    }
     function load(values) {
         connections = (values.providers || []).map(item => Object.assign({}, item, {display: item.label + " · " + item.status}));
         const preferred = values.saved_provider || selectedProvider || backend.selection.provider;
@@ -103,7 +100,7 @@ NativeDialog {
             Label {
                 Layout.fillWidth: true
                 text: dialog.title
-                font.pixelSize: 18
+                font.pixelSize: Theme.sectionTitle
                 font.weight: Font.DemiBold
             }
             NativeButton {
@@ -131,7 +128,7 @@ NativeDialog {
                     {label: "Providers", name: "settingsProvidersTab", icon: "model"},
                     {label: "Shortcuts", name: "settingsShortcutsTab", icon: "command"}
                 ]
-                delegate: NativeButton {
+                delegate: NavigationItem {
                     id: navigation
                     required property int index
                     required property var modelData
@@ -139,22 +136,8 @@ NativeDialog {
                     Layout.fillWidth: true
                     implicitHeight: 36
                     text: modelData.label
-                    quiet: dialog.page !== index
-                    contentItem: RowLayout {
-                        spacing: 9
-                        Image {
-                            source: "icons/" + navigation.modelData.icon + ".svg"
-                            sourceSize.width: 16
-                            sourceSize.height: 16
-                            opacity: dialog.dark ? 0.9 : 0.65
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: navigation.text
-                            font.pixelSize: 12
-                            font.weight: dialog.page === navigation.index ? Font.DemiBold : Font.Normal
-                        }
-                    }
+                    selected: dialog.page === index
+                    icon.source: "icons/" + navigation.modelData.icon + ".svg"
                     onClicked: dialog.page = index
                 }
             }
@@ -182,7 +165,7 @@ NativeDialog {
                     id: general
                     width: parent.width - 12
                     spacing: 22
-                    Label { text: "Appearance"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                    Label { text: "Appearance"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                     RowLayout {
                         Layout.fillWidth: true
                         Label { Layout.fillWidth: true; text: "Theme"; font.pixelSize: 13 }
@@ -197,6 +180,16 @@ NativeDialog {
                             text: "Dark"
                             primary: dialog.dark
                             onClicked: dialog.darkRequested(true)
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { Layout.fillWidth: true; text: "Reduce motion"; font.pixelSize: 13 }
+                        Switch {
+                            objectName: "reduceMotionSwitch"
+                            checked: dialog.reducedMotion
+                            Accessible.name: "Reduce motion"
+                            onToggled: dialog.reducedMotionRequested(checked)
                         }
                     }
                     RowLayout {
@@ -243,7 +236,7 @@ NativeDialog {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 8
-                        Label { text: "Background work"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                        Label { text: "Background work"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                         Label {
                             objectName: "backgroundWorkNotice"
                             Layout.fillWidth: true
@@ -299,7 +292,7 @@ NativeDialog {
                             text: dialog.startup.error
                             wrapMode: Text.Wrap
                             font.pixelSize: 11
-                            color: dialog.dark ? "#f3a2a2" : "#b42318"
+                            color: Theme.danger
                         }
                         NativeButton {
                             text: "Refresh status"
@@ -323,7 +316,7 @@ NativeDialog {
                     id: providers
                     width: parent.width - 12
                     spacing: 16
-                    Label { text: "Provider connections"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                    Label { text: "Provider connections"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                     Label {
                         Layout.fillWidth: true
                         text: "Manage credentials here. Choose a model and reasoning effort from the model name in each conversation."
@@ -481,7 +474,7 @@ NativeDialog {
                     id: shortcuts
                     width: parent.width - 12
                     spacing: 20
-                    Label { text: "Keyboard shortcuts"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                    Label { text: "Keyboard shortcuts"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                     Repeater {
                         model: [
                             {action: "New chat", key: "N"}, {action: "Search chats", key: "K"},
@@ -525,7 +518,7 @@ NativeDialog {
                 Layout.fillWidth: true
                 text: dialog.page === 1 ? (dialog.state.error || dialog.state.notice || "Credentials are stored separately from settings. Conversations are unchanged.") : "Appearance changes are saved automatically."
                 font.pixelSize: 11
-                color: dialog.page === 1 && dialog.state.error ? (dialog.dark ? "#ecc4b4" : "#8b3e2d") : dialog.palette.placeholderText
+                color: dialog.page === 1 && dialog.state.error ? Theme.danger : dialog.palette.placeholderText
                 wrapMode: Text.Wrap
                 textFormat: Text.PlainText
             }

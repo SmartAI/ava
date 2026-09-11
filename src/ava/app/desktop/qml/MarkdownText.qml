@@ -12,7 +12,7 @@ TextArea {
     bottomPadding: padding
     property bool formatting: false
     readonly property color linkColor: palette.link
-    readonly property color codeBackground: palette.alternateBase
+    readonly property color codeBackground: Theme.inset
     property string codeFont: "monospace"
     property color bubbleColor: "transparent"
     property var decorations: []
@@ -44,7 +44,7 @@ TextArea {
         Rectangle {
             anchors.fill: parent
             color: content.bubbleColor
-            radius: 14
+            radius: Theme.cardRadius
         }
         Repeater {
             model: content.decorations

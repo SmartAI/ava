@@ -64,7 +64,7 @@ Pane {
     }
     padding: 0
     focus: true
-    background: Rectangle { color: preview.palette.base; radius: 10; border.color: preview.palette.mid }
+    background: Surface { radius: Theme.controlRadius }
     FontMetrics { id: metrics; font.family: preview.codeFont; font.pixelSize: 13 }
     Keys.onPressed: function(event) {
         if (event.matches(StandardKey.Copy) && preview.startLine >= 0) {

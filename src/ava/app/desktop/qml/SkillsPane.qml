@@ -14,7 +14,7 @@ Pane {
     signal closeRequested
     signal sidebarRequested
     signal useRequested
-    padding: narrow ? 16 : 24
+    padding: narrow ? Theme.spaceLg : Theme.spaceXl
     background: Rectangle { color: page.palette.window }
     Component.onCompleted: skills.activate(true)
     Component.onDestruction: { if (skills) skills.activate(false); }
@@ -28,12 +28,14 @@ Pane {
     ColumnLayout {
         anchors.fill: parent
         spacing: 16
-        RowLayout {
+        PageHeader {
             Layout.fillWidth: true
-            NativeButton { visible: !page.sidebarVisible; icon.source: "icons/left.svg"; quiet: true; tip: "Show sidebar"; onClicked: page.sidebarRequested() }
-            Label { text: "Skills"; font.pixelSize: 24; font.weight: Font.DemiBold; Layout.fillWidth: true }
+            title: "Skills"
+            description: "Reusable instructions for the work you do."
+            sidebarVisible: page.sidebarVisible
+            onSidebarRequested: page.sidebarRequested()
             NativeButton { objectName: "refreshSkillsButton"; icon.source: "icons/reload.svg"; quiet: true; tip: "Refresh skills"; enabled: page.skills.available && !page.skills.busy; onClicked: page.skills.refresh() }
-            NativeButton { objectName: "newSkillButton"; text: "New skill"; enabled: page.skills.available && !page.skills.busy; onClicked: { page.skills.beginCreate(); editor.open(); } }
+            NativeButton { objectName: "newSkillButton"; text: "New skill"; primary: true; enabled: page.skills.available && !page.skills.busy; onClicked: { page.skills.beginCreate(); editor.open(); } }
             NativeButton { objectName: "closeSkillsButton"; text: "Done"; quiet: true; onClicked: page.closeRequested() }
         }
         NativeCombo {
@@ -90,14 +92,12 @@ Pane {
                     spacing: 6
                     model: page.skills.rows
                     ScrollBar.vertical: ScrollBar {}
-                    Label {
+                    EmptyState {
                         anchors.centerIn: parent
                         width: parent.width - 24
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.Wrap
                         visible: !list.count
-                        text: page.skills.busy ? "Loading skills…" : "No skills here yet.\nCreate one, or choose another project."
-                        color: palette.placeholderText
+                        title: page.skills.busy ? "Loading skills…" : "No skills here yet"
+                        description: page.skills.busy ? "" : "Create one, or choose another project."
                     }
                     delegate: ItemDelegate {
                         id: row
@@ -107,7 +107,7 @@ Pane {
                         height: 106
                         padding: 12
                         onClicked: page.skills.select(entry.id)
-                        background: Rectangle { radius: 11; color: page.skills.selected === row.entry.id ? page.palette.alternateBase : row.hovered ? page.palette.light : "transparent" }
+                        background: Surface { border.width: 0; focused: row.visualFocus; color: page.skills.selected === row.entry.id ? Theme.selection : row.hovered ? Theme.hover : "transparent" }
                         contentItem: ColumnLayout {
                             spacing: 5
                             Label { text: row.entry.name; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -179,7 +179,6 @@ Pane {
         modal: true
         padding: 22
         title: "Remove this skill from Ava?"
-        background: Rectangle { radius: 16; color: removeDialog.palette.base; border.color: removeDialog.palette.mid }
         contentItem: ColumnLayout {
             spacing: 16
             Label { Layout.fillWidth: true; text: "Ava will stop offering this skill. Source files and other applications are unaffected. You can restore it from the Removed filter."; wrapMode: Text.Wrap }

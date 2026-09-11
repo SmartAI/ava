@@ -210,8 +210,8 @@ Pane {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: 10
-            color: preview.palette.light
+            radius: Theme.controlRadius
+            color: Theme.inset
             border.color: preview.palette.mid
             clip: true
             Loader {
@@ -245,6 +245,9 @@ Pane {
                 Label {
                     objectName: "pdfNotice"
                     Layout.fillWidth: true
+                    Layout.maximumHeight: 72
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
                     text: preview.snapshot && preview.snapshot.error ? preview.snapshot.error : preview.canceled ? "Preview canceled" : preview.passwordNeeded ? (preview.passwordTried ? "Incorrect password. Try again." : "This PDF is password protected.") : preview.empty ? "This PDF contains no pages." : "Cannot open this PDF.\n" + (preview.pdfDocument ? preview.pdfDocument.error : "")
                     wrapMode: Text.Wrap
                     horizontalAlignment: Text.AlignHCenter

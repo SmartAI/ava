@@ -40,7 +40,7 @@ Pane {
         handle: Rectangle {
             implicitWidth: 5
             color: SplitHandle.hovered || SplitHandle.pressed ? pane.palette.highlight : "transparent"
-            Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: "#55879189" }
+            Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: Theme.border }
             HoverHandler { cursorShape: Qt.SplitHCursor }
         }
         ColumnLayout {
@@ -96,7 +96,7 @@ Pane {
                     highlighted: pane.fileState.path === filePath
                     onClicked: { if (directory) tree.toggleExpanded(row); else pane.openPath(filePath) }
                     NativeToolTip { text: entry.filePath; visible: entry.hovered; palette: pane.palette }
-                    background: Rectangle { radius: 7; color: entry.highlighted ? entry.palette.alternateBase : entry.hovered ? entry.palette.light : "transparent" }
+                    background: Surface { radius: Theme.controlRadius; border.width: 0; focused: entry.visualFocus; color: entry.highlighted ? Theme.selection : entry.hovered ? Theme.hover : "transparent" }
                     contentItem: Label { text: entry.text; font: entry.font; elide: Text.ElideRight; color: entry.palette.text; verticalAlignment: Text.AlignVCenter }
                 }
             }

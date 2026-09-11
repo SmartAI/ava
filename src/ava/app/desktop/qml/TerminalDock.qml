@@ -16,7 +16,7 @@ Pane {
     }
     signal hideRequested
     padding: 0
-    background: null
+    background: Rectangle { color: Theme.inset }
     ListModel {
         id: tabs
     }
@@ -81,7 +81,8 @@ Pane {
                         icon.source: "icons/terminal.svg"
                         implicitHeight: 30
                         Layout.maximumWidth: (dock.backend.machines.length > 1 || tab.root !== dock.backend.projectPath) ? 260 : 180
-                        quiet: dock.currentTab !== tab.index
+                        quiet: true
+                        selected: dock.currentTab === tab.index
                         tip: dock.backend.workspaceLabel(tab.project, tab.root) + "\n" + tab.root
                         onClicked: {
                             dock.currentTab = tab.index;

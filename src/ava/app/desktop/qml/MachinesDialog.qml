@@ -9,14 +9,8 @@ NativeDialog {
     title: "Machines"
     modal: true
     focus: true
-    padding: 22
     width: Math.min(640, parent.width - 40)
     onOpened: host.forceActiveFocus()
-    background: Rectangle {
-        radius: 18
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
-    }
     ColumnLayout {
         width: parent.width
         spacing: 14
@@ -42,10 +36,9 @@ NativeDialog {
                 width: ListView.view.width
                 implicitHeight: machineBody.implicitHeight + 24
                 padding: 12
-                background: Rectangle {
-                    radius: 10
-                    color: dialog.palette.window
-                    border.color: machine.modelData.active ? dialog.palette.highlight : dialog.palette.mid
+                background: Surface {
+                    color: machine.modelData.active ? Theme.selection : Theme.inset
+                    border.color: machine.modelData.active ? Theme.accent : Theme.border
                 }
                 ColumnLayout {
                     id: machineBody
@@ -57,7 +50,7 @@ NativeDialog {
                             implicitWidth: 6
                             implicitHeight: 6
                             radius: 3
-                            color: machine.modelData.online ? "#4b9b70" : "#be8546"
+                            color: machine.modelData.online ? Theme.success : Theme.warning
                         }
                         Label {
                             Layout.fillWidth: true

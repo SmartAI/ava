@@ -29,15 +29,14 @@ ColumnLayout {
         color: palette.placeholderText
         font.pixelSize: 12
     }
-    Rectangle {
+    Surface {
         id: card
         objectName: "composerCard"
         Layout.fillWidth: true
         implicitHeight: content.implicitHeight + 24
-        color: palette.base
-        border.color: drop.containsDrag || input.activeFocus ? palette.highlight : palette.mid
-        radius: 20
-        Rectangle { anchors.fill: parent; anchors.topMargin: 3; z: -1; radius: 20; color: "#08808080" }
+        elevation: 1
+        focused: drop.containsDrag || input.activeFocus
+        radius: Theme.dialogRadius
         ColumnLayout {
             id: content
             anchors.fill: parent

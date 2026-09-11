@@ -19,7 +19,7 @@ Pane {
     padding: 10
     enabled: !!backend
     background: Rectangle {
-        color: inspector.palette.window
+        color: Theme.inset
     }
     ListModel {
         id: tabs
@@ -170,7 +170,8 @@ Pane {
                         text: tabItem.title
                         Layout.maximumWidth: 155
                         icon.source: tabItem.kind === "files" ? "icons/folder.svg" : tabItem.kind === "changes" ? "icons/changes.svg" : "icons/globe.svg"
-                        quiet: inspector.currentTab !== tabItem.index
+                        quiet: true
+                        selected: inspector.currentTab === tabItem.index
                         onClicked: inspector.selectTab(tabItem.index)
                         tip: tabItem.title + (tabItem.project ? "\n" + inspector.backend.workspaceLabel(tabItem.project, tabItem.root) : "")
                     }

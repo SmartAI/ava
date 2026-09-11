@@ -21,7 +21,6 @@ NativeDialog {
     width: Math.min(480, parent.width - 48)
     modal: true
     focus: true
-    padding: 22
     title: "Conversation model"
     closePolicy: backend.selecting ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
     onOpened: {
@@ -33,11 +32,6 @@ NativeDialog {
     Connections {
         target: dialog.backend
         function onModelSelectionSaved() { dialog.close(); }
-    }
-    background: Rectangle {
-        radius: 20
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
     }
     ColumnLayout {
         width: parent.width
@@ -123,7 +117,7 @@ NativeDialog {
             Layout.fillWidth: true
             text: dialog.backend.error
             visible: !!text
-            color: "#b3664e"
+            color: Theme.danger
             wrapMode: Text.Wrap
             font.pixelSize: 12
         }

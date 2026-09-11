@@ -102,13 +102,13 @@ Item {
         }
         Label { Layout.fillWidth: true; visible: pane.session.importing; text: "Importing browser data…"; font.pixelSize: 11; color: palette.placeholderText }
         ProgressBar { Layout.fillWidth: true; implicitHeight: 3; visible: browser.loading; from: 0; to: 100; value: browser.loadProgress }
-        Label { id: loadError; Layout.fillWidth: true; visible: !!text; wrapMode: Text.Wrap; color: "#b8664e"; font.pixelSize: 12 }
+        Label { id: loadError; Layout.fillWidth: true; visible: !!text; wrapMode: Text.Wrap; color: Theme.danger; font.pixelSize: 12 }
         Pane {
             objectName: "browserMediaNotice"
             Layout.fillWidth: true
             visible: !!pane.mediaProblem && !pane.mediaDismissed
             padding: 10
-            background: Rectangle { radius: 10; color: "#20bd8f48" }
+            background: Surface { color: Theme.warningSurface; border.width: 0 }
             ColumnLayout {
                 width: parent.width
                 Label { Layout.fillWidth: true; text: pane.mediaProblem; wrapMode: Text.Wrap; font.pixelSize: 12 }
@@ -183,7 +183,6 @@ Item {
         title: "Browser data"
         modal: true
         padding: 22
-        background: Rectangle { radius: 20; color: dataDialog.palette.base; border.color: dataDialog.palette.mid }
         ColumnLayout {
             width: parent.width
             spacing: 14
@@ -211,7 +210,6 @@ Item {
         modal: true
         padding: 22
         onOpened: refresh()
-        background: Rectangle { radius: 20; color: libraryDialog.palette.base; border.color: libraryDialog.palette.mid }
         Connections { target: pane.session; function onChanged() { libraryDialog.refresh() } }
         ColumnLayout {
             width: parent.width

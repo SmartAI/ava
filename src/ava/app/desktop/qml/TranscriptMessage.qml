@@ -67,11 +67,9 @@ Pane {
         expansionToggled();
     }
     padding: compact && expanded ? 12 : 0
-    background: Rectangle {
+    background: Surface {
         visible: message.compact && message.expanded
-        radius: 12
-        color: message.palette.base
-        border.color: message.palette.mid
+        color: Theme.inset
     }
     contentItem: ColumnLayout {
         spacing: 9
@@ -103,8 +101,8 @@ Pane {
                         Layout.fillWidth: true
                         text: message.summary
                         elide: Text.ElideMiddle
-                        font.pixelSize: 12
-                        color: message.kind === "error" ? "#b3664e" : message.palette.placeholderText
+                        font.pixelSize: Theme.caption
+                        color: message.kind === "error" ? Theme.danger : message.palette.placeholderText
                     }
                     Label {
                         visible: message.body === "Running…"
@@ -116,7 +114,7 @@ Pane {
                         visible: message.kind === "error"
                         text: "Failed"
                         font.pixelSize: 11
-                        color: "#b3664e"
+                        color: Theme.danger
                     }
                 }
                 onClicked: message.toggleOutput()
@@ -125,8 +123,8 @@ Pane {
                 visible: !message.compact
                 Layout.fillWidth: true
                 text: message.heading
-                color: message.kind === "error" ? "#b3664e" : message.palette.placeholderText
-                font.pixelSize: 11
+                color: message.kind === "error" ? Theme.danger : message.palette.placeholderText
+                font.pixelSize: Theme.captionSmall
                 font.weight: Font.DemiBold
             }
             NativeButton {
@@ -179,8 +177,8 @@ Pane {
                         textFormat: message.markdown ? TextEdit.MarkdownText : TextEdit.PlainText
                         font.family: message.tool && !message.markdown ? message.codeFont : message.font.family
                         font.pixelSize: message.tool ? Math.max(12, message.readingSize - 2) : message.readingSize
-                        color: message.kind === "error" ? "#b3664e" : message.palette.text
-                        bubbleColor: message.user ? message.palette.light : "transparent"
+                        color: message.kind === "error" ? Theme.danger : message.palette.text
+                        bubbleColor: message.user ? Theme.inset : "transparent"
                         padding: message.user ? 12 : 0
                         onLinkActivated: function (link) {
                             message.backend.openLink(link);

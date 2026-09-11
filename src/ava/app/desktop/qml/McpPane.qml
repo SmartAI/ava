@@ -13,7 +13,7 @@ Pane {
     readonly property bool narrow: width < 740
     signal closeRequested
     signal sidebarRequested
-    padding: narrow ? 16 : 24
+    padding: narrow ? Theme.spaceLg : Theme.spaceXl
     background: Rectangle { color: page.palette.window }
     Component.onCompleted: servers.activate(true)
     Component.onDestruction: { if (servers) servers.activate(false); }
@@ -21,12 +21,14 @@ Pane {
     ColumnLayout {
         anchors.fill: parent
         spacing: 16
-        RowLayout {
+        PageHeader {
             Layout.fillWidth: true
-            NativeButton { visible: !page.sidebarVisible; icon.source: "icons/left.svg"; quiet: true; tip: "Show sidebar"; onClicked: page.sidebarRequested() }
-            Label { text: "MCP servers"; font.pixelSize: 24; font.weight: Font.DemiBold; Layout.fillWidth: true }
+            title: "MCP servers"
+            description: "Connect Ava to the tools you use."
+            sidebarVisible: page.sidebarVisible
+            onSidebarRequested: page.sidebarRequested()
             NativeButton { objectName: "refreshMcpButton"; icon.source: "icons/reload.svg"; quiet: true; tip: "Refresh servers"; enabled: page.servers.available && !page.servers.loading; onClicked: page.servers.refresh() }
-            NativeButton { objectName: "addMcpButton"; text: "Add server"; enabled: page.servers.available && !page.servers.saving; onClicked: page.servers.edit(false) }
+            NativeButton { objectName: "addMcpButton"; text: "Add server"; primary: true; enabled: page.servers.available && !page.servers.saving; onClicked: page.servers.edit(false) }
             NativeButton { objectName: "closeMcpButton"; text: "Done"; quiet: true; onClicked: page.closeRequested() }
         }
         NativeCombo {
@@ -62,7 +64,7 @@ Pane {
                     spacing: 6
                     model: page.servers.rows
                     ScrollBar.vertical: ScrollBar {}
-                    Label { anchors.centerIn: parent; width: parent.width - 24; visible: !list.count; text: page.servers.loading ? "Loading servers…" : "Connect Ava to your tools.\nAdd an MCP server to get started."; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter; color: palette.placeholderText }
+                    EmptyState { anchors.centerIn: parent; width: parent.width - 24; visible: !list.count; title: page.servers.loading ? "Loading servers…" : "Connect Ava to your tools"; description: page.servers.loading ? "" : "Add an MCP server to get started." }
                     delegate: ItemDelegate {
                         id: row
                         required property var entry
@@ -71,11 +73,11 @@ Pane {
                         height: 88
                         padding: 12
                         onClicked: page.servers.select(entry.id)
-                        background: Rectangle { radius: 11; color: page.servers.selected === row.entry.id ? page.palette.alternateBase : row.hovered ? page.palette.light : "transparent" }
+                        background: Surface { border.width: 0; focused: row.visualFocus; color: page.servers.selected === row.entry.id ? Theme.selection : row.hovered ? Theme.hover : "transparent" }
                         contentItem: ColumnLayout {
                             spacing: 6
                             Label { text: row.entry.name; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
-                            Label { text: page.status(row.entry.status); color: row.entry.status === "connected" ? "#489976" : palette.placeholderText; font.pixelSize: 12 }
+                            Label { text: page.status(row.entry.status); color: row.entry.status === "connected" ? Theme.success : palette.placeholderText; font.pixelSize: 12 }
                             Label { text: (row.entry.transport === "stdio" ? "Local process" : "HTTP") + " · " + row.entry.tool_count + " tools"; color: palette.placeholderText; font.pixelSize: 11 }
                         }
                     }
@@ -154,7 +156,6 @@ Pane {
         modal: true
         padding: 22
         title: "Remove this MCP server?"
-        background: Rectangle { radius: 16; color: removeDialog.palette.base; border.color: removeDialog.palette.mid }
         contentItem: ColumnLayout {
             spacing: 16
             Label { Layout.fillWidth: true; text: "This removes its configuration and stored credentials from Ava on this machine. Its installed program and files remain. Calls already running may finish."; wrapMode: Text.Wrap }
@@ -170,7 +171,6 @@ Pane {
         height: Math.min(600, parent.height - 40)
         modal: true
         padding: 22
-        background: Rectangle { radius: 16; color: schemaDialog.palette.base; border.color: schemaDialog.palette.mid }
         contentItem: ColumnLayout {
             ScrollView {
                 Layout.fillWidth: true

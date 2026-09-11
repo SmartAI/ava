@@ -12,12 +12,6 @@ NativeDialog {
     width: Math.min(520, parent.width - 40)
     modal: true
     title: "New chat in a worktree"
-    padding: 22
-    background: Rectangle {
-        radius: 16
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
-    }
     closePolicy: state.creating ? Popup.NoAutoClose : Popup.CloseOnEscape
     Connections {
         target: dialog.backend
@@ -98,7 +92,7 @@ NativeDialog {
             text: dialog.state.loading ? "Loading branches…" : dialog.state.error || ""
             wrapMode: Text.WrapAnywhere
             font.pixelSize: 12
-            color: dialog.state.error ? "#bf5148" : palette.placeholderText
+            color: dialog.state.error ? Theme.danger : palette.placeholderText
         }
         RowLayout {
             Layout.fillWidth: true

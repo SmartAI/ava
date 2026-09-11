@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Pane {
     id: sidebar
     required property var backend
+    property string currentPage: "chat"
     signal hideRequested
     signal addProjectRequested
     signal settingsRequested
@@ -20,7 +21,7 @@ Pane {
     property var selectedProject: ({})
     padding: 12
     background: Rectangle {
-        color: sidebar.palette.window.hslLightness < 0.5 ? "#191919" : "#f7f7f8"
+        color: Theme.sidebar
     }
     function openSearch(archived = false) {
         searchDialog.archivedOnly = archived;
@@ -70,29 +71,14 @@ Pane {
         RowLayout {
             Layout.fillWidth: true
             spacing: 0
-        NativeButton {
-            objectName: "newChatButton"
-            Layout.fillWidth: true
-            text: "New chat"
-            icon.source: "icons/new.svg"
-            quiet: true
-            display: AbstractButton.TextBesideIcon
-            enabled: sidebar.backend.online && !!sidebar.backend.projectId && !sidebar.backend.busy
-            onClicked: sidebar.newConversation()
-            contentItem: RowLayout {
-                spacing: 9
-                Image {
-                    source: "icons/new.svg"
-                    sourceSize.width: 16
-                    sourceSize.height: 16
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: "New chat"
-                    font.pixelSize: 13
-                }
+            NavigationItem {
+                objectName: "newChatButton"
+                Layout.fillWidth: true
+                text: "New chat"
+                icon.source: "icons/new.svg"
+                enabled: sidebar.backend.online && !!sidebar.backend.projectId && !sidebar.backend.busy
+                onClicked: sidebar.newConversation()
             }
-        }
             NativeButton {
                 objectName: "newChatOptionsButton"
                 icon.source: "icons/chevron.svg"
@@ -120,95 +106,56 @@ Pane {
                 }
             }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "searchChatsButton"
             text: "Search chats"
+            icon.source: "icons/search.svg"
             Layout.fillWidth: true
-            quiet: true
+            accessory: Qt.platform.os === "osx" ? "⌘ K" : "Ctrl K"
             tip: "Search conversations"
             enabled: sidebar.backend.projects.length > 0
             onClicked: sidebar.openSearch()
-            contentItem: RowLayout {
-                spacing: 9
-                Image {
-                    source: "icons/search.svg"
-                    sourceSize.width: 16
-                    sourceSize.height: 16
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: "Search chats"
-                    font.pixelSize: 13
-                }
-                Label {
-                    text: Qt.platform.os === "osx" ? "⌘ K" : "Ctrl K"
-                    font.pixelSize: 10
-                    color: palette.placeholderText
-                }
-            }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "sessionBoardButton"
             text: "Session board"
             icon.source: "icons/board.svg"
-            quiet: true
+            selected: sidebar.currentPage === "board"
+            accessory: sidebar.backend.board.totals[1] > 0 ? sidebar.backend.board.totals[1] : ""
             Layout.fillWidth: true
             onClicked: sidebar.boardRequested()
-            contentItem: RowLayout {
-                spacing: 9
-                Image { source: "icons/board.svg"; sourceSize.width: 16; sourceSize.height: 16 }
-                Label { Layout.fillWidth: true; text: "Session board"; font.pixelSize: 13 }
-                Label { visible: sidebar.backend.board.totals[1] > 0; text: sidebar.backend.board.totals[1]; color: palette.placeholderText; font.pixelSize: 11 }
-            }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "analyticsButton"
             Layout.fillWidth: true
             text: "Analytics"
             icon.source: "icons/analytics.svg"
-            quiet: true
+            selected: sidebar.currentPage === "analytics"
             onClicked: sidebar.analyticsRequested()
-            contentItem: RowLayout {
-                spacing: 9
-                Image { source: "icons/analytics.svg"; sourceSize.width: 16; sourceSize.height: 16 }
-                Label { Layout.fillWidth: true; text: "Analytics"; font.pixelSize: 13 }
-            }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "automationsButton"
             text: "Automations"
-            quiet: true
+            icon.source: "icons/clock.svg"
+            selected: sidebar.currentPage === "automations"
             Layout.fillWidth: true
             onClicked: sidebar.automationsRequested()
-            contentItem: RowLayout {
-                spacing: 9
-                Image { source: "icons/clock.svg"; sourceSize.width: 16; sourceSize.height: 16 }
-                Label { Layout.fillWidth: true; text: "Automations"; font.pixelSize: 13 }
-            }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "skillsButton"
             text: "Skills"
-            quiet: true
+            icon.source: "icons/skills.svg"
+            selected: sidebar.currentPage === "skills"
             Layout.fillWidth: true
             onClicked: sidebar.skillsRequested()
-            contentItem: RowLayout {
-                spacing: 9
-                Label { text: "✦"; font.pixelSize: 17; Layout.preferredWidth: 16 }
-                Label { Layout.fillWidth: true; text: "Skills"; font.pixelSize: 13 }
-            }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "mcpButton"
             text: "MCP servers"
-            quiet: true
+            icon.source: "icons/plug.svg"
+            selected: sidebar.currentPage === "mcp"
             Layout.fillWidth: true
             onClicked: sidebar.mcpRequested()
-            contentItem: RowLayout {
-                spacing: 9
-                Image { source: "icons/plug.svg"; sourceSize.width: 16; sourceSize.height: 16 }
-                Label { Layout.fillWidth: true; text: "MCP servers"; font.pixelSize: 13 }
-            }
         }
         ListView {
             id: sessions
@@ -267,7 +214,7 @@ Pane {
                     visible: !row.section
                     anchors.fill: parent
                     enabled: row.machine || row.project || !!row.modelData.online
-                    highlighted: !row.project && !row.machine && row.modelData.id === sidebar.backend.chatId
+                    highlighted: sidebar.currentPage === "chat" && !row.project && !row.machine && row.modelData.id === sidebar.backend.chatId
                     leftPadding: row.machine || row.pinned ? 8 : (row.project ? 8 : 26) + (sidebar.backend.machines.length > 1 ? 12 : 0)
                     rightPadding: row.project ? 56 : 30
                     Accessible.name: row.modelData.title || "New chat"
@@ -321,12 +268,14 @@ Pane {
                             implicitWidth: 5
                             implicitHeight: 5
                             radius: 3
-                            color: "#4b9b70"
+                            color: Theme.success
                         }
                     }
-                    background: Rectangle {
-                        radius: 8
-                        color: rowButton.highlighted ? sidebar.palette.alternateBase : rowButton.hovered ? sidebar.palette.light : "transparent"
+                    background: Surface {
+                        radius: Theme.controlRadius
+                        border.width: 0
+                        focused: rowButton.visualFocus
+                        color: rowButton.highlighted ? Theme.selection : rowButton.hovered ? Theme.hover : "transparent"
                     }
                     TapHandler {
                         acceptedButtons: Qt.RightButton
@@ -389,39 +338,20 @@ Pane {
                 font.pixelSize: 12
             }
         }
-        NativeButton {
+        NavigationItem {
             objectName: "machinesButton"
             text: "Machines"
             Layout.fillWidth: true
-            quiet: true
             icon.source: "icons/machine.svg"
             onClicked: sidebar.machinesRequested()
         }
-        NativeButton {
+        NavigationItem {
             objectName: "settingsButton"
             text: "Settings"
+            icon.source: "icons/settings.svg"
+            accessory: sidebar.backend.online ? "" : "Offline"
             Layout.fillWidth: true
-            quiet: true
             onClicked: sidebar.settingsRequested()
-            contentItem: RowLayout {
-                spacing: 9
-                Image {
-                    source: "icons/settings.svg"
-                    sourceSize.width: 16
-                    sourceSize.height: 16
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: "Settings"
-                    font.pixelSize: 13
-                }
-                Rectangle {
-                    implicitWidth: 5
-                    implicitHeight: 5
-                    radius: 3
-                    color: sidebar.backend.online ? "#4b9b70" : "#be8546"
-                }
-            }
             tip: sidebar.backend.connectionLabel
         }
         NativeButton {
@@ -468,11 +398,7 @@ Pane {
         y: 76
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle {
-            radius: 12
-            color: removedNotice.palette.base
-            border.color: removedNotice.palette.mid
-        }
+        background: Surface { elevation: 2 }
         contentItem: RowLayout {
             spacing: 16
             ColumnLayout {
@@ -568,11 +494,6 @@ Pane {
             nameField.forceActiveFocus();
             nameField.selectAll();
         }
-        background: Rectangle {
-            radius: 16
-            color: renameDialog.palette.base
-            border.color: renameDialog.palette.mid
-        }
         ColumnLayout {
             width: parent.width
             spacing: 16
@@ -629,11 +550,6 @@ Pane {
             searchField.forceActiveFocus();
         }
         onArchivedOnlyChanged: refresh()
-        background: Rectangle {
-            radius: 18
-            color: searchDialog.palette.base
-            border.color: searchDialog.palette.mid
-        }
         Connections {
             target: sidebar.backend
             function onNavigationChanged() {

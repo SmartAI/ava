@@ -33,19 +33,25 @@ ApplicationWindow {
         }
     }
     property bool dark: backend.preference("dark", false)
-    palette.window: dark ? "#202020" : "#ffffff"
-    palette.base: dark ? "#262626" : "#ffffff"
-    palette.alternateBase: dark ? "#343434" : "#e9e9eb"
-    palette.button: dark ? "#303030" : "#ffffff"
-    palette.mid: dark ? "#414141" : "#e2e2e5"
-    palette.light: dark ? "#333333" : "#efeff1"
-    palette.text: dark ? "#ececec" : "#202123"
-    palette.buttonText: window.dark ? "#ececec" : "#202123"
-    palette.windowText: window.dark ? "#ececec" : "#202123"
-    palette.placeholderText: dark ? "#a2a2a8" : "#76767d"
-    palette.highlight: dark ? "#eeeeef" : "#252527"
-    palette.highlightedText: dark ? "#202123" : "#ffffff"
-    palette.link: dark ? "#8ab8ff" : "#0969da"
+    property bool reducedMotion: backend.preference("reducedMotion", false)
+    Binding { target: Theme; property: "dark"; value: window.dark }
+    Binding { target: Theme; property: "reducedMotion"; value: window.reducedMotion }
+    palette.window: Theme.workspace
+    palette.base: Theme.surface
+    palette.alternateBase: Theme.selection
+    palette.button: Theme.surface
+    palette.mid: Theme.border
+    palette.light: Theme.hover
+    palette.text: Theme.text
+    palette.buttonText: Theme.text
+    palette.windowText: Theme.text
+    palette.placeholderText: Theme.secondaryText
+    palette.highlight: Theme.accent
+    palette.highlightedText: Theme.accentText
+    palette.link: Theme.accent
+    palette.disabled.text: Theme.disabledText
+    palette.disabled.buttonText: Theme.disabledText
+    onReducedMotionChanged: backend.savePreference("reducedMotion", reducedMotion)
     onLeftOpenChanged: backend.savePreference("leftSidebar", leftOpen)
     onRightOpenChanged: backend.savePreference("rightSidebar", rightOpen)
     onDarkChanged: backend.savePreference("dark", dark)
@@ -230,7 +236,7 @@ ApplicationWindow {
                 width: divider.engaged ? 3 : 1
                 height: parent.height
                 radius: 1
-                color: divider.engaged ? (window.dark ? "#eeeeef" : "#252527") : (window.dark ? "#414141" : "#e2e2e5")
+                color: divider.engaged ? Theme.accent : Theme.border
             }
             HoverHandler {
                 cursorShape: Qt.SplitHCursor
@@ -239,6 +245,7 @@ ApplicationWindow {
         SessionSidebar {
             id: sidebar
             objectName: "leftSidebar"
+            currentPage: window.workspacePage
             visible: window.leftOpen
             SplitView.preferredWidth: window.backend.panelWidth("left", 248)
             SplitView.minimumWidth: 180
@@ -346,7 +353,7 @@ ApplicationWindow {
             handle: Rectangle {
                 objectName: "terminalDivider"
                 implicitHeight: 5
-                color: SplitHandle.hovered || SplitHandle.pressed ? (window.dark ? "#414141" : "#e2e2e5") : (window.dark ? "#333333" : "#efeff1")
+                color: SplitHandle.hovered || SplitHandle.pressed ? Theme.accent : Theme.border
                 HoverHandler {
                     cursorShape: Qt.SplitVCursor
                 }
@@ -407,7 +414,8 @@ ApplicationWindow {
                         NativeButton {
                             objectName: "toggleTerminalButton"
                             icon.source: "icons/terminal.svg"
-                            quiet: !window.terminalOpen
+                            quiet: true
+                            selected: window.terminalOpen
                             tip: "Toggle terminal · " + (Qt.platform.os === "osx" ? "⌘ J" : "Ctrl+J")
                             enabled: !!window.backend.projectPath && window.backend.online
                             onClicked: {
@@ -427,7 +435,8 @@ ApplicationWindow {
                         NativeButton {
                             objectName: "toggleRightSidebar"
                             icon.source: "icons/right.svg"
-                            quiet: !window.rightOpen
+                            quiet: true
+                            selected: window.rightOpen
                             tip: window.rightOpen ? "Hide inspector" : "Show files and browser"
                             onClicked: {
                                 window.rightOpen = !window.rightOpen;
@@ -448,7 +457,7 @@ ApplicationWindow {
                     visible: !!window.backend.error
                     padding: 12
                     background: Rectangle {
-                        color: window.dark ? "#49372f" : "#fbede6"
+                        color: Theme.dangerSurface
                     }
                     RowLayout {
                         width: parent.width
@@ -456,8 +465,8 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             text: window.backend.error
                             wrapMode: Text.Wrap
-                            color: window.dark ? "#ecc4b4" : "#8b3e2d"
-                            font.pixelSize: 12
+                            color: Theme.danger
+                            font.pixelSize: Theme.caption
                         }
                         NativeButton {
                             icon.source: "icons/close.svg"
@@ -561,11 +570,11 @@ ApplicationWindow {
                                     Layout.preferredHeight: 7
                                     radius: 4
                                     color: runStatus.runState === "paused" || runStatus.runState === "pausing"
-                                           ? "#d89000"
-                                           : runStatus.runState === "aborting" ? "#c45a5a"
+                                           ? Theme.warning
+                                           : runStatus.runState === "aborting" ? Theme.danger
                                            : window.palette.highlight
                                     SequentialAnimation on opacity {
-                                        running: runStatus.runState === "running"
+                                        running: runStatus.runState === "running" && !Theme.reducedMotion
                                         loops: Animation.Infinite
                                         NumberAnimation { to: 0.35; duration: 700 }
                                         NumberAnimation { to: 1; duration: 700 }
@@ -584,6 +593,8 @@ ApplicationWindow {
                                     id: runElapsed
                                     objectName: "runElapsed"
                                     Layout.fillWidth: true
+                                    Layout.preferredHeight: runPhase.implicitHeight
+                                    verticalAlignment: Text.AlignVCenter
                                     text: !window.backend.connected ? (!window.backend.online && window.backend.error ? "" : window.backend.connectionLabel)
                                           : runStatus.runState === "paused"
                                             ? "(" + runStatus.formatElapsed(runStatus.elapsedSeconds) + " · waiting to resume)"
@@ -683,7 +694,7 @@ ApplicationWindow {
                                             visible: transcriptRow.groupFailed > 0
                                             text: transcriptRow.groupFailed + " failed"
                                             font.pixelSize: 11
-                                            color: window.dark ? "#ecc4b4" : "#8b3e2d"
+                                            color: Theme.danger
                                         }
                                     }
                                     onClicked: {
@@ -809,6 +820,8 @@ ApplicationWindow {
         backend: window.backend
         codeFont: window.codeFont
         dark: window.dark
+        reducedMotion: window.reducedMotion
+        onReducedMotionRequested: function (value) { window.reducedMotion = value; }
         onDarkRequested: function (value) { window.dark = value; }
         onArchivedRequested: sidebar.openSearch(true)
     }
@@ -832,11 +845,6 @@ ApplicationWindow {
         width: Math.min(540, window.width - 60)
         modal: true
         padding: 22
-        background: Rectangle {
-            radius: 20
-            color: window.palette.base
-            border.color: window.palette.mid
-        }
         ColumnLayout {
             width: parent.width
             spacing: 14
@@ -904,11 +912,6 @@ ApplicationWindow {
         modal: true
         padding: 22
         title: "Provider credentials"
-        background: Rectangle {
-            radius: 20
-            color: window.palette.base
-            border.color: window.palette.mid
-        }
         ColumnLayout {
             width: parent.width
             spacing: 12

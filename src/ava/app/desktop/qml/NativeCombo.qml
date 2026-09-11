@@ -4,14 +4,14 @@ import QtQuick.Controls
 
 ComboBox {
     id: control
-    implicitHeight: 34
+    implicitHeight: Theme.controlHeight
     leftPadding: 12
     rightPadding: 28
-    font.pixelSize: 12
-    background: Rectangle {
-        radius: 10
-        color: control.hovered ? control.palette.light : control.palette.button
-        border.color: control.activeFocus ? control.palette.highlight : control.palette.mid
+    font.pixelSize: Theme.body
+    background: Surface {
+        radius: Theme.controlRadius
+        focused: control.visualFocus
+        color: !control.enabled ? Theme.inset : control.down ? Theme.selection : control.hovered ? Theme.hover : Theme.surface
     }
     contentItem: Text {
         text: control.displayText
@@ -31,7 +31,7 @@ ComboBox {
         width: control.width
         padding: 5
         implicitHeight: Math.min(320, contentItem.implicitHeight + 10)
-        background: Rectangle { radius: 12; color: control.palette.base; border.color: control.palette.mid }
+        background: Surface { elevation: 2 }
         contentItem: ListView {
             clip: true
             implicitHeight: contentHeight
@@ -45,10 +45,10 @@ ComboBox {
         required property int index
         required property var modelData
         width: control.width - 10
-        height: 34
+        height: Theme.controlHeight
         text: control.textRole ? entry.modelData[control.textRole] : entry.modelData
         highlighted: control.highlightedIndex === entry.index
-        contentItem: Text { text: entry.text; color: control.palette.text; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.pixelSize: 12 }
-        background: Rectangle { radius: 7; color: entry.highlighted ? control.palette.alternateBase : "transparent" }
+        contentItem: Text { text: entry.text; color: control.palette.text; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; font.pixelSize: Theme.body }
+        background: Rectangle { radius: Theme.controlRadius; color: entry.highlighted ? Theme.selection : "transparent" }
     }
 }

@@ -17,11 +17,6 @@ NativeDialog {
     width: Math.min(560, parent.width - 40)
     closePolicy: Popup.CloseOnEscape
     onOpened: cancel.forceActiveFocus()
-    background: Rectangle {
-        radius: 18
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
-    }
 
     function synchronize() {
         const next = backend.hostKeyRequest;

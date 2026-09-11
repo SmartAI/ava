@@ -53,9 +53,11 @@ window.avaTerminal = {
   selectAll: () => term.selectAll(),
   paste: requestPaste,
   clear: () => term.clear(),
-  setAppearance: (dark, font) => {
+  setAppearance: (dark, font, colors, reducedMotion = false) => {
     term.options.fontFamily = `${font}, "PingFang SC", "Noto Sans CJK SC", monospace`;
-    term.options.theme = dark ? darkTheme : lightTheme;
+    // Keep ANSI colors, but inherit workspace colors from the QML design system.
+    term.options.theme = { ...(dark ? darkTheme : lightTheme), ...colors };
+    term.options.cursorBlink = !reducedMotion;
     document.body.style.background = term.options.theme.background;
     fitTerminal();
   },

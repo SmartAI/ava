@@ -11,8 +11,8 @@ NativeDialog {
     readonly property real total: Math.max(0, Number(report.estimated_tokens) || 0)
     readonly property real capacity: Math.max(0, Number(report.context_window) || 0)
     readonly property var sections: (report.sections || []).slice().sort((a, b) => b.tokens - a.tokens)
-    readonly property color accent: dark ? "#91b7ff" : "#386ac6"
-    readonly property color warning: dark ? "#ffb19e" : "#b3402c"
+    readonly property color accent: Theme.accent
+    readonly property color warning: Theme.danger
     anchors.centerIn: parent
     width: Math.min(600, parent.width - 48)
     height: Math.min(implicitHeight, parent.height - 64)
@@ -40,11 +40,6 @@ NativeDialog {
             return ">99.9%";
         return amount.toLocaleString(Qt.locale(), "f", 1) + "%";
     }
-    background: Rectangle {
-        radius: 18
-        color: dialog.palette.base
-        border.color: dialog.palette.mid
-    }
     header: Item {
         implicitHeight: 64
         RowLayout {
@@ -54,7 +49,7 @@ NativeDialog {
             Label {
                 Layout.fillWidth: true
                 text: dialog.title
-                font.pixelSize: 18
+                font.pixelSize: Theme.sectionTitle
                 font.weight: Font.DemiBold
             }
             NativeButton {
@@ -82,7 +77,7 @@ NativeDialog {
                 Layout.fillWidth: true
                 implicitHeight: summary.implicitHeight + 32
                 radius: 12
-                color: dialog.dark ? "#2e3138" : "#f3f6fc"
+                color: Theme.inset
                 ColumnLayout {
                     id: summary
                     anchors.fill: parent
@@ -130,7 +125,7 @@ NativeDialog {
                         Layout.fillWidth: true
                         implicitHeight: 8
                         radius: 4
-                        color: dialog.dark ? "#444954" : "#dfe5ef"
+                        color: Theme.border
                         Rectangle {
                             objectName: "contextWindowFill"
                             height: parent.height
