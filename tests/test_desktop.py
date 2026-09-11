@@ -449,6 +449,8 @@ def click(window, name):
     # isActive() also includes a transient dialog; activate the actual target window.
     if QGuiApplication.focusWindow() != window:
         window.requestActivate()
+    # A newly created native window may not be exposed when the backend is ready.
+    assert QTest.qWaitForWindowExposed(window, 2000), "target window was not exposed"
     # Hit-test the rendered layout, after asynchronous models and pane changes settle.
     frame = QSignalSpy(window.frameSwapped)
     window.update()
@@ -2032,6 +2034,10 @@ def save_screenshot(window, suffix):
     if QGuiApplication.focusWindow() != window:
         window.raise_()
         window.requestActivate()
+    # Deliver pending native resize events before waiting for the next rendered
+    # frame. A frame already queued at the old size is not a layout checkpoint.
+    QCoreApplication.processEvents()
+    window.contentItem().ensurePolished()
     presented = QSignalSpy(window.frameSwapped)
     window.update()
     assert presented.wait(2000), (
@@ -4043,6 +4049,9 @@ def test_desktop_terminal_interactive_tabs_resize_and_interrupt(
     monkeypatch.setenv("SHELL", "/bin/bash")
     monkeypatch.setenv("PS1", "ava-test> ")
     monkeypatch.setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
+    # Readline treats UTF-8 bytes as meta keys in the C locale. Establish the
+    # locale this Unicode-paste scenario requires instead of inheriting CI's.
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8")
 
     def written(relative):
         path = project / relative
@@ -4344,6 +4353,9 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     QTest.keyClick(window, Qt.Key.Key_Return)
     until(lambda: (workspace / 'remote-test-proof.txt').exists(), controller.changed)
     assert not (project / 'remote-test-proof.txt').exists()
+    # The tool creates the file before the following model request reaches the
+    # server. Release the assistant response, not the already-finished tool call.
+    until(lambda: len(model_server) == 2, controller.changed)
     model_server[-1].release.set()
     until(lambda: controller.status == 'idle', controller.changed)
     controller.browseFiles('answer.py')
