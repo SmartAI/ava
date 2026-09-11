@@ -23,35 +23,33 @@ ApplicationWindow {
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     property string sessionId: ""
-    property bool starting: false
+    property bool freshRequested: false
     property bool needsFocus: false
     function prepare() {
         needsFocus = true;
         if (!backend.online || backend.busy) return;
-        if (sessionId && !backend.projects.some(project => project.chats.some(chat => chat.id === sessionId)))
-            sessionId = "";
-        if (sessionId) {
-            if (backend.chatId !== sessionId) backend.openChat(sessionId);
-        } else if (!starting) {
-            starting = true;
+        if (freshRequested) {
+            freshRequested = false;
             backend.newChat();
         }
         composer.focusInput();
     }
-    onVisibleChanged: { if (visible) prepare(); }
+    onVisibleChanged: {
+        if (visible) {
+            sessionId = "";
+            freshRequested = true;
+            prepare();
+        }
+    }
     onActiveChanged: { if (active) composer.focusInput(); }
     onClosing: function(event) { event.accepted = false; hide(); }
     Connections {
         target: panel.backend
         function onChanged() {
             if (!panel.visible) return;
-            if (panel.starting && !panel.backend.busy) {
-                panel.starting = false;
-                if (!panel.backend.error) panel.sessionId = panel.backend.chatId;
-            }
-            if (!panel.sessionId && !panel.starting && panel.backend.online && !panel.backend.busy && !panel.backend.error)
+            if (panel.freshRequested && panel.backend.online && !panel.backend.busy && !panel.backend.error)
                 panel.prepare();
-            if (!panel.backend.busy && !panel.backend.error && panel.backend.chatId) {
+            if (!panel.freshRequested && !panel.backend.busy && !panel.backend.error && panel.backend.chatId) {
                 panel.sessionId = panel.backend.chatId;
                 if (panel.needsFocus) {
                     panel.needsFocus = false;
@@ -128,7 +126,7 @@ ApplicationWindow {
                 NativeButton {
                     icon.source: "icons/plus.svg"; quiet: true; tip: "New quick chat"
                     enabled: panel.backend.online && !panel.backend.busy
-                    onClicked: { panel.sessionId = ""; panel.prepare(); }
+                    onClicked: { panel.sessionId = ""; panel.freshRequested = true; panel.prepare(); }
                 }
                 NativeButton {
                     text: "Open in Ava"; quiet: true

@@ -55,10 +55,11 @@ or give Ava a task.
 
 ![Quick Chat showing a weekly project update conversation, a follow-up draft, and the Open in Ava button](assets/tour/desktop-quick-chat.png)
 
-- **Dismiss and resume:** press **Esc**, click the close button, or press
-  **⌘⌥Space** again to hide the panel. Reopen it to continue the conversation;
-  hiding it keeps your unsent draft while the desktop is running.
-- **Start fresh:** use **+** to start a new quick chat.
+- **Start fresh on every opening:** each time you open Quick Chat, it creates a
+  new session with an empty composer. Use **+** to start another without closing it.
+- **Dismiss:** press **Esc**, click the close button, or press **⌘⌥Space** again
+  to hide the panel. Previous conversations remain available in Ava, and unsent
+  drafts stay with their sessions while the desktop is running.
 - **Move into the workbench:** choose **Open in Ava** to continue the same
   conversation alongside files, previews, and the rest of the desktop tools.
 

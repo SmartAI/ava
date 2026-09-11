@@ -38,8 +38,9 @@ An existing Codex CLI login is reused for Codex.
 On macOS, press **Command+Option+Space** from any app to toggle **Quick Chat**
 while Ava is running. It opens centered on the pointer's display, with a translucent,
 rounded surface and the input focused. Escape or the close button dismisses it without
-stopping the conversation or clearing its draft. The next invocation resumes that quick
-chat; **+** starts a new one using the normal default model (including launch overrides).
+stopping the conversation or clearing its draft. Each opening creates a fresh session
+using the normal default model (including launch overrides); **+** starts another without
+closing the panel. Previous conversations and their drafts remain available in Ava.
 Choose a project or enable **Worktree** below the input before sending. **Open in Ava**
 continues the same conversation in the full window; both windows share the selected session.
 The shortcut is listed in Settings → Keyboard shortcuts. Registration conflicts are

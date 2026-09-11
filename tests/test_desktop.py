@@ -5039,7 +5039,7 @@ def test_quick_chat_resize_and_reopen(desktop):
 
 
 @pytest.mark.parametrize("dark", [False, True])
-def test_quick_chat_focus_send_and_resume(desktop, model_server, dark, tmp_path):
+def test_quick_chat_focus_send_and_start_fresh(desktop, model_server, dark, tmp_path):
     from ava.app.desktop.quick_chat import toggle_quick_chat
 
     controller, window = desktop
@@ -5074,7 +5074,15 @@ def test_quick_chat_focus_send_and_resume(desktop, model_server, dark, tmp_path)
     toggle_quick_chat(panel)
     assert not panel.isVisible() and controller.draft == "Hello from quick chat"
     toggle_quick_chat(panel)
-    assert controller.chatId == original
+    until(lambda: controller.connected and not controller.busy, controller.changed)
+    assert controller.chatId != original
+    assert panel.property("sessionId") == controller.chatId
+    assert controller.draft == ""
+    assert find_item(panel, "quickChatTranscript").property("count") == 0
+    # The previous draft remains available from the full app's session list.
+    controller.openChat(original)
+    until(lambda: controller.connected and controller.chatId == original, controller.changed)
+    assert controller.draft == "Hello from quick chat"
     click(panel, "sendButton")
     until(lambda: bool(model_server), controller.changed)
     assert model_server[0].request["model"] == controller.selection["model"]
@@ -5085,8 +5093,16 @@ def test_quick_chat_focus_send_and_resume(desktop, model_server, dark, tmp_path)
     until(lambda: controller.status == "idle", controller.changed)
     assert find_item(panel, "quickChatTranscript").property("count") >= 2
     assert not panel.grabWindow().isNull()
+    completed = controller.chatId
     QTest.keyClick(panel, Qt.Key.Key_Escape)
     assert not panel.isVisible()
+    toggle_quick_chat(panel)
+    until(lambda: controller.connected and not controller.busy, controller.changed)
+    assert controller.chatId != completed
+    assert controller.draft == ""
+    assert find_item(panel, "quickChatTranscript").property("count") == 0
+    assert any(chat["id"] == completed for project in controller.projects for chat in project["chats"])
+    panel.hide()
 
 
 def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
