@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtWebEngine
 
 Pane {
     id: pane
@@ -18,6 +19,7 @@ Pane {
     property var fileState: ({})
     readonly property PdfPreview pdfPreview: pdfLoader.item as PdfPreview
     signal titleUpdated(string title)
+    onFileStateChanged: { if (htmlLoader.item && fileState.kind === "html") htmlLoader.item.render(); }
     function openPath(path) {
         if (!backend || !path || path === rootPath) return
         if (remote) { treeModel.preview(path); return; }
@@ -141,6 +143,39 @@ Pane {
                 text: pane.fileState.kind === "text" || pane.fileState.kind === "markdown" && (pane.fileState.text || "").length >= 64000 ? pane.fileState.text : ""
                 filename: pane.fileState.name || ""
             }
+            Loader {
+                id: htmlLoader
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                active: pane.fileState.kind === "html"
+                visible: active
+                sourceComponent: WebEngineView {
+                    id: htmlView
+                    objectName: "htmlPreview"
+                    WebEngineProfilePrototype { id: htmlProfile }
+                    settings.javascriptEnabled: false
+                    settings.localContentCanAccessRemoteUrls: false
+                    settings.localContentCanAccessFileUrls: true
+                    settings.pluginsEnabled: false
+                    settings.hyperlinkAuditingEnabled: false
+                    settings.pdfViewerEnabled: false
+                    function render() {
+                        const source = pane.fileState.source || "about:blank";
+                        if (url.toString() === source) reload();
+                        else url = source;
+                    }
+                    Component.onCompleted: { profile = htmlProfile.instance(); render(); }
+                    onNavigationRequested: function(request) {
+                        const target = request.url.toString();
+                        if (target !== pane.fileState.source && target !== "about:blank") {
+                            request.reject();
+                            if (request.isMainFrame && request.navigationType === WebEngineNavigationRequest.LinkClickedNavigation)
+                                pane.backend.openLink(request.url.toString());
+                        }
+                    }
+                    onNewWindowRequested: function(request) { /* Previews never open new windows. */ }
+                }
+            }
             Image { Layout.fillWidth: true; Layout.fillHeight: true; visible: pane.fileState.kind === "image"; source: visible ? pane.fileState.source || "" : ""; fillMode: Image.PreserveAspectFit; asynchronous: true; sourceSize.width: 1600; sourceSize.height: 1600 }
             Loader {
                 id: pdfLoader
@@ -156,7 +191,7 @@ Pane {
                 }
             }
             Item { Layout.fillWidth: true; Layout.fillHeight: true; visible: !pane.fileState.kind || pane.fileState.kind === "unsupported" || pane.fileState.kind === "directory" || pane.fileState.kind === "loading"; Label { anchors.centerIn: parent; width: Math.max(0, parent.width - 20); text: pane.fileState.kind === "loading" ? "" : "Choose a file to preview"; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 12; color: palette.placeholderText } }
-            NativeButton { objectName: "attachPreviewButton"; Layout.alignment: Qt.AlignRight; visible: ["text", "markdown", "image"].includes(pane.fileState.kind); enabled: !!pane.backend && !!pane.backend.chatId; icon.source: "icons/plus.svg"; text: "Add to message"; onClicked: pane.backend.addPreviewAttachment(pane.fileState.attachmentPath || pane.fileState.path, pane.fileState.name) }
+            NativeButton { objectName: "attachPreviewButton"; Layout.alignment: Qt.AlignRight; visible: ["text", "markdown", "html", "image"].includes(pane.fileState.kind); enabled: !!pane.backend && !!pane.backend.chatId; icon.source: "icons/plus.svg"; text: "Add to message"; onClicked: pane.backend.addPreviewAttachment(pane.fileState.attachmentPath || pane.fileState.path, pane.fileState.name) }
         }
     }
 }

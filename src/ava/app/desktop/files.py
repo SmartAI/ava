@@ -78,10 +78,13 @@ def inspect_path(root: Path, requested: Path) -> dict[str, Any]:
             try:
                 if b"\x00" in data:
                     raise ValueError("binary file")
-                state.update(
-                    kind="markdown" if path.suffix.lower() in {".md", ".markdown"} else "text",
-                    text=data.decode("utf-8"),
-                )
+                suffix = path.suffix.lower()
+                kind = "markdown" if suffix in {".md", ".markdown"} else "text"
+                if suffix in {".html", ".htm"}:
+                    kind = "html"
+                state.update(kind=kind, text=data.decode("utf-8"))
+                if kind == "html":
+                    state["source"] = QUrl.fromLocalFile(str(path)).toString()
             except (UnicodeError, ValueError):
                 state.update(
                     kind="unsupported",

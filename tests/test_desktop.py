@@ -440,7 +440,7 @@ def find_item(window, name):
             if item.isVisible() and not visible_rect(window, item).isEmpty():
                 return item
             fallback = item
-        if item.objectName() not in ("webBrowser", "terminalWeb"):
+        if item.objectName() not in ("webBrowser", "terminalWeb", "htmlPreview"):
             pending.extend(reversed(item.childItems()))
     return fallback
 
@@ -2362,6 +2362,44 @@ def test_desktop_message_composer_alignment(desktop, width, left_open, right_ope
         )
         <= 1
     )
+
+
+@pytest.mark.parametrize("suffix", [".HTML", ".htm"])
+def test_desktop_html_preview(desktop, model_server, project, suffix):
+    (project / "report.css").write_text("body { background: rgb(12, 34, 56); }")
+    source = '<!doctype html><html><head><title>HTML preview</title><link rel="stylesheet" href="report.css"></head><body><h1>Rendered report</h1><script>document.title = "Script ran"</script></body></html>'
+    path = project / ("report" + suffix)
+    path.write_text(source)
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "toggleRightSidebar")
+    controller.browseFiles(str(path))
+    until(lambda: find_item(window, "filePane") is not None, window.frameSwapped)
+    pane = find_item(window, "filePane")
+    assert pane.property("fileState")["kind"] == "html"
+    until(lambda: find_item(window, "htmlPreview") is not None, window.frameSwapped)
+    preview = find_item(window, "htmlPreview")
+    until(lambda: preview.property("title") == "HTML preview", preview.titleChanged)
+    assert not find_item(window, "codePreview").isVisible()
+
+    def background_rendered():
+        image = window.grabWindow()
+        point = preview.mapToScene(QPointF(preview.width() / 2, preview.height() / 2))
+        scale = image.devicePixelRatio()
+        return image.pixelColor(round(point.x() * scale), round(point.y() * scale)).name() == "#0c2238"
+
+    until(background_rendered, window.frameSwapped)
+    click(window, "copyFileButton")
+    assert QGuiApplication.clipboard().text() == source
+    path.write_text(source.replace("HTML preview", "Updated report"))
+    click(window, "refreshFilesButton")
+    until(lambda: preview.property("title") == "Updated report", preview.titleChanged)
+    save_screenshot(window, "html-preview")
+    (project / "notes.txt").write_text("Plain text")
+    controller.browseFiles(str(project / "notes.txt"))
+    until(lambda: find_item(window, "codePreview").isVisible(), window.frameSwapped)
+    assert find_item(window, "htmlPreview") is None
 
 
 def test_desktop_code_preview(desktop, model_server, project):
@@ -4528,7 +4566,7 @@ def text_menu_item(caption):
                 text = str(item.property("text") or "").replace("&", "").strip().casefold()
                 if text == caption.casefold():
                     return surface, item
-            if item.objectName() not in ("webBrowser", "terminalWeb"):
+            if item.objectName() not in ("webBrowser", "terminalWeb", "htmlPreview"):
                 pending.extend(item.childItems())
     return None
 
