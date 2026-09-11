@@ -63,6 +63,20 @@ ApplicationWindow {
             window.backend.shutdown();
         }
     }
+    QuickChat {
+        id: quickChat
+        appPalette: window.palette
+        backend: window.backend
+        codeFont: window.codeFont
+        onOpenMain: { window.workspacePage = "chat"; window.show(); window.raise(); window.requestActivate(); }
+        onModels: modelDialog.open()
+        onAttach: fileDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+Alt+Space"
+        enabled: Qt.platform.os !== "osx"
+        onActivated: quickChat.visible ? quickChat.hide() : quickChat.show()
+    }
     function showPanel(name) {
         workspacePage = "chat";
         window.backend.reviewCurrentChat();

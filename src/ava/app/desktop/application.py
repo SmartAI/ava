@@ -16,6 +16,7 @@ from PySide6.QtWebEngineQuick import QtWebEngineQuick
 from ava.base import AvaError, ava_home
 
 from .controller import Controller
+from .quick_chat import QuickChatShortcut, toggle_quick_chat
 
 
 def create_engine(controller: Controller) -> QQmlApplicationEngine:
@@ -99,10 +100,17 @@ def run() -> int:
     if not engine.rootObjects():
         lock.unlock()
         return 1
+    shortcut = QuickChatShortcut(app)
+    panel = engine.rootObjects()[0].findChild(QQuickWindow, "quickChatWindow")
+    if panel is not None:
+        shortcut.activated.connect(lambda: toggle_quick_chat(panel))
+        if not shortcut.register():
+            print(f"ava-desktop: {shortcut.error}", file=sys.stderr)
     try:
         controller.start()
         return app.exec()
     finally:
+        shortcut.close()
         for machine in controller._machines.values():
             machine.runtime.ensure_stopped()
         engine.deleteLater()

@@ -35,6 +35,17 @@ Configure provider connections and credentials in **Settings → Providers**, th
 The desktop supports built-in providers and custom OpenAI-compatible or Anthropic-compatible endpoints.
 An existing Codex CLI login is reused for Codex.
 
+On macOS, press **Command+Option+Space** from any app to toggle **Quick Chat**
+while Ava is running. It opens centered on the pointer's display, with a translucent,
+rounded surface and the input focused. Escape or the close button dismisses it without
+stopping the conversation or clearing its draft. The next invocation resumes that quick
+chat; **+** starts a new one using the normal default model (including launch overrides).
+Choose a project or enable **Worktree** below the input before sending. **Open in Ava**
+continues the same conversation in the full window; both windows share the selected session.
+The shortcut is listed in Settings → Keyboard shortcuts. Registration conflicts are
+reported in the launch terminal; no Accessibility or Input Monitoring permission is required.
+On other platforms, Ctrl+Alt+Space is an in-app shortcut only.
+
 Choose a project folder, create or reopen a conversation, and send a message.
 **New chat** opens a session directly, without a setup dialog. Before the first message,
 use the project selector below the message box, or the adjacent **+** to choose another

@@ -4891,6 +4891,57 @@ def test_desktop_new_session_workspace_choice(desktop, model_server, project, ho
     assert not (home / "worktrees").exists()
 
 
+@pytest.mark.parametrize("dark", [False, True])
+def test_quick_chat_focus_send_and_resume(desktop, model_server, dark, tmp_path):
+    from ava.app.desktop.quick_chat import toggle_quick_chat
+
+    controller, window = desktop
+    window.setProperty("dark", dark)
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    panel = window.findChild(QQuickWindow, "quickChatWindow")
+    assert panel is not None and not panel.isVisible()
+    toggle_quick_chat(panel)
+    until(lambda: controller.connected and bool(panel.property("sessionId")), controller.changed)
+    until(lambda: find_item(panel, "composer").hasActiveFocus(), panel.activeFocusItemChanged)
+    rect = panel.screen().availableGeometry()
+    assert abs(panel.x() + panel.width() / 2 - rect.center().x()) <= 1
+    assert abs(panel.y() + panel.height() / 2 - rect.center().y()) <= 1
+    assert 0.9 < find_item(panel, "quickChatSurface").property("color").alphaF() < 1
+    send = find_item(panel, "sendButton")
+    assert visible_rect(panel, send).height() == send.height()
+    assert find_item(panel, "sessionProjectChoice").property("enabled")
+    assert find_item(panel, "sessionWorktreeCheck").property("enabled")
+    chosen = tmp_path / "quick-chat-project"
+    chosen.mkdir()
+    for args in [("init", "-q"), ("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Initial")]:
+        subprocess.run(["git", "-C", str(chosen), *args], check=True)
+    controller.newChatInFolder(chosen.as_uri())
+    until(lambda: controller.connected and controller.workspacePath == str(chosen), controller.changed)
+    assert find_item(panel, "sessionProjectChoice").property("tip") == str(chosen)
+    click(panel, "sessionWorktreeCheck")
+    assert controller.sessionWorktree
+    original = controller.chatId
+    type_message(panel, "Hello from quick chat")
+    toggle_quick_chat(panel)
+    assert not panel.isVisible() and controller.draft == "Hello from quick chat"
+    toggle_quick_chat(panel)
+    assert controller.chatId == original
+    click(panel, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
+    assert model_server[0].request["model"] == controller.selection["model"]
+    assert controller.workspaceBranch.startswith("ava/")
+    assert controller.workspacePath != str(chosen)
+    assert panel.property("sessionId") == controller.chatId
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    assert find_item(panel, "quickChatTranscript").property("count") >= 2
+    assert not panel.grabWindow().isNull()
+    QTest.keyClick(panel, Qt.Key.Key_Escape)
+    assert not panel.isVisible()
+
+
 def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
     def git(*args):
         return subprocess.check_output(['git', '-C', str(project), *args], text=True)

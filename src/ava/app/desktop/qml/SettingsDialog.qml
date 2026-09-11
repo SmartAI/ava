@@ -499,6 +499,7 @@ NativeDialog {
                     Label { text: "Keyboard shortcuts"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                     Repeater {
                         model: [
+                            {action: Qt.platform.os === "osx" ? "Quick chat (global)" : "Quick chat (in app)", key: "Alt Space"},
                             {action: "New chat", key: "N"}, {action: "Search chats", key: "K"},
                             {action: "Toggle sidebar", key: "B"}, {action: "Toggle inspector", key: "Alt B"},
                             {action: "Toggle terminal", key: "J"}, {action: "Settings", key: ","}
