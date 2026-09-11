@@ -328,12 +328,16 @@ export default function App() {
       if (!streamIsCurrent(epoch, id, selection)) return
       const info = JSON.parse(message.data)
       streamStatusCountRef.current += 1
+      if (streamStatusCountRef.current === 2 && !streamReadyRef.current) {
+        flushReplayEvents(epoch, id, selection)
+      } else if (streamReadyRef.current) {
+        flushLiveEvents(epoch, id, selection)
+      }
+      // Apply queued events first: historical selections must not overwrite the
+      // current conversation selection carried by this newer status snapshot.
       setStatus(info.status)
       setStatusInfo(info)
       setModelSelection({ provider: info.provider, model: info.model, effort: info.effort ?? null })
-      if (streamStatusCountRef.current === 2 && !streamReadyRef.current) {
-        flushReplayEvents(epoch, id, selection)
-      }
     })
     streamRef.current = stream
   }

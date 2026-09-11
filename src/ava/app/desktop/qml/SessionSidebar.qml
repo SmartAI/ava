@@ -128,7 +128,7 @@ Pane {
         NavigationItem {
             objectName: "analyticsButton"
             Layout.fillWidth: true
-            text: "Analytics"
+            text: "Session information"
             icon.source: "icons/analytics.svg"
             selected: sidebar.currentPage === "analytics"
             onClicked: sidebar.analyticsRequested()

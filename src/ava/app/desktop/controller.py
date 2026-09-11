@@ -8,6 +8,7 @@ import shlex
 import sys
 import uuid
 import weakref
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1757,20 +1758,25 @@ class Controller(QObject):
 
     @Slot(str)
     def selectProject(self, identity: str) -> None:
+        self._select_project(identity, True)
+
+    def _select_project(self, identity: str, open_chat: bool, discard_empty: bool | None = None) -> None:
         if not any(p["id"] == identity for p in self._projects):
             return
-        if identity != self._project_id:
+        should_discard = identity != self._project_id if discard_empty is None else discard_empty
+        if should_discard:
             self._discard_current_empty_chat()
         self._activate_machine(self._machine_for(identity))
         self._clear_chat()
         self._set_project(identity)
-        preferred = str(self.settings.value(f"chat/{identity}", ""))
-        chat = next(
-            (c for c in self._chats() if c["id"] == preferred),
-            self._chats()[0] if self._chats() else None,
-        )
-        if chat and self._connection:
-            self.openChat(chat["id"])
+        if open_chat:
+            preferred = str(self.settings.value(f"chat/{identity}", ""))
+            chat = next(
+                (c for c in self._chats() if c["id"] == preferred),
+                self._chats()[0] if self._chats() else None,
+            )
+            if chat and self._connection:
+                self.openChat(chat["id"])
         self.changed.emit()
 
     def _set_project(self, identity: str) -> None:
@@ -1788,6 +1794,13 @@ class Controller(QObject):
 
     @Slot(str)
     def addProject(self, path: str) -> None:
+        self._add_project(path)
+
+    @Slot(str)
+    def newChatInFolder(self, path: str) -> None:
+        self._add_project(path, lambda project_id: self.newChat(project_id))
+
+    def _add_project(self, path: str, after: Callable[[str], None] | None = None) -> None:
         if not self._connection:
             return
         machine = self._machines[self._active_machine]
@@ -1803,7 +1816,9 @@ class Controller(QObject):
                 if not any(p["id"] == payload["id"] for p in machine.projects):
                     machine.projects.append({**payload, "machine": machine.id, "machine_name": machine.name})
                 self._rebuild_projects()
-                self.selectProject(payload["id"])
+                self._select_project(payload["id"], after is None, after is not None)
+                if after is not None:
+                    after(payload["id"])
             self.changed.emit()
 
         self._connection.call("POST", "/api/projects", {"path": path}, added)

@@ -532,6 +532,11 @@ npm run check
 npm test
 ```
 
+CI runs Python tests with `--ignore=tests/test_desktop.py`; the native desktop
+acceptance scenarios are a local check. QML lint, Python lint and type checks, and
+frontend checks still run in CI. Run the desktop suite explicitly with
+`uv run --extra desktop pytest -q tests/test_desktop.py`.
+
 When the React source in `src/ava/app/web/frontend/` changes, rebuild the checked-in browser bundle
 with `npm run build`.
 

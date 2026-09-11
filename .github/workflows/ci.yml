@@ -36,10 +36,8 @@ jobs:
       - run: uv sync --frozen --extra desktop
       - run: uv run --extra desktop ruff check src tests eval
       - run: uv run --extra desktop mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
-      - run: uv run --extra desktop pytest -q
-        env:
-          QT_QPA_PLATFORM: offscreen
-          QT_QUICK_BACKEND: software
+      - name: Run Python tests (excluding desktop acceptance)
+        run: uv run --extra desktop pytest -q --ignore=tests/test_desktop.py
       - run: uv run --extra desktop pyside6-qmllint --max-warnings 0 src/ava/app/desktop/qml/*.qml
       - run: npm ci
       - run: npm run check

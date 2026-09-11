@@ -80,6 +80,18 @@ ApplicationWindow {
             inspector.selectKind(name);
         }
     }
+    function locationSubtitle() {
+        if (!window.backend)
+            return ""
+        const parts = [window.backend.projectName]
+        if (window.backend.workspacePath)
+            parts.push(window.backend.workspacePath)
+        if (window.backend.workspaceBranch)
+            parts.push(window.backend.workspaceBranch)
+        if (window.backend.machines.length > 1)
+            parts.push(window.backend.machineName)
+        return parts.join(" · ")
+    }
     AttachmentDialog {
         parent: Overlay.overlay
         preview: window.backend ? window.backend.attachmentPreview : null
@@ -162,6 +174,12 @@ ApplicationWindow {
         title: "Choose a project folder"
         onAccepted: window.backend.addProject(selectedFolder.toString())
     }
+    FolderDialog {
+        id: newChatFolderDialog
+        objectName: "newChatFolderDialog"
+        title: "Choose a working directory"
+        onAccepted: window.backend.newChatInFolder(selectedFolder.toString())
+    }
     WorktreeDialog { backend: window.backend }
     MachinesDialog {
         id: machinesDialog
@@ -179,6 +197,17 @@ ApplicationWindow {
         modal: true
         focus: true
         padding: 22
+        property bool createChat: false
+        function openForProject() {
+            createChat = false;
+            title = "Add project on " + window.backend.machineName;
+            open();
+        }
+        function openForChat() {
+            createChat = true;
+            title = "Choose a working directory on " + window.backend.machineName;
+            open();
+        }
         onOpened: remoteProjectPath.forceActiveFocus()
         ColumnLayout {
             width: parent.width
@@ -197,11 +226,14 @@ ApplicationWindow {
                 NativeButton {
                     id: remoteProjectAdd
                     objectName: "addRemoteProjectAction"
-                    text: "Add project"
+                    text: remoteProjectDialog.createChat ? "Create chat" : "Add project"
                     primary: true
                     enabled: !!remoteProjectPath.text.trim() && window.backend.online
                     onClicked: {
-                        window.backend.addProject(remoteProjectPath.text.trim());
+                        if (remoteProjectDialog.createChat)
+                            window.backend.newChatInFolder(remoteProjectPath.text.trim());
+                        else
+                            window.backend.addProject(remoteProjectPath.text.trim());
                         remoteProjectDialog.close();
                     }
                 }
@@ -252,7 +284,7 @@ ApplicationWindow {
             SplitView.maximumWidth: 380
             backend: window.backend
             onHideRequested: window.leftOpen = false
-            onAddProjectRequested: window.backend.remoteMachine ? remoteProjectDialog.open() : folderDialog.open()
+            onAddProjectRequested: window.backend.remoteMachine ? remoteProjectDialog.openForProject() : folderDialog.open()
             onMachinesRequested: machinesDialog.open()
             onSettingsRequested: settingsDialog.open()
             onBoardRequested: window.workspacePage = "board"
@@ -391,8 +423,9 @@ ApplicationWindow {
                                 elide: Text.ElideRight
                             }
                             Label {
+                                objectName: "locationSubtitle"
                                 Layout.fillWidth: true
-                                text: window.backend.projectName + (window.backend.workspaceBranch ? " · " + window.backend.workspaceBranch : "") + (window.backend.machines.length > 1 ? " · " + window.backend.machineName : "")
+                                text: window.locationSubtitle()
                                 font.pixelSize: 11
                                 color: palette.placeholderText
                                 elide: Text.ElideMiddle
@@ -758,22 +791,45 @@ ApplicationWindow {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: window.backend.chatId ? "Ask a question, share an idea, or describe a task." : window.backend.projectId ? "Start a chat in " + window.backend.projectName + "." : "Add a project folder to start a conversation."
+                            text: window.backend.projectId ? "New conversations start in this folder." : "Add a project folder to start a conversation."
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.WordWrap
                             color: palette.placeholderText
                             font.pixelSize: 13
                             lineHeight: 1.4
                         }
-                        NativeButton {
-                            objectName: "emptyStateAction"
+                        Label {
+                            id: chatDirectory
+                            objectName: "chatDirectory"
+                            Layout.fillWidth: true
+                            visible: !!window.backend.projectId
+                            text: window.backend.workspacePath
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WrapAnywhere
+                            maximumLineCount: 2
+                            color: palette.text
+                            font.pixelSize: 12
+                        }
+                        RowLayout {
                             Layout.alignment: Qt.AlignHCenter
                             Layout.topMargin: 8
-                            text: window.backend.projectId ? "New conversation" : "Add project"
-                            icon.source: "icons/plus.svg"
-                            visible: !window.backend.chatId
-                            enabled: window.backend.online && !window.backend.busy
-                            onClicked: window.backend.projectId ? window.backend.newChat() : folderDialog.open()
+                            spacing: 8
+                            NativeButton {
+                                objectName: "emptyStateAction"
+                                text: window.backend.projectId ? "New conversation" : "Add project"
+                                icon.source: "icons/plus.svg"
+                                primary: true
+                                visible: !window.backend.chatId
+                                enabled: window.backend.online && !window.backend.busy
+                                onClicked: window.backend.projectId ? window.backend.newChat() : folderDialog.open()
+                            }
+                            NativeButton {
+                                objectName: "chooseChatFolderButton"
+                                text: "Choose folder…"
+                                visible: !!window.backend.projectId && (!window.backend.chatId || (!window.backend.draft && window.backend.attachments.length === 0))
+                                enabled: window.backend.online && !window.backend.busy
+                                onClicked: window.backend.remoteMachine ? remoteProjectDialog.openForChat() : newChatFolderDialog.open()
+                            }
                         }
                     }
                 }

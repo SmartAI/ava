@@ -2500,6 +2500,64 @@ def test_desktop_sessions_group_by_project_and_switch_without_picker(
     assert controller.draft == "Draft for the first project"
 
 
+def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_server, project, tmp_path):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    assert controller.projectPath == str(project)
+    assert find_item(window, "chatDirectory").property("text") == str(project)
+    assert str(project) in find_item(window, "locationSubtitle").property("text")
+
+    other = tmp_path / "chosen folder"
+    other.mkdir()
+    controller.newChatInFolder(other.as_uri())
+    until(
+        lambda: controller.connected
+        and controller.chatId
+        and controller.projectPath == str(other),
+        controller.changed,
+    )
+    assert controller.workspacePath == str(other)
+    assert find_item(window, "chatDirectory").property("text") == str(other)
+    assert find_item(window, "chooseChatFolderButton").property("visible")
+
+    # An empty new chat is still a new session, so the folder can be changed again,
+    # including re-selecting the same folder without leaving an unused chat behind.
+    first_chat = controller.chatId
+    controller.newChatInFolder(other.as_uri())
+    until(
+        lambda: controller.connected
+        and controller.chatId
+        and controller.chatId != first_chat
+        and controller.projectPath == str(other),
+        controller.changed,
+    )
+    until(
+        lambda: not any(chat["id"] == first_chat for project in controller.projects for chat in project["chats"]),
+        controller.navigationChanged,
+    )
+    first_chat = controller.chatId
+    third = tmp_path / "third folder"
+    third.mkdir()
+    controller.newChatInFolder(third.as_uri())
+    until(
+        lambda: controller.connected
+        and controller.chatId
+        and controller.chatId != first_chat
+        and controller.projectPath == str(third),
+        controller.changed,
+    )
+    until(
+        lambda: not any(chat["id"] == first_chat for project in controller.projects for chat in project["chats"]),
+        controller.navigationChanged,
+    )
+    assert controller.workspacePath == str(third)
+    assert find_item(window, "chatDirectory").property("text") == str(third)
+
+    type_message(window, "Draft for the third folder")
+    assert not find_item(window, "chooseChatFolderButton").property("visible")
+
+
 def test_desktop_session_title_is_single_line(desktop, model_server):
     controller, window = desktop
     controller.start()
@@ -5116,7 +5174,9 @@ def test_desktop_automation_creates_runs_and_opens_results(desktop, model_server
     assert automation.rows.rows[0]["remaining"] == 3, "Manual tests must not consume scheduled repetitions"
     click(window, "openAutomationRun_" + automation.detail["runs"][0]["id"])
     until(lambda: controller.connected and any(r["body"] == "Hello 世界" for r in controller._transcript.rows), controller.changed)
-    assert controller.board.needsReview.rowCount() == 1
+    # Opening the completed run auto-reviews it; wait for the backend update.
+    until(lambda: controller.board.needsReview.rowCount() == 0
+          and controller.board.reviewedSessions.rowCount() == 1, controller.board.changed)
     first_chat = controller.chatId
     click(window, "automationsButton")
     click(window, "pauseAutomationButton")
@@ -5615,10 +5675,48 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
     assert len(analytics.data['days']) == 7
     assert find_item(window, 'analyticsTokens').property('value') == '349.6k'
     save_screenshot(window, 'analytics-week')
+    assert find_item(window, 'pageHeader').property('title') == 'Session information'
+    assert find_item(window, 'analytics7d').property('checked')
+    # The rendered chart and composition bar must encode the real aggregates,
+    # not merely show plausible shapes. Gate reflow in both appearances too.
+    original_size = (window.width(), window.height())
+    for dark, width, height in [(False, 1280, 820), (True, 1280, 820), (False, 800, 600), (True, 800, 600)]:
+        window.setProperty('dark', dark)
+        window.setWidth(width)
+        window.setHeight(height)
+        save_screenshot(window, f'analytics-overview-{dark}-{width}')
+        pane = find_item(window, 'analyticsPane')
+        chart = find_item(window, 'analyticsChart')
+        mix = find_item(window, 'analyticsTokenMix')
+        assert chart.width() > 250
+        for item in (chart, mix):
+            assert item.mapToScene(QPointF(0, 0)).x() >= 0
+            assert item.mapToScene(QPointF(item.width(), 0)).x() <= window.width()
+        if pane.property('narrow'):
+            assert mix.mapToScene(QPointF(0, 0)).y() >= chart.mapToScene(QPointF(0, chart.height())).y()
+        else:
+            assert mix.mapToScene(QPointF(0, 0)).x() > chart.mapToScene(QPointF(chart.width(), 0)).x()
+        for index, day in enumerate(analytics.data['days']):
+            bar = find_item(window, f'analyticsBar_{index}')
+            expected = chart.property('plotHeight') * day['tokens'] / chart.property('maximum')
+            assert bar.height() == pytest.approx(expected)
+        for key in ('input', 'cached_read', 'cache_write', 'output'):
+            segment = find_item(window, 'analyticsTokenSegment_' + key)
+            share = analytics.data['totals'][key] / analytics.data['totals']['tokens']
+            assert segment.width() / segment.parentItem().width() == pytest.approx(share)
+    window.setWidth(original_size[0])
+    window.setHeight(original_size[1])
+    window.setProperty('dark', False)
+    first_day = find_item(window, 'analyticsDay_0')
+    first_day.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Right)
+    assert find_item(window, 'analyticsDay_1').hasActiveFocus()
     started = time.perf_counter()
     click(window, 'analytics30d')
     until(lambda: len(analytics.data['days']) == 30, analytics.changed)
     assert analytics.data['totals']['tokens'] == 860250
+    assert find_item(window, 'analytics30d').property('checked')
+    assert not find_item(window, 'analytics7d').property('checked')
     switch_ms = (time.perf_counter()-started)*1000
     assert switch_ms < 100, switch_ms
     click(window, 'analyticsMetric_active_ms')
@@ -5670,6 +5768,11 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
     assert analytics.data['skills'][0]['name'] == 'review'
     assert analytics.data['totals']['missing_usage'] == 1
     save_screenshot(window, 'analytics-live')
+    for kind in ('tools', 'skills'):
+        entry = find_item(window, f'analyticsRank_{kind}_0')
+        assert entry.property('share') == 1
+        track = find_item(window, f'analyticsRankTrack_{kind}_0')
+        assert track.childItems()[0].width() == pytest.approx(track.width())
     print(f'Analytics native: first display {first_ms:.0f} ms, GUI gap {gap:.0f} ms, 7/30-day switch {switch_ms:.0f} ms, live update {update_ms:.0f} ms; project filters, durable history and actual skill read/provider usage verified')
 
     connection = controller._connection
