@@ -17,6 +17,11 @@
 tools to turn a goal into a deliverable you can review. Start with a folder—it
 doesn't have to be a code repository.
 
+## News
+
+- **2026-09-10 · [v0.1.0](https://github.com/SmartAI/ava/releases/tag/v0.1.0) — First alpha:** A native desktop workbench for research, writing, analysis, automation, and coding, with browser tools, file previews, SSH sessions, skills, and MCP.
+- **2026-09-09 · Benchmark:** Ava solved 11/22 tasks in a SWE-bench Pro coding pilot, compared with Pi’s 10/22—a small-sample result, not a general-purpose benchmark.
+
 ## Meet Ava
 
 ![Animated Ava introduction: research, write, analyze, automate, and code](docs/assets/ava-introduction.gif)
