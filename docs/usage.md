@@ -533,9 +533,11 @@ fields and tool-calling behaviour required by the selected adapter:
 
 ## Develop
 
+Run the standard checks (the Python test selection matches CI):
+
 ```sh
 uv sync --extra desktop
-uv run --extra desktop pytest
+uv run --extra desktop pytest -q --ignore=tests/test_desktop.py
 uv run --extra desktop ruff check src tests eval
 uv run --extra desktop mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
 npm ci
@@ -543,10 +545,17 @@ npm run check
 npm test
 ```
 
-CI runs Python tests with `--ignore=tests/test_desktop.py`; the native desktop
-acceptance scenarios are a local check. QML lint, Python lint and type checks, and
-frontend checks still run in CI. Run the desktop suite explicitly with
-`uv run --extra desktop pytest -q tests/test_desktop.py`.
+Desktop acceptance and performance tests run **manually in a local development
+environment only**, not in CI/CD or release jobs. Run desktop acceptance separately:
+
+```sh
+uv run --extra desktop pytest -q tests/test_desktop.py
+```
+
+See the [desktop testing instructions](#qt-quick-desktop-app) for headless/native
+platform selection and opt-in performance, service, and SSH scenarios. QML lint,
+Python lint and type checks, frontend checks, and packaged-asset checks remain in
+CI/CD; these do not launch the desktop acceptance suite.
 
 When the React source in `src/ava/app/web/frontend/` changes, rebuild the checked-in browser bundle
 with `npm run build`.
