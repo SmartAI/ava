@@ -49,7 +49,7 @@ async def options(project: Path) -> dict:
     references = await git(project, "for-each-ref", "--count=500", "--format=%(refname)%00%(refname:short)", "refs/heads", "refs/remotes")
     refs = [{"name": "Current HEAD", "ref": "HEAD"}]
     refs.extend({"ref": ref, "name": name} for line in references.splitlines() if "\0" in line for ref, name in [line.split("\0", 1)])
-    return {"root": root, "commit": commit, "refs": refs, "directory": str(ava_home() / "worktrees")}
+    return {"root": root, "commit": commit, "refs": refs, "directory": str(ava_home() / "worktrees" / project.name)}
 
 
 def record_path(key: str) -> Path:
@@ -80,18 +80,25 @@ async def create(project: Path, branch: str, base: str, key: str) -> dict:
     except ValueError as error:
         raise ValueError("Choose a valid Git branch name, such as ava/my-task. Spaces are not allowed.") from error
     repo = Path(await git(project, "rev-parse", "--show-toplevel"))
-    directory = ava_home().resolve() / "worktrees" / key
-    if directory.is_symlink() or directory.parent.is_symlink():
-        raise ValueError("The workspace location is a symbolic link; it was left unchanged.")
-    record = {"request_id": key, "project": str(project), "repo": str(repo),
-              "root": str(directory), "cwd": str(directory / project.relative_to(repo)),
-              "branch": branch, "base": base}
+    base_directory = ava_home().resolve() / "worktrees"
+    directory = base_directory / project.name / key
     path = record_path(key)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    saved = None
     if path.exists():
         saved = json.loads(path.read_text())
         if not isinstance(saved, dict) or not isinstance(saved.get("commit"), str):
             raise ValueError(f"Workspace setup record is damaged. Inspect {path} before retrying.")
+        # Keep retries of pre-project-layout checkouts recoverable; never move
+        # an existing worktree or accept an arbitrary path from a setup record.
+        if saved.get("root") == str(base_directory / key):
+            directory = base_directory / key
+    if any(folder.is_symlink() for folder in (base_directory, directory.parent, directory)):
+        raise ValueError("The workspace location is a symbolic link; it was left unchanged.")
+    record = {"request_id": key, "project": str(project), "repo": str(repo),
+              "root": str(directory), "cwd": str(directory / project.relative_to(repo)),
+              "branch": branch, "base": base}
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if saved is not None:
         if any(saved.get(name) != value for name, value in record.items()):
             raise ValueError("This creation request already belongs to a different workspace. Start a new request.")
         record = saved
@@ -111,6 +118,7 @@ async def create(project: Path, branch: str, base: str, key: str) -> dict:
             raise ValueError(f"The interrupted workspace changed. Inspect {directory} before creating a new session.")
     else:
         try:
+            directory.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             await git(project, "worktree", "add", "-b", branch, "--", str(directory), record["commit"], timeout=120)
         except (OSError, ValueError, TimeoutError) as error:
             # Never force-remove partial checkouts or hooks' output on a failed

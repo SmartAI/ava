@@ -55,6 +55,31 @@ Keep feature state in its existing pane. Avoid building a generic page framework
 List rows stay flat; menus, dialogs, and the composer carry elevation. Status labels
 use the existing Label rather than a new badge wrapper unless a badge is needed.
 
+## Conversation and navigation patterns
+
+- New conversations keep the heading and composer together. Project selection and the
+  checkable Worktree action share a quiet rounded footer, separated from the message
+  box by `spaceSm` (8 px). Detailed
+  paths and setup explanations belong in tooltips, not a second form above the composer.
+- The session tree initially exposes five unpinned chats per project. Use a flat,
+  caption-sized **Show more** / **Show fewer** row at the same indentation as chats,
+  with the existing hover and keyboard-focus treatment. Keep pins separate. Expansion
+  is view state for the current app instance; opening an older chat reveals it.
+- Keep the existing Qt `ListView` and its delegate recycling. Limit `sessionRows` in
+  the model rather than hiding delegates: [Qt documents that invisible delegates
+  still occupy space](https://doc.qt.io/qt-6/qml-qtquick-listview.html#hiding-delegates).
+  An explicit expansion row does not require migrating to `TreeView` or using automatic
+  `fetchMore`, which serves incremental data loading rather than a user-controlled limit.
+- Machine status belongs in Machines. Restart is quiet and secondary; Open is primary.
+  Restart and Open/Reconnect use shared column widths across rows; optional removal and
+  update actions must not shift those columns.
+- Scrollable Skills/MCP/Automation forms have inset content inside the clipped viewport, leaving
+  room for full input borders and the 3 px focus-ring outset on both sides. Dialog
+  padding alone cannot prevent a ScrollView's inner viewport from clipping focus.
+- Read-only text menus show adjacent Copy and Select all rows. Hidden editing actions
+  and separators must also have zero layout height. Editable fields retain their full
+  menu, selection, clipboard behavior, and focus restoration.
+
 ## Evaluation
 
 Use the current implementation as the baseline, with the deterministic acceptance

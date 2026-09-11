@@ -41,11 +41,19 @@ Pane {
         if (activePane)
             activePane.focusTerminal();
     }
-    function closeTab(index) {
+    function closeTab(identity) {
+        let index = -1;
+        for (let i = 0; i < tabs.count; ++i)
+            if (tabs.get(i).identity === identity) { index = i; break; }
+        if (index < 0)
+            return;
+        const wasCurrent = index === currentTab;
         tabs.remove(index);
         currentTab = Math.max(0, Math.min(currentTab - (index < currentTab ? 1 : 0), tabs.count - 1));
         if (!tabs.count)
             hideRequested();
+        else if (wasCurrent && visible && activePane)
+            Qt.callLater(activePane.focusTerminal);
     }
     ColumnLayout {
         anchors.fill: parent
@@ -99,7 +107,7 @@ Pane {
                         icon.height: 12
                         quiet: true
                         tip: "Close terminal"
-                        onClicked: dock.closeTab(tab.index)
+                        onClicked: dock.closeTab(tab.identity)
                     }
                 }
             }
@@ -126,6 +134,7 @@ Pane {
                 model: tabs
                 delegate: TerminalPane {
                     required property int index
+                    required property int identity
                     required property string root
                     required property string project
                     anchors.fill: parent
@@ -134,6 +143,7 @@ Pane {
                     codeFont: dock.codeFont
                     rootPath: root
                     projectId: project
+                    onExitRequested: Qt.callLater(dock.closeTab, identity)
                 }
             }
         }

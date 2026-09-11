@@ -1127,7 +1127,8 @@ async def test_worktree_sessions_restore_project_identity_and_fence_file_access(
         assert results[0].json() == results[1].json()
         chat = results[0].json()
         workspace = Path(chat["cwd"])
-        assert workspace.name == "code" and workspace.parent.parent == home / "worktrees"
+        assert workspace.name == "code" and workspace.parent.parent == home / "worktrees" / "code"
+        assert options.json()["directory"] == str(home / "worktrees" / "code")
         assert (workspace / "answer.txt").read_text() == "committed"
         assert (project / "code" / "answer.txt").read_text() == "uncommitted"
         assert git("branch", "--show-current") == "main"
@@ -1211,7 +1212,7 @@ async def test_worktree_creation_failures_are_retryable_without_orphan_sessions(
             assert failed.status_code == 503 and "retained" in failed.text
         assert not registry.projects[0].chats
         assert not list(home.rglob("*.jsonl*"))
-        retained = home / "worktrees" / body["request_id"]
+        retained = home / "worktrees" / project.name / body["request_id"]
         assert (retained / "hook-output").read_text() == "kept"
         retried = await client.post("/api/chats", json=body)
         assert retried.status_code == 201, retried.text
@@ -1219,6 +1220,44 @@ async def test_worktree_creation_failures_are_retryable_without_orphan_sessions(
         assert len(registry.projects[0].chats) == 1
         assert (retained / "hook-output").read_text() == "kept"
     assert all(provider.closed for provider in scripted)
+
+
+async def test_worktree_project_layout_rejects_symlinks_and_recovers_legacy_checkouts(home, project, tmp_path):
+    import subprocess
+    from uuid import uuid4
+
+    from ava.app.web import worktrees
+
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run([
+        "git", "-C", str(project), "-c", "user.name=Ava fixture",
+        "-c", "user.email=ava@example.invalid", "-c", "commit.gpgsign=false",
+        "commit", "--allow-empty", "-qm", "Initial commit",
+    ], check=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    base = home / "worktrees"
+    base.mkdir()
+    group = base / project.name
+    group.symlink_to(outside, target_is_directory=True)
+    key = uuid4().hex
+    with pytest.raises(ValueError, match="symbolic link"):
+        await worktrees.create(project, "ava/legacy", "HEAD", key)
+    assert not list(outside.iterdir())
+    group.unlink()
+
+    record = await worktrees.create(project, "ava/legacy", "HEAD", key)
+    assert Path(record["root"]) == group / key
+    # Simulate an interrupted setup from the previous flat directory layout.
+    legacy = base / key
+    subprocess.run(["git", "-C", str(project), "worktree", "move", record["root"], str(legacy)], check=True)
+    record.update(root=str(legacy), cwd=str(legacy))
+    worktrees.save_record(record)
+    (legacy / "keep.txt").write_text("Uncommitted work survives a retry")
+    assert await worktrees.create(project, "ava/legacy", "HEAD", key) == record
+    assert (legacy / "keep.txt").read_text() == "Uncommitted work survives a retry"
+    newer = await worktrees.create(project, "ava/new", "HEAD", uuid4().hex)
+    assert Path(newer["root"]).parent == group
 
 
 async def test_browser_handoff_routes_deliver_once_and_cancel_inflight_actions(client, scripted):

@@ -112,9 +112,6 @@ class Controller(QObject):
     hostKeyChanged = Signal()
     themeRequested = Signal()
     clipboardChanged = Signal()
-    worktreeRequested = Signal()
-    worktreeChanged = Signal()
-    worktreeCreated = Signal()
 
     def __init__(self, cwd: Path, arguments: list[str], settings: QSettings) -> None:
         super().__init__()
@@ -136,10 +133,11 @@ class Controller(QObject):
         self._transcript.changed.connect(self.changed)
         self._projects: list[dict[str, Any]] = []
         self._navigation_revision = -1
+        self._expanded_session_projects: set[str] = set()
         self._project_id = ""
         self._chat_cwd = ""
         self._chat_branch = ""
-        self._worktree: dict[str, Any] = {}
+        self._chat_ready: Callable[[], None] | None = None
         self._chat_id = ""
         self._chat_title = "New conversation"
         self._model_name = ""
@@ -724,10 +722,37 @@ class Controller(QObject):
                              "path": project["path"], "expanded": expanded, "count": len(chats),
                              "machine": machine.id, "online": online})
                 if expanded:
-                    rows.extend(chat for chat in chats if not chat["pinned"])
+                    unpinned = [chat for chat in chats if not chat["pinned"]]
+                    show_all = project["id"] in self._expanded_session_projects
+                    rows.extend(unpinned if show_all else unpinned[:5])
+                    if len(unpinned) > 5:
+                        rows.append({"kind": "more", "id": "more:" + project["id"],
+                                     "project_id": project["id"], "expanded": show_all,
+                                     "title": "Show fewer" if show_all else f"Show more ({len(unpinned) - 5})"})
         return ([{"kind": "section", "id": "pinned", "title": "Pinned"}, *pinned] if pinned else []) + [
             {"kind": "section", "id": "projects", "title": "Machines" if multiple else "Projects"}
         ] + rows
+
+    @Slot(str)
+    def toggleProjectSessions(self, identity: str) -> None:
+        if identity in self._expanded_session_projects:
+            self._expanded_session_projects.remove(identity)
+        elif any(project["id"] == identity for project in self._projects):
+            self._expanded_session_projects.add(identity)
+        self.navigationChanged.emit()
+
+    def _reveal_sidebar_chat(self, identity: str) -> None:
+        for project in self._projects:
+            unpinned = [chat["id"] for chat in project["chats"]
+                        if not chat["archived"] and not self.preference(f"pinned/{chat['id']}", False)]
+            if identity not in unpinned:
+                continue
+            self.savePreference(f"groups/{project['id']}", True)
+            self.savePreference(f"machines/{project.get('machine', 'local')}", True)
+            if unpinned.index(identity) >= 5:
+                self._expanded_session_projects.add(project["id"])
+            self.navigationChanged.emit()
+            break
 
     @Slot(str)
     def toggleMachineGroup(self, identity: str) -> None:
@@ -764,11 +789,7 @@ class Controller(QObject):
         pinned = not self.preference(key, False)
         self.savePreference(key, pinned)
         if not pinned:
-            for project in self._projects:
-                if any(chat["id"] == identity for chat in project["chats"]):
-                    self.savePreference(f"groups/{project['id']}", True)
-                    self.savePreference(f"machines/{project.get('machine', 'local')}", True)
-                    break
+            self._reveal_sidebar_chat(identity)
         self.navigationChanged.emit()
 
     def _chat_metadata(self, payload: dict, error: str) -> None:
@@ -823,6 +844,8 @@ class Controller(QObject):
             self._drafts.pop(identity, None)
             self._attachments.pop(identity, None)
             self.settings.remove(f"ui/pinned/{identity}")
+            self.settings.remove(f"ui/worktree/{identity}")
+            self.settings.remove(f"worktreeRequest/{identity}")
             if str(self.settings.value(f"chat/{project_id}", "")) == identity:
                 self.settings.remove(f"chat/{project_id}")
             self.navigationChanged.emit()
@@ -877,9 +900,34 @@ class Controller(QObject):
     def _workspace_path(self) -> str:
         return self._chat_cwd or str(self._project().get("path", ""))
 
-    @Property(dict, notify=worktreeChanged)
-    def worktreeState(self) -> dict:
-        return self._worktree
+    def _can_configure_session(self) -> bool:
+        return bool(self._chat_id and self._connected and not self._busy and not self._selecting
+                    and self._status == "idle" and not self._transcript.rows and not self._chat_branch)
+
+    canConfigureSession = Property(bool, _can_configure_session, notify=changed)
+
+    @Property(list, notify=navigationChanged)
+    def sessionProjects(self) -> list:
+        return [p for p in self._projects if p.get("machine", "local") == self._active_machine]
+
+    def _session_worktree(self) -> bool:
+        return bool(self._chat_branch) or self.preference(f"worktree/{self._chat_id}", False)
+
+    sessionWorktree = Property(bool, _session_worktree, notify=changed)
+
+    @Slot(bool)
+    def setSessionWorktree(self, enabled: bool) -> None:
+        if not self._can_configure_session():
+            return
+        self.savePreference(f"worktree/{self._chat_id}", enabled)
+        self._error = ""
+        self.changed.emit()
+
+    @Slot(str)
+    def changeSessionProject(self, project_id: str) -> None:
+        if self._can_configure_session() and project_id != self._project_id:
+            if any(p["id"] == project_id and p.get("machine", "local") == self._active_machine for p in self._projects):
+                self._create_chat(project_id, replace_draft=True)
 
     @Property(str, notify=changed)
     def chatId(self) -> str:
@@ -1529,7 +1577,7 @@ class Controller(QObject):
         elif name == "skills":
             self.skillsRequested.emit()
         elif name in ("new", "clear"):
-            self.prepareNewChat()
+            self.newChat()
         elif name in ("pause", "abort", "resume"):
             self.control(name)
         elif name == "diff":
@@ -1761,6 +1809,7 @@ class Controller(QObject):
 
     def _clear_chat(self) -> None:
         self._epoch += 1
+        self._chat_ready = None
         self._retry.stop()
         if self._connection:
             self._connection.close_stream()
@@ -1820,7 +1869,14 @@ class Controller(QObject):
 
     @Slot(str)
     def newChatInFolder(self, path: str) -> None:
-        self._add_project(path, self.prepareNewChat)
+        source_id = self._chat_id
+        machine_id = self._active_machine
+
+        def added(identity: str) -> None:
+            if self._chat_id == source_id and self._active_machine == machine_id:
+                self._create_chat(identity, replace_draft=self._can_configure_session())
+
+        self._add_project(path, added)
 
     def _add_project(self, path: str, after: Callable[[str], None] | None = None) -> None:
         if not self._connection:
@@ -1838,8 +1894,9 @@ class Controller(QObject):
                 if not any(p["id"] == payload["id"] for p in machine.projects):
                     machine.projects.append({**payload, "machine": machine.id, "machine_name": machine.name})
                 self._rebuild_projects()
-                self._select_project(payload["id"], after is None, after is not None)
-                if after is not None:
+                if after is None:
+                    self._select_project(payload["id"], True)
+                else:
                     after(payload["id"])
             self.changed.emit()
 
@@ -1871,81 +1928,21 @@ class Controller(QObject):
 
     @Slot()
     @Slot(str)
-    def prepareWorktree(self, project_id: str = "") -> None:
-        self._prepare_chat(project_id, worktree=True)
-
-    @Slot()
-    @Slot(str)
-    def prepareNewChat(self, project_id: str = "") -> None:
-        self._prepare_chat(project_id, worktree=False)
-
-    def _prepare_chat(self, project_id: str, *, worktree: bool) -> None:
-        project_id = project_id or self._project_id
-        machine = self._machine_for(project_id)
-        if not machine.connection or self._worktree.get("creating"):
-            return
-        self._worktree = {"project": project_id, "loading": True, "creating": False,
-                          "new_worktree": worktree, "branch": "ava/" + uuid.uuid4().hex,
-                          "error": "", "options_error": "", "refs": [], "request_id": uuid.uuid4().hex}
-        self.worktreeChanged.emit()
-        self.worktreeRequested.emit()
-        request_id = self._worktree["request_id"]
-
-        def loaded(payload: dict, error: str) -> None:
-            if self._worktree.get("request_id") != request_id:
-                return
-            self._worktree.update(loading=False, options_error=error)
-            if not error:
-                self._worktree.update(payload)
-            self.worktreeChanged.emit()
-
-        machine.connection.call("GET", f"/api/projects/{project_id}/worktrees", None, loaded)
-
-    @Slot()
-    def clearWorktreeError(self) -> None:
-        if self._worktree.get("error") and self._worktree.get("refs") and not self._worktree.get("creating"):
-            self._worktree["error"] = ""
-            self.worktreeChanged.emit()
-
-    @Slot()
-    def createOriginalChat(self) -> None:
-        if not self._worktree or self._worktree.get("creating"):
-            return
-        if self._worktree.get("specification", ("current",)) != ("current",):
-            self._worktree["request_id"] = uuid.uuid4().hex
-        self._worktree.update(specification=("current",), creating=True, error="")
-        self.worktreeChanged.emit()
-        self._create_chat(self._worktree["project"], {
-            "workspace": "current", "request_id": self._worktree["request_id"],
-        })
-
-    @Slot(str, str)
-    def createWorktreeChat(self, branch: str, base: str) -> None:
-        if self._worktree.get("creating") or self._worktree.get("loading"):
-            return
-        branch = branch.strip()
-        specification = (branch, base)
-        if self._worktree.get("specification", specification) != specification:
-            self._worktree["request_id"] = uuid.uuid4().hex
-        self._worktree.update(specification=specification, creating=True, error="")
-        self.worktreeChanged.emit()
-        self._create_chat(self._worktree["project"], {
-            "workspace": "worktree", "branch": branch, "base_ref": base,
-            "request_id": self._worktree["request_id"],
-        })
-
-    @Slot()
-    @Slot(str)
     def newChat(self, project_id: str = "") -> None:
         self._create_chat(project_id)
 
-    def _create_chat(self, project_id: str, workspace: dict | None = None) -> None:
+    def _create_chat(
+        self, project_id: str, workspace: dict | None = None, *,
+        replace_draft: bool = False, after: Callable[[], None] | None = None,
+    ) -> None:
         project_id = project_id or self._project_id
+        source_id = self._chat_id
+        selection = dict(self._selection) if replace_draft else self._new_chat_selection
+        worktree = self._session_worktree() if replace_draft else False
         machine = self._machine_for(project_id)
         if not machine.connection:
-            if workspace:
-                self._worktree.update(creating=False, error="Machine disconnected. Reconnect and retry.")
-                self.worktreeChanged.emit()
+            self._error = "Machine disconnected. Reconnect and retry."
+            self.changed.emit()
             return
         self._activate_machine(machine)
         if (
@@ -1953,20 +1950,13 @@ class Controller(QObject):
             or self._busy
             or not any(p["id"] == project_id for p in self._projects)
         ):
-            if workspace:
-                self._worktree.update(creating=False, error="Project unavailable or busy. Try again when it is ready.")
-                self.worktreeChanged.emit()
             return
         self._busy = True
+        self._error = ""
         epoch = self._epoch
         self.changed.emit()
 
         def created(payload: Any, error: str) -> None:
-            if workspace:
-                self._worktree.update(creating=False, error=error)
-                self.worktreeChanged.emit()
-                if not error:
-                    self.worktreeCreated.emit()
             if not error:
                 project = next((p for p in self._projects if p["id"] == project_id), None)
                 if project is not None and not any(
@@ -1979,18 +1969,21 @@ class Controller(QObject):
                 return
             self._busy = False
             if error:
-                if not workspace:
-                    self._error = error
+                self._error = error
             else:
-                self.openChat(payload["id"])
+                if replace_draft:
+                    self._drafts[payload["id"]] = self._drafts.pop(source_id, "")
+                    self._attachments[payload["id"]] = self._attachments.pop(source_id, [])
+                    self.savePreference(f"worktree/{payload['id']}", worktree)
+                self.openChat(payload["id"], after=after)
             self.changed.emit()
 
         self._connection.call(
-            "POST", "/api/chats", {"project_id": project_id, **self._new_chat_selection, **(workspace or {})}, created
+            "POST", "/api/chats", {"project_id": project_id, **selection, **(workspace or {})}, created
         )
 
     @Slot(str)
-    def openChat(self, identity: str) -> None:
+    def openChat(self, identity: str, *, after: Callable[[], None] | None = None) -> None:
         machine = self._machine_for(identity)
         if not machine.connection:
             return
@@ -2000,6 +1993,7 @@ class Controller(QObject):
         self._discard_current_empty_chat()
         self._activate_machine(machine)
         self._clear_chat()
+        self._chat_ready = after
         project = next((p for p in machine.projects if any(c["id"] == identity for c in p["chats"])), None)
         if project is not None and project["id"] != self._project_id:
             self._set_project(project["id"])
@@ -2017,6 +2011,7 @@ class Controller(QObject):
                 if self._project_id != payload["project_id"]:
                     self._set_project(payload["project_id"])
                 self._chat_id = identity
+                self._reveal_sidebar_chat(identity)
                 self._chat_cwd = payload["cwd"]
                 self._chat_branch = payload.get("worktree", "")
                 self._chat_title = payload["title"] or "New conversation"
@@ -2057,6 +2052,9 @@ class Controller(QObject):
         self._status = payload.get("status", "idle")
         self._update_selection(payload)
         self.changed.emit()
+        after, self._chat_ready = self._chat_ready, None
+        if after is not None:
+            after()
 
     def _disconnected(self, message: str) -> None:
         self._connected = False
@@ -2143,6 +2141,21 @@ class Controller(QObject):
             or self._status == "aborting"
         ):
             return
+        if self._can_configure_session() and self._session_worktree():
+            # Keep a stable key for a lost response or a failed checkout. Toggling
+            # the checkbox does not create unused branches or directories.
+            setting = f"worktreeRequest/{self._chat_id}"
+            key = str(self.settings.value(setting, "")) or uuid.uuid4().hex
+            self.settings.setValue(setting, key)
+            self._create_chat(self._project_id, {
+                "workspace": "worktree", "branch": "ava/" + key,
+                "base_ref": "HEAD", "request_id": key,
+            }, replace_draft=True, after=lambda: self._send_message(text, attachments, followup))
+            return
+        self._send_message(text, attachments, followup)
+
+    def _send_message(self, text: str, attachments: list[dict], followup: bool) -> None:
+        assert self._connection is not None
         epoch, identity = self._epoch, self._chat_id
         resume = self._status == "paused" and not followup
         delivery = "followup" if followup or self._status == "idle" else "steer"

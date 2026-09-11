@@ -19,7 +19,6 @@ Pane {
     property var fileState: ({})
     readonly property PdfPreview pdfPreview: pdfLoader.item as PdfPreview
     signal titleUpdated(string title)
-    onFileStateChanged: { if (htmlLoader.item && fileState.kind === "html") htmlLoader.item.render(); }
     function openPath(path) {
         if (!backend || !path || path === rootPath) return
         if (remote) { treeModel.preview(path); return; }
@@ -165,6 +164,10 @@ Pane {
                         else url = source;
                     }
                     Component.onCompleted: { profile = htmlProfile.instance(); render(); }
+                    Connections {
+                        target: pane
+                        function onFileStateChanged() { if (pane.fileState.kind === "html") htmlView.render(); }
+                    }
                     onNavigationRequested: function(request) {
                         const target = request.url.toString();
                         if (target !== pane.fileState.source && target !== "about:blank") {

@@ -77,9 +77,13 @@ NativeDialog {
             Layout.fillHeight: true
             clip: true
             contentWidth: availableWidth
+            contentHeight: form.implicitHeight + Theme.spaceSm
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
-                width: scroll.availableWidth
+                id: form
+                x: Theme.spaceSm
+                y: Theme.spaceXs
+                width: scroll.availableWidth - Theme.spaceSm * 2
                 spacing: 14
                 enabled: !dialog.state.busy
                 Label {
@@ -102,7 +106,7 @@ NativeDialog {
                     ScrollView {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 100
-                        clip: true
+                        background: Surface { radius: Theme.controlRadius; focused: promptField.activeFocus }
                         TextArea {
                             id: promptField
                             objectName: "automationPromptField"
@@ -112,7 +116,7 @@ NativeDialog {
                             font.pixelSize: 13
                             padding: 10
                             ContextMenu.menu: TextMenu { editor: promptField }
-                            background: Surface { radius: Theme.controlRadius; focused: promptField.activeFocus }
+                            background: null
                         }
                     }
                 }

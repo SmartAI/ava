@@ -23,6 +23,7 @@ class TerminalSession(QObject):
     resetRequested = Signal()
     toggleRequested = Signal()
     closed = Signal()
+    exited = Signal(int)
     HIGH_WATER = 256 * 1024
     LOW_WATER = 64 * 1024
     INPUT_LIMIT = 1024 * 1024
@@ -254,6 +255,8 @@ class TerminalSession(QObject):
             if self._exit_code is None:
                 self._exit_code = result
                 self.changed.emit()
+                if not self._closing:
+                    self.exited.emit(result)
         if self._closing and not self._kill_timer.isActive():
             for process in self._targets:
                 try:

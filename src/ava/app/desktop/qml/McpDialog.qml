@@ -40,15 +40,19 @@ NativeDialog {
         servers.save({id: draft.id || "", version: draft.version || 0, name: name.text.trim(), transport: transport.currentIndex ? "http" : "stdio", command_line: command.text.trim(), url: address.text.trim(), credentials: values});
     }
     contentItem: ColumnLayout {
-        spacing: 14
+        spacing: Theme.spaceLg
         ScrollView {
             id: scroll
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: availableWidth
+            contentHeight: form.implicitHeight + Theme.spaceSm
             clip: true
             ColumnLayout {
-                width: scroll.availableWidth
+                id: form
+                x: Theme.spaceSm
+                y: Theme.spaceXs
+                width: scroll.availableWidth - Theme.spaceSm * 2
                 spacing: 8
                 Label { text: "Name"; font.weight: Font.DemiBold }
                 NativeField { id: name; objectName: "mcpNameField"; Layout.fillWidth: true; placeholderText: "Workspace tools"; maximumLength: 80; enabled: !dialog.servers.saving }
@@ -82,6 +86,7 @@ NativeDialog {
         }
         Label { Layout.fillWidth: true; visible: !!text; text: dialog.servers.editorError; wrapMode: Text.Wrap; color: palette.link }
         RowLayout {
+            Layout.fillWidth: true
             Item { Layout.fillWidth: true }
             NativeButton { text: "Cancel"; enabled: !dialog.servers.saving; onClicked: dialog.close() }
             NativeButton { objectName: "saveMcpButton"; text: dialog.servers.saving ? "Saving…" : dialog.draft.id ? "Save" : "Add and connect"; enabled: !dialog.servers.saving && !!name.text.trim() && (transport.currentIndex ? !!address.text.trim() : !!command.text.trim()); onClicked: dialog.save() }

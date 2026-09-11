@@ -19,15 +19,19 @@ NativeDialog {
         function onSaved() { name.text = ""; description.text = ""; instructions.text = ""; dialog.close(); }
     }
     contentItem: ColumnLayout {
-        spacing: 14
+        spacing: Theme.spaceLg
         ScrollView {
             id: scroll
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: availableWidth
+            contentHeight: form.implicitHeight + Theme.spaceSm
             clip: true
             ColumnLayout {
-                width: scroll.availableWidth
+                id: form
+                x: Theme.spaceSm
+                y: Theme.spaceXs
+                width: scroll.availableWidth - Theme.spaceSm * 2
                 spacing: 8
                 Label { text: "Name"; font.weight: Font.DemiBold }
                 NativeField { id: name; objectName: "skillNameField"; Layout.fillWidth: true; placeholderText: "review-changes"; maximumLength: 64; enabled: !dialog.skills.busy }
@@ -55,6 +59,7 @@ NativeDialog {
         }
         Label { Layout.fillWidth: true; visible: !!text; text: dialog.skills.editorError; wrapMode: Text.Wrap; color: palette.link }
         RowLayout {
+            Layout.fillWidth: true
             Item { Layout.fillWidth: true }
             NativeButton { text: "Cancel"; enabled: !dialog.skills.busy; onClicked: dialog.close() }
             NativeButton {

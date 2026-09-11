@@ -7,6 +7,8 @@ Pane {
     id: sidebar
     required property var backend
     property string currentPage: "chat"
+    readonly property string currentChat: backend.chatId
+    onCurrentChatChanged: { if (currentChat) Qt.callLater(sessions.revealChat, currentChat); }
     signal hideRequested
     signal addProjectRequested
     signal settingsRequested
@@ -44,8 +46,8 @@ Pane {
     }
     function newConversation(project = "") {
         sidebar.conversationRequested();
-        if (project) sidebar.backend.prepareNewChat(project);
-        else sidebar.backend.prepareNewChat();
+        if (project) sidebar.backend.newChat(project);
+        else sidebar.backend.newChat();
     }
     ColumnLayout {
         anchors.fill: parent
@@ -68,43 +70,13 @@ Pane {
                 onClicked: sidebar.hideRequested()
             }
         }
-        RowLayout {
+        NavigationItem {
+            objectName: "newChatButton"
             Layout.fillWidth: true
-            spacing: 0
-            NavigationItem {
-                objectName: "newChatButton"
-                Layout.fillWidth: true
-                text: "New chat"
-                icon.source: "icons/new.svg"
-                enabled: sidebar.backend.online && !!sidebar.backend.projectId && !sidebar.backend.busy
-                onClicked: sidebar.newConversation()
-            }
-            NativeButton {
-                objectName: "newChatOptionsButton"
-                icon.source: "icons/chevron.svg"
-                icon.width: 12
-                icon.height: 12
-                quiet: true
-                tip: "Choose where to work"
-                enabled: sidebar.backend.online && !!sidebar.backend.projectId && !sidebar.backend.busy
-                onClicked: newChatMenu.popup()
-                NativeMenu {
-                    id: newChatMenu
-                    popupType: Popup.Item
-                    NativeMenuItem {
-                        text: "New chat…"
-                        onTriggered: sidebar.newConversation()
-                    }
-                    NativeMenuItem {
-                        objectName: "newWorktreeAction"
-                        text: "New chat in a worktree…"
-                        onTriggered: {
-                            sidebar.conversationRequested();
-                            sidebar.backend.prepareWorktree();
-                        }
-                    }
-                }
-            }
+            text: "New chat"
+            icon.source: "icons/new.svg"
+            enabled: sidebar.backend.online && !!sidebar.backend.projectId && !sidebar.backend.busy
+            onClicked: sidebar.newConversation()
         }
         NavigationItem {
             objectName: "searchChatsButton"
@@ -182,6 +154,7 @@ Pane {
                 readonly property bool project: modelData.kind === "project"
                 readonly property bool machine: modelData.kind === "machine"
                 readonly property bool section: modelData.kind === "section"
+                readonly property bool more: modelData.kind === "more"
                 readonly property bool pinned: modelData.kind === "chat" && !!modelData.pinned
                 width: ListView.view.width
                 height: section ? 36 : machine ? 44 : project ? 34 : pinned ? 48 : 32
@@ -209,9 +182,33 @@ Pane {
                     }
                 }
                 ItemDelegate {
+                    id: showMore
+                    objectName: row.more ? "showMoreSessions_" + row.modelData.project_id : ""
+                    visible: row.more
+                    anchors.fill: parent
+                    leftPadding: 26 + (sidebar.backend.machines.length > 1 ? 12 : 0)
+                    rightPadding: Theme.spaceSm
+                    text: row.modelData.title || ""
+                    Accessible.name: text
+                    onClicked: sidebar.backend.toggleProjectSessions(row.modelData.project_id)
+                    contentItem: Label {
+                        text: showMore.text
+                        font.pixelSize: Theme.caption
+                        color: Theme.secondaryText
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                    }
+                    background: Surface {
+                        radius: Theme.controlRadius
+                        border.width: 0
+                        focused: showMore.visualFocus
+                        color: showMore.hovered ? Theme.hover : "transparent"
+                    }
+                }
+                ItemDelegate {
                     id: rowButton
-                    objectName: row.section ? "" : (row.machine ? "machineGroup_" : row.project ? "projectGroup_" : "session_") + row.modelData.id
-                    visible: !row.section
+                    objectName: row.section || row.more ? "" : (row.machine ? "machineGroup_" : row.project ? "projectGroup_" : "session_") + row.modelData.id
+                    visible: !row.section && !row.more
                     anchors.fill: parent
                     enabled: row.machine || row.project || !!row.modelData.online
                     highlighted: sidebar.currentPage === "chat" && !row.project && !row.machine && row.modelData.id === sidebar.backend.chatId
@@ -290,8 +287,8 @@ Pane {
                     }
                 }
                 NativeButton {
-                    objectName: row.section ? "" : row.project ? "projectMenu_" + row.modelData.id : "sessionMenu_" + row.modelData.id
-                    visible: !row.section && !row.machine
+                    objectName: row.section || row.more ? "" : row.project ? "projectMenu_" + row.modelData.id : "sessionMenu_" + row.modelData.id
+                    visible: !row.section && !row.machine && !row.more
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     implicitWidth: 26
@@ -363,14 +360,6 @@ Pane {
             text: "New chat"
             enabled: !!sidebar.selectedProject.online && !sidebar.backend.busy
             onTriggered: sidebar.newConversation(sidebar.selectedProject.id)
-        }
-        NativeMenuItem {
-            text: "New chat in a worktree…"
-            enabled: !!sidebar.selectedProject.online && !sidebar.backend.busy
-            onTriggered: {
-                sidebar.conversationRequested();
-                sidebar.backend.prepareWorktree(sidebar.selectedProject.id);
-            }
         }
         MenuSeparator {}
         NativeMenuItem {

@@ -18,6 +18,7 @@ Pane {
     readonly property var terminalColors: ({background: Theme.workspace.toString(), foreground: Theme.text.toString(), cursor: Theme.text.toString(), selectionBackground: Theme.selection.toString()})
     property var evaluation: null
     signal evaluated
+    signal exitRequested
     padding: 0
     background: null
     function evaluate(script: string) {
@@ -60,6 +61,14 @@ Pane {
     Component.onDestruction: {
         if (session)
             session.close();
+    }
+    Connections {
+        target: pane.session
+        function onExited(code) {
+            // SSH uses 255 for transport failures: keep those tabs for reconnection.
+            if (!pane.session.canReconnect || code !== 255)
+                pane.exitRequested();
+        }
     }
     onTerminalColorsChanged: appearance()
     Connections { target: Theme; function onReducedMotionChanged() { pane.appearance(); } }

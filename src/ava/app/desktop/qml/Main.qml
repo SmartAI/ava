@@ -133,7 +133,7 @@ ApplicationWindow {
         enabled: window.backend.online && !window.backend.busy
         onActivated: {
             window.workspacePage = "chat";
-            window.backend.prepareNewChat();
+            window.backend.newChat();
         }
     }
     Shortcut {
@@ -180,7 +180,6 @@ ApplicationWindow {
         title: "Choose a working directory"
         onAccepted: window.backend.newChatInFolder(selectedFolder.toString())
     }
-    WorktreeDialog { backend: window.backend }
     HostKeyDialog { backend: window.backend; codeFont: window.codeFont }
     NativeDialog {
         id: remoteProjectDialog
@@ -191,15 +190,8 @@ ApplicationWindow {
         modal: true
         focus: true
         padding: 22
-        property bool createChat: false
         function openForProject() {
-            createChat = false;
             title = "Add project on " + window.backend.machineName;
-            open();
-        }
-        function openForChat() {
-            createChat = true;
-            title = "Choose a working directory on " + window.backend.machineName;
             open();
         }
         onOpened: remoteProjectPath.forceActiveFocus()
@@ -220,14 +212,11 @@ ApplicationWindow {
                 NativeButton {
                     id: remoteProjectAdd
                     objectName: "addRemoteProjectAction"
-                    text: remoteProjectDialog.createChat ? "Continue" : "Add project"
+                    text: "Add project"
                     primary: true
                     enabled: !!remoteProjectPath.text.trim() && window.backend.online
                     onClicked: {
-                        if (remoteProjectDialog.createChat)
-                            window.backend.newChatInFolder(remoteProjectPath.text.trim());
-                        else
-                            window.backend.addProject(remoteProjectPath.text.trim());
+                        window.backend.addProject(remoteProjectPath.text.trim());
                         remoteProjectDialog.close();
                     }
                 }
@@ -504,8 +493,13 @@ ApplicationWindow {
                     }
                 }
                 Item {
-                    Layout.fillWidth: true
                     Layout.fillHeight: true
+                    visible: conversation.count === 0
+                }
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: conversation.count > 0
+                    Layout.preferredHeight: conversation.count === 0 ? emptyConversation.implicitHeight + Theme.spaceXl * 2 : -1
                     ListView {
                         id: conversation
                         objectName: "transcriptView"
@@ -770,8 +764,9 @@ ApplicationWindow {
                         }
                     }
                     ColumnLayout {
+                        id: emptyConversation
                         anchors.centerIn: parent
-                        width: Math.min(420, parent.width - 60)
+                        width: chatColumn.contentWidth
                         visible: conversation.count === 0
                         spacing: 12
                         Label {
@@ -779,32 +774,12 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.WordWrap
                             text: "What would you like to work on?"
-                            font.pixelSize: window.rightOpen ? 21 : 26
+                            font.pixelSize: window.rightOpen ? Theme.sectionTitle : Theme.pageTitle
                             font.weight: Font.Medium
                             color: window.palette.text
                         }
-                        Label {
-                            Layout.fillWidth: true
-                            text: window.backend.projectId ? "New conversations start in this folder." : "Add a project folder to start a conversation."
-                            horizontalAlignment: Text.AlignHCenter
-                            wrapMode: Text.WordWrap
-                            color: palette.placeholderText
-                            font.pixelSize: 13
-                            lineHeight: 1.4
-                        }
-                        Label {
-                            id: chatDirectory
-                            objectName: "chatDirectory"
-                            Layout.fillWidth: true
-                            visible: !!window.backend.projectId
-                            text: window.backend.workspacePath
-                            horizontalAlignment: Text.AlignHCenter
-                            wrapMode: Text.WrapAnywhere
-                            maximumLineCount: 2
-                            color: palette.text
-                            font.pixelSize: 12
-                        }
                         RowLayout {
+                            visible: !window.backend.chatId
                             Layout.alignment: Qt.AlignHCenter
                             Layout.topMargin: 8
                             spacing: 8
@@ -815,14 +790,7 @@ ApplicationWindow {
                                 primary: true
                                 visible: !window.backend.chatId
                                 enabled: window.backend.online && !window.backend.busy
-                                onClicked: window.backend.projectId ? window.backend.prepareNewChat() : folderDialog.open()
-                            }
-                            NativeButton {
-                                objectName: "chooseChatFolderButton"
-                                text: "Choose folder…"
-                                visible: !!window.backend.projectId && (!window.backend.chatId || (!window.backend.draft && window.backend.attachments.length === 0))
-                                enabled: window.backend.online && !window.backend.busy
-                                onClicked: window.backend.remoteMachine ? remoteProjectDialog.openForChat() : newChatFolderDialog.open()
+                                onClicked: window.backend.projectId ? window.backend.newChat() : folderDialog.open()
                             }
                         }
                     }
@@ -839,6 +807,11 @@ ApplicationWindow {
                     backend: window.backend
                     onAttach: fileDialog.open()
                     onModels: modelDialog.open()
+                    onChooseFolder: newChatFolderDialog.open()
+                }
+                Item {
+                    Layout.fillHeight: true
+                    visible: conversation.count === 0
                 }
             }
             TerminalDock {

@@ -483,7 +483,6 @@ def click(window, name):
 
 def start_chat(window, name="newChatButton"):
     click(window, name)
-    click(window, "createOriginalChatButton")
 
 
 def type_message(window, text, *, append=False):
@@ -747,6 +746,53 @@ def test_desktop_controller_is_released_after_shutdown(qt_app, home, project):
     assert reference() is None, "Connection callbacks must not retain a closed controller"
 
 
+@pytest.mark.parametrize("dark,width,height", [(False, 1280, 820), (True, 1280, 820), (False, 800, 600), (True, 800, 600)])
+def test_desktop_machine_actions_align(desktop, project, dark, width, height):
+    from ava.app.desktop.connection import Connection
+    from ava.app.desktop.controller import Machine
+    from ava.app.desktop.runtime import BackendProcess
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller._heartbeat.stop()
+    local = controller._connection
+    connection = Connection(int(local._base.rsplit(":", 1)[1]), local._token, controller, prefix="remote~")
+    runtime = BackendProcess(project, controller, host="development.example.invalid")
+    remote = Machine("remote", "Development machine with a long name", runtime,
+                     connection=connection, status="Connected")
+    controller._machines[remote.id] = remote
+    window.resize(width, height)
+    window.setProperty("dark", dark)
+    click(window, "settingsButton")
+    click(window, "settingsMachinesTab")
+    for state in ("online", "update", "restarting", "offline"):
+        remote.connection = None if state == "offline" else connection
+        remote.error = "Connection lost. Reconnect to continue." if state == "offline" else ""
+        remote.restarting = state == "restarting"
+        runtime.info = {"service": {"update_pending": state == "update"}}
+        controller.machinesChanged.emit()
+        save_screenshot(window, f"machine-actions-{state}-{dark}-{width}")
+        for action in ("restartMachine_", "selectMachine_"):
+            first = find_item(window, action + "local")
+            second = find_item(window, action + "remote")
+            a, b = visible_rect(window, first), visible_rect(window, second)
+            assert abs(a.left() - b.left()) <= 1, "Machine actions must share columns"
+            assert abs(a.width() - b.width()) <= 1
+            for item, rect in ((first, a), (second, b)):
+                assert rect.width() >= item.width() - 1 and rect.height() >= item.height() - 1
+                assert item.width() >= item.property("implicitWidth") - 1
+        for identity in ("local", "remote"):
+            restart = visible_rect(window, find_item(window, "restartMachine_" + identity))
+            select = visible_rect(window, find_item(window, "selectMachine_" + identity))
+            assert abs(restart.center().y() - select.center().y()) <= 1
+            assert restart.right() < select.left()
+            assert find_item(window, "backendIndicator_" + identity) is None
+            assert find_item(window, "backendStatus_" + identity).isVisible()
+    remote.connection = connection
+    remote.restarting = False
+
+
 def test_desktop_machine_management_shows_local_connection(desktop):
     controller, window = desktop
     controller.start()
@@ -755,10 +801,10 @@ def test_desktop_machine_management_shows_local_connection(desktop):
     click(window, "settingsButton")
     click(window, "settingsMachinesTab")
     assert find_item(window, "machineHostField") is not None
+    until(lambda: find_item(window, "backendStatus_local") is not None, window.frameSwapped)
     assert controller.machines[0]["name"] == ("This Mac" if sys.platform == "darwin" else "This computer")
     assert controller.machines[0]["online"]
     assert controller.machines[0]["state"] == "online"
-    until(lambda: find_item(window, "backendStatus_local") is not None, window.frameSwapped)
     assert find_item(window, "backendIndicator_local") is None
     assert find_item(window, "backendStatus_local").isVisible()
     before = controller.runtime.info["instance_id"]
@@ -1354,18 +1400,18 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
                                     "machines": controller.machines}, ensure_ascii=False))
         assert len(model_server) == 2
         remote_project_id = controller.projectId
-        click(window, "newChatOptionsButton")
-        click(window, "newWorktreeAction")
-        find_item(window, "worktreeBranchField").setProperty("text", "ava/remote-worktree")
-        click(window, "createWorktreeChatButton")
+        start_chat(window)
         until(lambda: controller.connected and controller.chatId != remote_chat, controller.changed)
+        click(window, "sessionWorktreeCheck")
+        type_message(window, "Work inside the Fedora worktree")
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        until(lambda: controller.connected and bool(controller.workspaceBranch), controller.changed)
         worktree_chat = controller.chatId
         worktree_root = controller.workspacePath
+        worktree_branch = controller.workspaceBranch
         assert controller.remoteMachine and controller.projectId == remote_project_id
         assert worktree_root != controller.projectPath and len(controller.projects) == 2
         assert not Path(worktree_root).exists()
-        type_message(window, "Work inside the Fedora worktree")
-        QTest.keyClick(window, Qt.Key.Key_Return)
         until(lambda: any(row["body"] == "Hello " for row in controller._transcript.rows), controller.changed)
         model_server[-1].release.set()
         until(lambda: controller.status == "idle" and any(row["body"] == "Hello 世界" for row in controller._transcript.rows), controller.changed)
@@ -1374,7 +1420,7 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
         until(lambda: (pane := find_item(window, "filePane")) is not None and pane.property("rootPath") == worktree_root and pane.property("fileState").get("text") == "remote-fixture", window.frameSwapped)
         click(window, "closeInspectorButton")
         click(window, "reviewChangesButton")
-        until(lambda: (pane := find_item(window, "reviewPane")) is not None and pane.property("review") is not None and pane.property("review").state.get("branch") == "ava/remote-worktree", window.frameSwapped)
+        until(lambda: (pane := find_item(window, "reviewPane")) is not None and pane.property("review") is not None and pane.property("review").state.get("branch") == worktree_branch, window.frameSwapped)
         click(window, "closeInspectorButton")
         click(window, "toggleTerminalButton")
         until(lambda: (pane := find_item(window, "terminalPane")) is not None and pane.property("session") is not None and pane.property("session").ready, window.frameSwapped)
@@ -1978,6 +2024,8 @@ def test_running_status_is_at_transcript_tail_and_tracks_elapsed_time(desktop, m
         controller.changed,
     )
 
+    # A backend event is not a layout checkpoint, especially when leaving the empty state.
+    save_screenshot(window, "running-status-initial")
     status = find_item(window, "runStatus")
     transcript = find_item(window, "transcriptView")
     composer = find_item(window, "composerCard")
@@ -2606,15 +2654,12 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
     assert controller.projectPath == str(project)
-    assert find_item(window, "chatDirectory").property("text") == str(project)
+    assert find_item(window, "sessionProjectChoice").property("tip") == str(project)
     assert str(project) in find_item(window, "locationSubtitle").property("text")
 
     other = tmp_path / "chosen folder"
     other.mkdir()
     controller.newChatInFolder(other.as_uri())
-    until(lambda: controller.worktreeState.get("project") == controller.projectId, controller.worktreeChanged)
-    assert not controller.chatId
-    click(window, "createOriginalChatButton")
     until(
         lambda: controller.connected
         and controller.chatId
@@ -2622,14 +2667,13 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
         controller.changed,
     )
     assert controller.workspacePath == str(other)
-    assert find_item(window, "chatDirectory").property("text") == str(other)
+    assert find_item(window, "sessionProjectChoice").property("tip") == str(other)
     assert find_item(window, "chooseChatFolderButton").property("visible")
 
     # An empty new chat is still a new session, so the folder can be changed again,
     # including re-selecting the same folder without leaving an unused chat behind.
     first_chat = controller.chatId
     controller.newChatInFolder(other.as_uri())
-    click(window, "createOriginalChatButton")
     until(
         lambda: controller.connected
         and controller.chatId
@@ -2645,7 +2689,6 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
     third = tmp_path / "third folder"
     third.mkdir()
     controller.newChatInFolder(third.as_uri())
-    click(window, "createOriginalChatButton")
     until(
         lambda: controller.connected
         and controller.chatId
@@ -2658,10 +2701,11 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
         controller.navigationChanged,
     )
     assert controller.workspacePath == str(third)
-    assert find_item(window, "chatDirectory").property("text") == str(third)
+    assert find_item(window, "sessionProjectChoice").property("tip") == str(third)
 
     type_message(window, "Draft for the third folder")
-    assert not find_item(window, "chooseChatFolderButton").property("visible")
+    assert find_item(window, "chooseChatFolderButton").property("visible")
+    assert find_item(window, "chooseChatFolderButton").property("enabled")
 
 
 def test_desktop_session_title_is_single_line(desktop, model_server):
@@ -3760,6 +3804,67 @@ def test_desktop_pin_moves_chats_above_project_groups(desktop, model_server, pro
     assert not controller.error and not model_server
 
 
+def test_desktop_session_tree_shows_five_then_expands(desktop, model_server, project):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    project_id = controller.projectId
+    identities = []
+    with httpx.Client(base_url=controller._connection._base,
+                      headers={"Authorization": "Bearer " + controller._connection._token},
+                      trust_env=False) as client:
+        for index in range(9):
+            response = client.post("/api/chats", json={"project_id": project_id})
+            response.raise_for_status()
+            identity = response.json()["id"]
+            identities.append(identity)
+            title = "Older review discussion" if index == 2 else f"History session {index}"
+            client.patch("/api/chats/" + identity, json={"title": title}).raise_for_status()
+        client.post(f"/api/chats/{identities[1]}/archive", json={"archived": True}).raise_for_status()
+    controller.refresh()
+    until(lambda: len(controller.projects[0]["chats"]) == 9, controller.navigationChanged)
+    controller.toggleChatPin(identities[0])
+
+    def shown():
+        return [row["id"] for row in controller.sessionRows
+                if row["kind"] == "chat" and not row["pinned"]]
+
+    latest = list(reversed(identities[2:]))
+    assert shown() == latest[:5], "Only the newest five unpinned sessions should be listed"
+    assert sum(row["id"] == identities[0] for row in controller.sessionRows) == 1
+    click(window, "showMoreSessions_" + project_id)
+    assert shown() == latest
+    sessions = find_item(window, "sessionList")
+    QMetaObject.invokeMethod(sessions, "positionViewAtEnd")
+    click(window, "showMoreSessions_" + project_id)
+    assert shown() == latest[:5]
+    window.resize(800, 600)
+    window.setProperty("dark", True)
+    save_screenshot(window, "session-tree-narrow")
+    QMetaObject.invokeMethod(sessions, "positionViewAtEnd")
+    save_screenshot(window, "session-tree-five")
+    more = find_item(window, "showMoreSessions_" + project_id)
+    assert visible_rect(window, more).height() == more.height()
+    more.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(window, Qt.Key.Key_Space)
+    assert shown() == latest
+    QMetaObject.invokeMethod(sessions, "positionViewAtEnd")
+    click(window, "showMoreSessions_" + project_id)
+    click(window, "searchChatsButton")
+    find_item(window, "chatSearchField").setProperty("text", "Older review discussion")
+    assert find_item(window, "chatSearchField").isVisible()
+    assert [row["id"] for row in controller.searchChats("Older review discussion", False)] == [identities[2]]
+    results = find_item(window, "chatSearchResults")
+    assert results.property("count") == 1, results.property("model")
+    click(window, "searchChat_" + identities[2])
+    until(lambda: controller.connected and controller.chatId == identities[2], controller.changed)
+    until(lambda: (item := find_item(window, "session_" + identities[2])) is not None
+          and visible_rect(window, item).height() == item.height(), window.frameSwapped)
+    assert identities[2] in shown(), "Opening an older result must reveal it in the tree"
+    save_screenshot(window, "session-tree-revealed")
+    assert not controller.error
+
+
 def test_desktop_search_manage_and_restore_conversations(desktop, model_server, project, tmp_path):
     controller, window = desktop
     controller.start()
@@ -4272,6 +4377,45 @@ def test_desktop_review_stage_unstage_and_commit(desktop, model_server, project)
     assert not review.state["error"]
 
 
+def test_desktop_terminal_exit_closes_tab_and_last_panel(desktop, model_server, monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    type_message(window, "Keep this draft")
+    click(window, "toggleTerminalButton")
+    first = find_item(window, "terminalPane").property("session")
+    until(lambda: first.ready, first.changed)
+    first_process = first._process
+    click(window, "newTerminalButton")
+    until(lambda: find_item(window, "terminalPane").property("session") is not first, window.frameSwapped)
+    second = find_item(window, "terminalPane").property("session")
+    until(lambda: second.ready, second.changed)
+    second_process = second._process
+    for session in (second, first):
+        click(window, "terminalWeb")
+        for character in "exit":
+            QTest.keyClick(window, character)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        until(lambda session=session: session not in controller._terminals, window.frameSwapped, timeout=4000)
+        if session is second:
+            assert window.property("terminalOpen") and first_process.poll() is None
+            assert find_item(window, "terminalPane").property("session") is first
+    assert first_process.poll() is not None and second_process.poll() is not None
+    assert not window.property("terminalOpen") and not find_item(window, "terminalDock").isVisible()
+    assert find_item(window, "composer").hasActiveFocus()
+    assert controller.draft == "Keep this draft"
+    click(window, "toggleTerminalButton")
+    reopened = find_item(window, "terminalPane").property("session")
+    until(lambda: reopened.ready, reopened.changed)
+    assert reopened.root == controller.workspacePath
+    assert window.property("terminalOpen")
+    save_screenshot(window, "terminal-reopened-after-exit")
+
+
 def test_desktop_terminal_interactive_tabs_resize_and_interrupt(
     desktop, model_server, project, monkeypatch
 ):
@@ -4529,89 +4673,102 @@ def test_desktop_terminal_output_backpressure(
     save_screenshot(window, "terminal-throughput")
 
 
+@pytest.mark.parametrize("dark,width,height", [(False, 1280, 820), (True, 1280, 820), (False, 800, 600), (True, 800, 600)])
+def test_desktop_new_session_has_inline_setup(desktop, model_server, project, dark, width, height):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, "newChatButton")
+    modal_action = find_item(window, "createOriginalChatButton")
+    assert modal_action is None or not modal_action.isVisible(), "New chat must not open a setup modal"
+    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
+    assert find_item(window, "sessionProjectChoice").property("currentValue") == controller.projectId
+    assert not find_item(window, "sessionWorktreeCheck").property("checked")
+    assert controller.workspacePath == str(project)
+    window.resize(width, height)
+    window.setProperty("dark", dark)
+    for inspector in (False, True):
+        window.setProperty("rightOpen", inspector)
+        save_screenshot(window, f"session-footer-{dark}-{width}-inspector-{inspector}")
+        card = visible_rect(window, find_item(window, "composerCard"))
+        previous = None
+        for name in ("sessionProjectChoice", "chooseChatFolderButton", "sessionWorktreeCheck"):
+            item = find_item(window, name)
+            rect = visible_rect(window, item)
+            assert rect.top() >= card.bottom() + 8, "Session options need a gap below the message box"
+            assert rect.width() >= item.width() - 1 and rect.height() >= item.height() - 1, name
+            assert item.width() > 0 and card.left() <= rect.left() < rect.right() <= card.right(), name
+            if previous is not None:
+                assert previous.right() <= rect.left(), "Footer controls must not overlap"
+                assert abs(previous.center().y() - rect.center().y()) <= 1
+            previous = rect
+        assert window.property("dark") == dark
+    toggle = find_item(window, "sessionWorktreeCheck")
+    toggle.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(window, Qt.Key.Key_Space)
+    assert controller.sessionWorktree and toggle.property("checked")
+    save_screenshot(window, f"session-footer-selected-{dark}-{width}")
+    QTest.keyClick(window, Qt.Key.Key_Space)
+    assert not controller.sessionWorktree
+
+
 def test_desktop_new_session_workspace_choice(desktop, model_server, project, home, tmp_path):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-
-    # New conversation always offers both choices; cancelling creates nothing.
-    click(window, "newChatButton")
-    assert find_item(window, "originalDirectoryChoice").property("checked")
-    assert not controller.chatId and not controller.projects[0]["chats"]
-    click(window, "cancelNewChatButton")
-    assert not controller.projects[0]["chats"]
-    assert not (home / "worktrees").exists()
-
-    # A plain directory remains usable even when Git cannot create a worktree.
-    click(window, "newChatButton")
-    click(window, "newWorktreeChoice")
-    until(lambda: bool(controller.worktreeState.get("options_error")), controller.worktreeChanged)
-    assert not find_item(window, "createWorktreeChatButton").property("enabled")
-    assert find_item(window, "worktreeError").property("visible")
-    click(window, "originalDirectoryChoice")
-    assert not find_item(window, "worktreeError").property("visible")
-    click(window, "createOriginalChatButton")
-    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
-    assert controller.workspacePath == str(project)
-    assert not (home / "worktrees").exists()
-    type_message(window, "Keep this original-directory draft")
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    original_project = controller.projectId
     original_chat = controller.chatId
+    type_message(window, "Keep my draft while changing projects")
+    attachment = project / "context.txt"
+    attachment.write_text("Project-independent context")
+    controller.addAttachments([str(attachment)])
+    click(window, "sessionWorktreeCheck")
+    assert controller.sessionWorktree
+    assert not (home / "worktrees").exists(), "Checkbox must not create unused worktrees"
 
-    # Selecting a different folder leads to the same choice, not immediate creation.
     chosen = tmp_path / "chosen repository"
     chosen.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main", str(chosen)], check=True)
-    (chosen / "tracked.txt").write_text("committed\n")
-    subprocess.run(["git", "-C", str(chosen), "add", "."], check=True)
-    subprocess.run([
-        "git", "-C", str(chosen), "-c", "user.name=Ava fixture",
-        "-c", "user.email=ava@example.invalid", "-c", "commit.gpgsign=false",
-        "commit", "-qm", "Initial commit",
-    ], check=True)
-    (chosen / "tracked.txt").write_text("uncommitted\n")
     controller.newChatInFolder(chosen.as_uri())
-    until(lambda: controller.projectPath == str(chosen), controller.changed)
-    assert not controller.chatId
-    assert not next(p for p in controller.projects if p["id"] == controller.projectId)["chats"]
-    click(window, "newWorktreeChoice")
-    first_branch = controller.worktreeState["branch"]
-    assert re.fullmatch(r"ava/[0-9a-f]{32}", first_branch)
-    save_screenshot(window, "new-session-worktree-choice")
-    click(window, "createWorktreeChatButton")
-    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
-    first_workspace = Path(controller.workspacePath)
-    first_chat = controller.chatId
-    assert (first_workspace / "tracked.txt").read_text() == "committed\n"
-    assert (chosen / "tracked.txt").read_text() == "uncommitted\n"
-    type_message(window, "Keep the first worktree draft")
+    until(lambda: controller.connected and controller.projectPath == str(chosen), controller.changed)
+    assert controller.draft == "Keep my draft while changing projects"
+    assert [entry["name"] for entry in controller.attachments] == ["context.txt"]
+    assert controller.sessionWorktree
+    until(lambda: not any(c["id"] == original_chat for p in controller.projects for c in p["chats"]), controller.navigationChanged)
 
-    # No branch entry is needed, and consecutive sessions get independent worktrees.
-    click(window, "newChatButton")
-    click(window, "newWorktreeChoice")
-    second_branch = controller.worktreeState["branch"]
-    assert re.fullmatch(r"ava/[0-9a-f]{32}", second_branch)
-    assert second_branch != first_branch
+    # Use the inline dropdown to return to an already registered project.
+    click(window, "sessionProjectChoice")
+    QTest.keyClick(window, Qt.Key.Key_Home)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.connected and controller.projectId == original_project, controller.changed)
+    assert controller.draft == "Keep my draft while changing projects"
+    assert controller.sessionWorktree and len(controller.attachments) == 1
     window.resize(800, 600)
-    until(lambda: not controller.worktreeState["loading"], controller.worktreeChanged)
     frame = QSignalSpy(window.frameSwapped)
     window.update()
     assert frame.count() or frame.wait(2000)
-    for name in ("originalDirectoryChoice", "worktreeBranchField", "createWorktreeChatButton"):
+    for name in ("sessionProjectChoice", "sessionWorktreeCheck", "chooseChatFolderButton"):
         item = find_item(window, name)
         rect = item.mapRectToScene(QRectF(0, 0, item.width(), item.height()))
         assert QRectF(0, 0, window.width(), window.height()).contains(rect), name
-    click(window, "createWorktreeChatButton")
-    until(lambda: controller.connected and controller.chatId != first_chat, controller.changed)
-    second_workspace = Path(controller.workspacePath)
-    assert second_workspace != first_workspace
-    listing = subprocess.check_output(["git", "-C", str(chosen), "worktree", "list", "--porcelain"], text=True)
-    for workspace, branch in ((first_workspace, first_branch), (second_workspace, second_branch)):
-        assert f"worktree {workspace}" in listing and f"branch refs/heads/{branch}" in listing
-    assert len(controller.projects) == 2
-    controller.openChat(original_chat)
-    until(lambda: controller.connected and controller.chatId == original_chat, controller.changed)
+    save_screenshot(window, "inline-session-setup")
+
+    # Git errors stay inline and keep the draft; unchecking works in plain folders.
+    click(window, "sendButton")
+    until(lambda: bool(controller.error) and not controller.busy, controller.changed)
+    assert "not a git repository" in controller.error.lower()
+    assert controller.draft == "Keep my draft while changing projects"
+    assert len(controller.attachments) == 1 and not model_server
+    click(window, "sessionWorktreeCheck")
+    assert not controller.sessionWorktree and not controller.error
+    click(window, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
     assert controller.workspacePath == str(project)
-    assert controller.draft == "Keep this original-directory draft"
+    assert not controller.canConfigureSession
+    model_server[-1].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    assert not (home / "worktrees").exists()
 
 
 def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
@@ -4634,43 +4791,44 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
     project_id = controller.projectId
-    assert find_item(window, 'newChatOptionsButton') is not None, 'New chat needs a worktree choice'
-    click(window, 'newChatOptionsButton')
-    click(window, 'newWorktreeAction')
-    until(lambda: bool(find_item(window, 'worktreeBranchField')), window.frameSwapped)
-    find_item(window, 'worktreeBranchField').setProperty('text', 'bad branch name')
-    click(window, 'createWorktreeChatButton')
-    until(lambda: bool(controller.worktreeState.get('error')), controller.worktreeChanged)
-    assert not controller.chatId and not controller.projects[0]['chats']
-    save_screenshot(window, 'worktree-invalid-branch')
-    find_item(window, 'worktreeBranchField').setProperty('text', 'ava/中文-review')
-    until(lambda: not controller.worktreeState['loading'], controller.worktreeChanged)
-    save_screenshot(window, 'worktree-dialog')
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    click(window, 'sessionWorktreeCheck')
+    click(window, 'sessionWorktreeCheck')
+    assert not controller.sessionWorktree and not (home / 'worktrees').exists()
+    click(window, 'sessionWorktreeCheck')
+    type_message(window, 'Work independently in this worktree')
+    save_screenshot(window, 'inline-worktree-checked')
     pulses = [time.perf_counter()]
     heartbeat = QTimer()
     heartbeat.setInterval(10)
     heartbeat.timeout.connect(lambda: pulses.append(time.perf_counter()))
     heartbeat.start()
-    click(window, 'createWorktreeChatButton')
-    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
+    click(window, 'sendButton')
+    controller.draft = 'A follow-up typed while Git is creating the worktree'
+    until(lambda: controller.connected and bool(controller.workspaceBranch), controller.changed)
     heartbeat.stop()
     max_pause = max(b - a for a, b in zip(pulses, pulses[1:], strict=False))
     assert max_pause < 0.15
     print('WORKTREE_CREATION', json.dumps({'max_ui_pause_ms': round(max_pause * 1000), 'ready_ms': round((pulses[-1] - pulses[0]) * 1000)}))
     workspace = Path(controller.workspacePath)
+    assert workspace.parent == home / 'worktrees' / project.name
+    assert re.fullmatch(r'[0-9a-f]{32}', workspace.name)
+    assert controller.workspaceBranch == 'ava/' + workspace.name
     assert workspace != project and controller.projectId == project_id
     assert len(controller.projects) == 1
     assert (workspace / 'answer.py').read_text() == 'answer = 1\n'
     assert (project / 'answer.py').read_text() == 'answer = 99\n'
     assert git('branch', '--show-current').strip() == 'main'
     chat_id = controller.chatId
-    type_message(window, 'Work independently in this worktree')
-    QTest.keyClick(window, Qt.Key.Key_Return)
     until(lambda: (workspace / 'remote-test-proof.txt').exists(), controller.changed)
     assert not (project / 'remote-test-proof.txt').exists()
     # The tool creates the file before the following model request reaches the
     # server. Release the assistant response, not the already-finished tool call.
     until(lambda: len(model_server) == 2, controller.changed)
+    assert controller.draft == 'A follow-up typed while Git is creating the worktree'
+    assert 'Work independently in this worktree' in json.dumps(model_server[0].request)
+    assert 'A follow-up typed while Git' not in json.dumps(model_server[0].request)
     model_server[-1].release.set()
     until(lambda: controller.status == 'idle', controller.changed)
     controller.browseFiles('answer.py')
@@ -4705,6 +4863,21 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     assert not (project / ".agents/skills/worktree-check").exists()
     assert skills.canUse
     save_screenshot(window, "skills-worktree")
+
+    start_chat(window)
+    until(lambda: controller.connected and controller.chatId != chat_id, controller.changed)
+    assert not controller.sessionWorktree
+    click(window, "sessionWorktreeCheck")
+    type_message(window, "Use a second independent worktree")
+    click(window, "sendButton")
+    until(lambda: len(model_server) == 4, controller.changed)
+    second_workspace = Path(controller.workspacePath)
+    assert second_workspace.parent == workspace.parent and second_workspace != workspace
+    listing = git('worktree', 'list', '--porcelain')
+    assert f'worktree {workspace}' in listing and f'worktree {second_workspace}' in listing
+    model_server[-1].release.set()
+    until(lambda: controller.status == 'idle', controller.changed)
+    assert len(controller.projects) == 1
 
 
 def text_menu_item(caption):
@@ -4849,9 +5022,44 @@ def test_desktop_readonly_text_context_copies_markdown_and_code(desktop, model_s
     surface, item = text_menu_item("Copy")
     assert item.height() == 32
     save_screenshot(surface, "readonly-text-menu")
+    select_all = text_menu_item("Select all")[1]
+    assert item.y() == 0, "Read-only menus must not reserve space for hidden editing actions"
+    assert select_all.y() == item.y() + item.height(), "Copy and Select all must be adjacent"
+    assert item.parentItem().parentItem().property("contentHeight") == item.height() + select_all.height()
+    assert item.width() == select_all.width() and item.width() > 100
     click_text_menu("Copy")
     assert QGuiApplication.clipboard().text() == selected.replace("\u2029", "\n").replace("\u2028", "\n")
     until(lambda: output.hasActiveFocus(), window.frameSwapped)
+
+    # Select a range with real mouse gestures, then copy it in each appearance/size.
+    from PySide6.QtQml import QQmlExpression, qmlContext
+
+    first = selected.index("Native controls")
+    for dark, width, height in ((False, 1280, 820), (True, 1280, 820), (False, 800, 600), (True, 800, 600)):
+        window.resize(width, height)
+        window.setProperty("dark", dark)
+        save_screenshot(window, f"selection-range-{dark}-{width}")
+        points = []
+        for position in (first, first + len("Native controls")):
+            expression = QQmlExpression(qmlContext(output), output, f"positionToRectangle({position})")
+            rectangle, _ = expression.evaluate()
+            assert not expression.hasError(), expression.error().toString()
+            points.append(output.mapToScene(rectangle.center()).toPoint())
+        assert all(visible_rect(window, output).contains(point) for point in points)
+        QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, points[0])
+        QTest.mouseMove(window, points[1], delay=30)
+        QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, points[1])
+        assert output.property("selectedText") == "Native controls"
+        open_text_context(window, output, point=(points[0] + points[1]) / 2)
+        assert output.property("selectedText") == "Native controls"
+        surface, copy = text_menu_item("Copy")
+        select_all = text_menu_item("Select all")[1]
+        save_screenshot(surface, f"selection-menu-{dark}-{width}")
+        assert copy.y() == 0 and select_all.y() == copy.height()
+        assert copy.parentItem().parentItem().property("contentHeight") == 64
+        click_text_menu("Copy")
+        assert QGuiApplication.clipboard().text() == "Native controls"
+        until(lambda: output.hasActiveFocus(), window.frameSwapped)
 
     code = "# 中文源代码\nanswer = '**keep this**'\nprint(answer)\n"
     source = project / "context.py"
@@ -5229,6 +5437,37 @@ def test_desktop_mcp_real_catalog_virtualization(desktop, model_server, home, ca
         print("MCP_BENCHMARK", json.dumps(metrics))
     assert len(live) < 30 and open_ms < 1000 and metrics["max_gui_ms"] < 150
     save_screenshot(window, "mcp-thousand")
+
+
+@pytest.mark.parametrize("page,action,field_name", [("skillsButton", "newSkillButton", "skillNameField"), ("mcpButton", "addMcpButton", "mcpNameField"), ("automationsButton", "newAutomationButton", "automationNameField")])
+def test_desktop_add_dialog_field_insets(desktop, page, action, field_name):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    click(window, page)
+    click(window, action)
+    field = find_item(window, field_name)
+    border = field.parentItem()
+    while border is not None and "PopupItem" not in border.metaObject().className():
+        border = border.parentItem()
+    assert border is not None
+    for dark, width, height in ((False, 1280, 820), (True, 1280, 820), (False, 800, 600), (True, 800, 600)):
+        window.resize(width, height)
+        window.setProperty("dark", dark)
+        until(lambda: field.width() > 100, window.frameSwapped)
+        save_screenshot(window, f"{field_name}-insets-{dark}-{width}")
+        outer = visible_rect(window, border)
+        inner = field.mapRectToScene(QRectF(0, 0, field.width(), field.height()))
+        left, right = inner.left() - outer.left(), outer.right() - inner.right()
+        assert min(left, right) >= 28, f"Fields need dialog padding and room for focus rings: {left=}, {right=}"
+        assert abs(left - right) <= 8, f"Field insets should be balanced: {left=}, {right=}"
+        parent = field.parentItem()
+        while parent is not None:
+            if parent.clip():
+                assert parent.mapRectToScene(parent.boundingRect()).contains(inner.adjusted(-3, -3, 3, 3))
+            parent = parent.parentItem()
+        assert field.hasActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Escape)
 
 
 def test_desktop_skills_manage_and_affect_agent(desktop, model_server, project):

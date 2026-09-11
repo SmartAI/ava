@@ -17,6 +17,7 @@ NativeMenu {
         objectName: "textUndo"
         text: "Undo"
         visible: menu.editable
+        height: menu.editable ? implicitHeight : 0
         enabled: menu.editable && menu.editor.canUndo
         onTriggered: menu.editor.undo()
     }
@@ -24,14 +25,16 @@ NativeMenu {
         objectName: "textRedo"
         text: "Redo"
         visible: menu.editable
+        height: menu.editable ? implicitHeight : 0
         enabled: menu.editable && menu.editor.canRedo
         onTriggered: menu.editor.redo()
     }
-    MenuSeparator { visible: menu.editable }
+    MenuSeparator { visible: menu.editable; height: menu.editable ? implicitHeight : 0 }
     NativeMenuItem {
         objectName: "textCut"
         text: "Cut"
         visible: menu.editable
+        height: menu.editable ? implicitHeight : 0
         enabled: menu.editable && menu.canCopy
         onTriggered: menu.editor.cut()
     }
@@ -45,13 +48,14 @@ NativeMenu {
         objectName: "textPaste"
         text: "Paste"
         visible: menu.editable
+        height: menu.editable ? implicitHeight : 0
         enabled: menu.editable && menu.canPaste
         onTriggered: {
             if (!menu.pasteHandler || !menu.pasteHandler())
                 menu.editor.paste();
         }
     }
-    MenuSeparator { visible: menu.editable }
+    MenuSeparator { visible: menu.editable; height: menu.editable ? implicitHeight : 0 }
     NativeMenuItem {
         objectName: "textSelectAll"
         text: "Select all"

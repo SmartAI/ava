@@ -36,12 +36,25 @@ The desktop supports built-in providers and custom OpenAI-compatible or Anthropi
 An existing Codex CLI login is reused for Codex.
 
 Choose a project folder, create or reopen a conversation, and send a message.
+**New chat** opens a session directly, without a setup dialog. Before the first message,
+use the project selector below the message box, or the adjacent **+** to choose another
+folder, without losing your draft or attachments. Turn on **Worktree** in the same footer
+to create a random branch and checkout with `git worktree add` on first send; leave it off
+to work directly in the project folder.
+Worktrees are grouped under `$HOME/.ava/worktrees/<project-folder-name>/<random-name>`
+(or `$AVA_HOME/worktrees/...` when configured), on the selected machine. Toggling the
+option alone creates nothing. Existing worktrees and uncommitted project changes are
+left intact; after the conversation starts, its working directory is fixed.
 Enter sends; Shift+Enter inserts a newline. While Ava runs, Enter steers the current
 turn and Alt+Enter queues a follow-up, matching the Web UI. Enter resumes a paused turn.
 Pause waits for a step boundary; Stop cancels the run; Resume continues a paused conversation.
 Drafts and staged attachments are kept separately for each conversation while the app remains open.
 
 - Sessions from all projects appear together, grouped under collapsible project headings.
+  Each project initially shows its latest five unpinned sessions. **Show more** expands
+  the remaining sessions; **Show fewer** returns to five. Search still includes all
+  sessions, and opening an older result reveals it in the tree. Pinned sessions stay
+  in their own section and do not count toward the five-session limit.
   Click a session to switch projects automatically; the `+` beside each project starts a
   conversation there. Group expansion is remembered. Search chats with Command/Ctrl+K;
   search matches titles, project names and paths across projects. Use a chat's `…` menu
@@ -192,6 +205,9 @@ Drafts and staged attachments are kept separately for each conversation while th
   hiding the panel preserves existing shells. Drag the divider to resize it. ANSI colors,
   Unicode, selection, clipboard paste and Ctrl+C work in the terminal. On macOS, use
   Command+C/V/A for copy, paste and select all; on Linux use Ctrl+Shift+C/V/A.
+  Typing `exit` closes that terminal tab; exiting the last tab also hides the panel and
+  returns focus to the chat composer. An SSH transport failure keeps the tab available
+  for reconnection rather than discarding its output.
   Closing a tab or quitting Ava stops its shell and tracked child processes. Shells are
   not restarted when the app reopens. The terminal uses local, bundled xterm.js assets;
   rebuild them with `npm run build:terminal` after editing the terminal frontend.
@@ -264,7 +280,9 @@ user manager; continuing after logout and starting before login additionally req
 Settings reports the actual linger state; Ava does not enable it or request administrator access.
 Neither service prevents system sleep. macOS service errors go to `$AVA_HOME/backend.log`; on Linux,
 use `journalctl --user -u NAME`, with the name returned by `service-status`.
-Use **Settings → Machines** to connect an SSH alias or `user@hostname`. Ava uses system OpenSSH,
+Use **Settings → Machines** to view connection status, restart or open a machine,
+or connect an SSH alias or `user@hostname`. Status indicators live in that tab, not
+in a second list below the conversations. Ava uses system OpenSSH,
 your SSH configuration and existing verified host keys. The remote user needs Python 3.12+,
 `venv`/pip and a working user service manager. First connection uploads the matching Ava package,
 checks its SHA-256, installs an independent environment under `~/.local/share/ava/backends/`, and
@@ -302,16 +320,18 @@ copy the desktop's credentials over SSH. Other providers use the remote backend'
 and configuration. Usage belongs to the account/workspace or API project behind those credentials,
 not to the physical computer. See the [official authentication documentation](https://learn.chatgpt.com/docs/auth).
 
-Use **New chat** for a conversation in the project's current folder. Its adjacent menu, or a
-project's context menu, offers **New chat in a worktree…**. Enter a new branch name and choose the
-starting revision. Git and an existing commit are required. Ava creates the checkout under
-`$AVA_HOME/worktrees/` on the selected machine; uncommitted changes stay in the original folder.
+Use **New chat** to open a session with project and **Worktree** controls below the message box.
+The project can be changed before the first message, including by entering a remote folder
+inline. Turn on **Worktree** to generate a random branch from the selected project's current HEAD;
+Git and an existing commit are required. Ava creates the checkout on first send under
+`$AVA_HOME/worktrees/<project-folder-name>/<random-name>` on the selected machine
+(`$HOME/.ava/worktrees/...` by default). Uncommitted changes stay in the original folder.
 Chats remain grouped under the original project, with their branch shown in the heading. Agent
 tools, file previews, Git review and new terminals use the conversation's actual working folder.
 
 Archiving a chat or removing its project from Ava keeps the worktree and its files. If creation
-fails after checkout, Ava reports the retained directory; retry from the same dialog to continue
-without creating another checkout. Keep the worktree directory available to reopen its history.
+fails after checkout, Ava keeps your draft and reports the retained directory; send again from
+the same session to retry without creating another checkout. Keep the worktree directory available to reopen its history.
 Worktree cleanup is currently a Git operation; Ava does not automatically delete checkouts.
 
 Each machine has its own collapsible project groups. Use its **+** to add a remote directory

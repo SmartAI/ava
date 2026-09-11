@@ -11,9 +11,10 @@ ColumnLayout {
     required property var backend
     signal attach()
     signal models()
+    signal chooseFolder()
     property bool slashDismissed: false
     readonly property bool slashOpen: !slashDismissed && input.activeFocus && backend.commandCandidates.length > 0
-    spacing: 8
+    spacing: 0
 
     Connections {
         target: composer.backend
@@ -22,6 +23,7 @@ ColumnLayout {
     Label {
         Layout.fillWidth: true
         visible: !!composer.backend.pendingText
+        Layout.bottomMargin: Theme.spaceSm
         text: "Queued  ·  " + composer.backend.pendingText
         maximumLineCount: 3
         elide: Text.ElideRight
@@ -233,8 +235,18 @@ ColumnLayout {
             }
         }
     }
+    SessionSetup {
+        Layout.fillWidth: true
+        Layout.topMargin: Theme.spaceSm
+        Layout.leftMargin: Theme.spaceMd
+        Layout.rightMargin: Theme.spaceMd
+        visible: !!composer.backend.projectId
+        backend: composer.backend
+        onChooseFolder: composer.chooseFolder()
+    }
     Label {
         Layout.alignment: Qt.AlignHCenter
+        Layout.topMargin: Theme.spaceSm
         text: ["running", "paused", "pausing"].indexOf(composer.backend.status) >= 0
               ? "Enter to steer · Alt+Enter to queue · Esc to pause or stop"
               : "Enter to send · Shift+Enter for a new line"

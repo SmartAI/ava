@@ -222,8 +222,11 @@ the message and staged files for correction.
 
 ### Worktrees
 
-Start a conversation on a new branch in a separate folder. Uncommitted changes
-stay in the original workspace, and chats remain grouped under the same project.
+Turn on **Worktree** beside the project selector below the message box to start on a
+random branch in a separate folder. The checkout is created with `git worktree add`
+on first send, under `$HOME/.ava/worktrees/<project>/<random-name>` by default.
+Uncommitted changes stay in the original workspace, and chats remain grouped under
+the same project.
 
 ![Creating an isolated worktree for an onboarding improvement](assets/tour/desktop-worktree.png)
 
