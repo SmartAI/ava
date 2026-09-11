@@ -24,6 +24,8 @@ from PySide6.QtCore import (
 from .connection import Connection
 from .files import inspect_path
 
+_INSERT_CHUNK = 64
+
 
 @dataclass
 class Entry:
@@ -130,33 +132,64 @@ class RemoteFiles(QAbstractItemModel):
         def completed(payload, error):
             if self._closed or epoch != self._epoch:
                 return
-            node.loading = False
-            self._pending -= 1
             if error:
+                node.loading = False
+                self._pending -= 1
                 self._error = error
                 node.offset = None
-            else:
-                node.cursor, node.offset = payload["cursor"], payload["next"]
-                rows = payload["entries"]
-                if rows:
-                    index = self.createIndex(node.row, 0, node) if node is not self._entry else QModelIndex()
-                    start = len(node.children)
-                    self.beginInsertRows(index, start, start + len(rows) - 1)
-                    node.children.extend(Entry(row, node, start + i) for i, row in enumerate(rows))
-                    self.endInsertRows()
-            self.changed.emit()
-            # TreeView requests the initial page when expanding a directory;
-            # subsequent pages arrive on separate event-loop turns. Collapsing
-            # it stops paging, while the view still creates only visible rows.
-            if node.offset is not None:
-                def next_page():
-                    if not self._closed and epoch == self._epoch and node.expanded:
-                        index = self.createIndex(node.row, 0, node) if node is not self._entry else QModelIndex()
-                        self.fetchMore(index)
+                self.changed.emit()
+                return
+            node.cursor, node.offset = payload["cursor"], payload["next"]
+            rows = payload["entries"]
+            if not rows:
+                node.loading = False
+                self._pending -= 1
+                self.changed.emit()
+                self._schedule_next_page(epoch, node)
+                return
+            # Insert large pages in bounded chunks. Qt's tree view updates its
+            # layout synchronously for each model change, so a single 256-row
+            # insertion can stall the GUI on slower machines. Yielding between
+            # chunks keeps the event loop responsive without making the network
+            # page size smaller.
+            index = self.createIndex(node.row, 0, node) if node is not self._entry else QModelIndex()
+            pending = list(rows)
 
-                QTimer.singleShot(0, self, next_page)
+            def insert_chunk() -> None:
+                if self._closed or epoch != self._epoch:
+                    return
+                chunk = pending[:_INSERT_CHUNK]
+                del pending[:_INSERT_CHUNK]
+                start = len(node.children)
+                self.beginInsertRows(index, start, start + len(chunk) - 1)
+                node.children.extend(Entry(row, node, start + i) for i, row in enumerate(chunk))
+                self.endInsertRows()
+                if pending:
+                    QTimer.singleShot(0, self, insert_chunk)
+                    return
+                node.loading = False
+                self._pending -= 1
+                self.changed.emit()
+                self._schedule_next_page(epoch, node)
+
+            insert_chunk()
 
         connection.call("GET", self._url("files", path=node.values["filePath"], cursor=node.cursor, offset=node.offset), None, completed)
+
+    def _schedule_next_page(self, epoch: int, node: Entry) -> None:
+        # TreeView requests the initial page when expanding a directory;
+        # subsequent pages arrive on separate event-loop turns. Collapsing
+        # it stops paging, while the view still creates only visible rows.
+        if node.offset is None:
+            return
+
+        def next_page():
+            if not self._closed and epoch == self._epoch and node.expanded:
+                index = self.createIndex(node.row, 0, node) if node is not self._entry else QModelIndex()
+                self.fetchMore(index)
+
+        QTimer.singleShot(0, self, next_page)
+
 
     @Slot(QModelIndex, bool)
     def setExpanded(self, index: QModelIndex, expanded: bool) -> None:
