@@ -180,13 +180,33 @@ ColumnLayout {
                 NativeButton { objectName: "commandsButton"; icon.source: "icons/command.svg"; quiet: true; tip: "Commands and skills"; enabled: !!composer.backend.chatId; onClicked: { composer.backend.draft = "/"; input.forceActiveFocus(); input.cursorPosition = 1 } }
                 Item { Layout.fillWidth: true }
                 NativeButton {
+                    id: modelButton
                     objectName: "modelButton"
-                    text: (composer.backend.selection.model || "Choose model") + (composer.backend.selection.effort ? " · " + composer.backend.selection.effort : "") + "  ⌄"
+                    readonly property string modelName: composer.backend.selection.model || "Choose model"
+                    readonly property string effortName: composer.backend.selection.effort || "Default"
+                    text: modelName + " · " + effortName + "  ⌄"
+                    contentItem: RowLayout {
+                        spacing: 6
+                        Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            text: modelButton.modelName
+                            elide: Text.ElideRight
+                            font: modelButton.font
+                            color: modelButton.palette.buttonText
+                        }
+                        Label {
+                            objectName: "modelEffortLabel"
+                            text: "· " + modelButton.effortName + "  ⌄"
+                            font: modelButton.font
+                            color: modelButton.palette.buttonText
+                        }
+                    }
                     quiet: true
                     Layout.minimumWidth: 0
                     Layout.maximumWidth: Math.max(0, Math.min(280, content.width - 126))
                     enabled: composer.backend.connected
-                    tip: "Model and reasoning effort"
+                    tip: modelName + "\nReasoning effort: " + (composer.backend.selection.effort || "Provider default") + "\nClick to change model and effort"
                     onClicked: composer.models()
                 }
                 NativeButton {

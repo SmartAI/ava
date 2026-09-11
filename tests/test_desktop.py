@@ -2144,6 +2144,11 @@ def test_desktop_models_attachments_skills_markdown_and_files(
     until(lambda: controller.connected and bool(controller._skills), controller.changed)
     first_chat = controller.chatId
 
+    # The footer exposes provider-default effort before opening the picker.
+    model_button = find_item(window, "modelButton")
+    assert model_button.property("text") == "fixture · Default  ⌄"
+    assert "Reasoning effort: Provider default" in model_button.property("tip")
+
     # A mouse-opened picker changes both model and advertised reasoning effort.
     click(window, "modelButton")
     until(lambda: bool(controller.modelChoices.get("providers")), controller.changed)
@@ -2160,6 +2165,17 @@ def test_desktop_models_attachments_skills_markdown_and_files(
     until(lambda: controller.selection.get("effort") == "high", controller.changed)
     assert controller.selection["model"] == "fixture-reasoning"
     until(lambda: not window.findChild(QObject, "modelDialog").property("visible"), window.frameSwapped)
+    assert model_button.property("text") == "fixture-reasoning · high  ⌄"
+    assert "Reasoning effort: high" in model_button.property("tip")
+    effort_label = find_item(window, "modelEffortLabel")
+    assert effort_label.property("text") == "· high  ⌄"
+    original_width = window.width()
+    window.setWidth(window.minimumWidth())
+    until(lambda: effort_label.width() >= effort_label.implicitWidth(), window.frameSwapped)
+    assert effort_label.mapToItem(model_button, QPointF(0, 0)).x() >= 0
+    assert effort_label.mapToItem(model_button, QPointF(effort_label.width(), 0)).x() <= model_button.width()
+    save_screenshot(window, "model-effort-narrow")
+    window.setWidth(original_width)
 
     click(window, "toggleRightSidebar")
     assert controller.fileState.get("kind") == "directory", (
