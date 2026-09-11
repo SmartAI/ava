@@ -915,7 +915,9 @@ class Controller(QObject):
 
     @Property(list, notify=navigationChanged)
     def sessionProjects(self) -> list:
-        return [p for p in self._projects if p.get("machine", "local") == self._active_machine]
+        multiple = len(self._machines) > 1
+        return [{**p, "name": self.workspaceLabel(p["id"]) if multiple else p["name"]}
+                for p in self._projects]
 
     def _session_worktree(self) -> bool:
         return bool(self._chat_branch) or self.preference(f"worktree/{self._chat_id}", False)
@@ -933,7 +935,7 @@ class Controller(QObject):
     @Slot(str)
     def changeSessionProject(self, project_id: str) -> None:
         if self._can_configure_session() and project_id != self._project_id:
-            if any(p["id"] == project_id and p.get("machine", "local") == self._active_machine for p in self._projects):
+            if any(p["id"] == project_id for p in self._projects):
                 self._create_chat(project_id, replace_draft=True)
 
     @Property(str, notify=changed)

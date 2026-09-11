@@ -126,6 +126,7 @@ ColumnLayout {
                 TextArea {
                     id: input
                     objectName: "composer"
+                    implicitWidth: 0
                     text: composer.backend.draft
                     placeholderText: !composer.backend.chatId ? "Create a conversation to begin"
                                      : composer.backend.status === "running" ? "Steer Ava, or queue a follow-up…" : "Ask Ava anything, / for commands…"

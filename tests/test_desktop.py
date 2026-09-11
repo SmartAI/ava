@@ -5143,6 +5143,77 @@ raise SystemExit(result)
     assert "Traceback (most recent call last)" not in result.stderr, result.stderr
 
 
+@pytest.mark.parametrize("quick", [False, True])
+def test_new_chat_project_picker_switches_machines(desktop, project, quick):
+    from ava.app.desktop.connection import Connection
+    from ava.app.desktop.controller import Machine
+    from ava.app.desktop.quick_chat import toggle_quick_chat
+    from ava.app.desktop.runtime import BackendProcess
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller._heartbeat.stop()
+    local = controller._connection
+    # Exercise the real backend and QML with a separate remote ID namespace;
+    # SSH transport itself is covered by the isolated Fedora acceptance test.
+    connection = Connection(int(local._base.rsplit(":", 1)[1]), local._token, controller, prefix="remote~")
+    remote_projects = connection._identifiers("/api/projects", {"projects": controller.projects})["projects"]
+    for entry in remote_projects:
+        entry.update(machine="remote", machine_name="Fedora")
+    machine = Machine("remote", "Fedora", BackendProcess(project, controller, host="fixture"),
+                      connection=connection, projects=remote_projects, status="Connected")
+    controller._machines[machine.id] = machine
+    connection.received.connect(controller._event)
+    connection.status.connect(controller._snapshot)
+    connection.disconnected.connect(controller._disconnected)
+    controller._rebuild_projects()
+    if quick:
+        window = window.findChild(QQuickWindow, "quickChatWindow")
+        toggle_quick_chat(window)
+    else:
+        start_chat(window)
+    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
+    local_project = controller.projectId
+    type_message(window, "Keep this draft across machines")
+    attachment = project / "context.txt"
+    attachment.write_text("Context")
+    controller.addAttachments([str(attachment)])
+    controller.setSessionWorktree(True)
+    choice = find_item(window, "sessionProjectChoice")
+    assert choice.property("count") == 2
+    assert controller.sessionProjects[0]["name"] != controller.sessionProjects[1]["name"]
+    click(window, "sessionProjectChoice")
+    QTest.keyClick(window, Qt.Key.Key_End)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.connected and controller.projectId == remote_projects[0]["id"], controller.changed)
+    assert controller.remoteMachine
+    assert controller.chatId.startswith("remote~")
+    assert controller.draft == "Keep this draft across machines"
+    assert controller.sessionWorktree and len(controller.attachments) == 1
+    assert choice.property("currentValue") == controller.projectId
+    click(window, "sessionProjectChoice")
+    QTest.keyClick(window, Qt.Key.Key_Home)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.connected and controller.projectId == local_project, controller.changed)
+    assert not controller.remoteMachine
+    assert controller.draft == "Keep this draft across machines"
+    assert controller.sessionWorktree and len(controller.attachments) == 1
+    # A disconnected destination must not consume the current draft or switch
+    # the active machine; reconnecting can then be retried safely.
+    current_chat = controller.chatId
+    machine.connection = None
+    controller.changeSessionProject(remote_projects[0]["id"])
+    assert controller.error == "Machine disconnected. Reconnect and retry."
+    assert controller.chatId == current_chat and not controller.remoteMachine
+    assert controller.draft == "Keep this draft across machines"
+    assert controller.sessionWorktree and len(controller.attachments) == 1
+    machine.connection = connection
+    if quick:
+        assert window.property("sessionId") == controller.chatId
+        window.hide()
+
+
 def test_quick_chat_resize_and_reopen(desktop):
     from ava.app.desktop.quick_chat import toggle_quick_chat
 
