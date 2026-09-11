@@ -22,6 +22,14 @@ from ava.base import CancelToken
 from ava.base.images import IMAGE_BYTE_LIMIT, sniff_image
 from ava.llm.types import ContentBlock, ToolDef, make_image_block
 from ava.tool.api import Output, Tool, parse_arguments
+from ava.tool.mcp_oauth import (
+    GOOGLE_ISSUER,
+    GOOGLE_READONLY,
+    MCPOAuth,
+    OAuthConfig,
+    oauth_binding,
+    safe_url,
+)
 
 IDLE_SECONDS = 300.0
 
@@ -35,6 +43,7 @@ class ServerConfig(BaseModel):
     url: str = ""
     env: dict[str, str] = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
+    oauth: OAuthConfig | None = None
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -43,7 +52,7 @@ class ServerConfig(BaseModel):
         if not self.name:
             raise ValueError("A server name is required.")
         if self.transport == "stdio":
-            if not self.command.strip() or "\0" in self.command or self.url or self.headers:
+            if not self.command.strip() or "\0" in self.command or self.url or self.headers or self.oauth:
                 raise ValueError("Provide a program and arguments for a stdio server.")
         else:
             parsed = urlsplit(self.url)
@@ -51,6 +60,16 @@ class ServerConfig(BaseModel):
                 raise ValueError("Provide an HTTP(S) MCP endpoint without embedded credentials.")
             if self.command or self.args or self.env:
                 raise ValueError("HTTP servers use a URL and optional headers, not a program.")
+        if self.oauth:
+            safe_url(self.url)
+            if any(key.lower() == "authorization" for key in self.headers):
+                raise ValueError("Choose OAuth or a manual Authorization header, not both.")
+            if urlsplit(self.url).hostname == "gmailmcp.googleapis.com":
+                if self.oauth.issuer and self.oauth.issuer != GOOGLE_ISSUER:
+                    raise ValueError("Gmail uses https://accounts.google.com as its OAuth issuer.")
+                if not self.oauth.client_id:
+                    raise ValueError("Google requires an OAuth client ID. Configure one in Google Cloud first.")
+                self.oauth.scope = self.oauth.scope or GOOGLE_READONLY
         if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) for key in self.env):
             raise ValueError("Environment variable names must be valid identifiers.")
         if any(not key or any(c in key + value for c in "\r\n\0") for key, value in self.headers.items()):
@@ -74,7 +93,7 @@ def _error(error: BaseException, config: dict) -> str:
     if isinstance(error, PermissionError):
         return "The program could not be started. Check its execution permission on the selected machine."
     message = str(error) or type(error).__name__
-    for secret in [*config.get("env", {}).values(), *config.get("headers", {}).values()]:
+    for secret in [*config.get("env", {}).values(), *config.get("headers", {}).values(), (config.get("oauth") or {}).get("client_secret", "")]:
         if secret:
             message = message.replace(secret, "[redacted]")
     return message[:1000]
@@ -89,6 +108,7 @@ class MCPConnection:
         self.catalog_lock = asyncio.Lock()
         self.task: asyncio.Task | None = None
         self.client: Any = None
+        self.oauth: MCPOAuth | None = None
         self.tools: list[dict] = []
         self.info: dict = {}
         self.phase = "idle"
@@ -100,6 +120,12 @@ class MCPConnection:
     def changed(self, phase: str, error: str = "") -> None:
         self.phase, self.error = phase, error
         self.owner.generation += 1
+
+    def failed(self, error: BaseException) -> None:
+        if self.oauth and self.oauth.status != "authorized":
+            self.changed("auth_required", self.oauth.error or "Sign in to this server in MCP settings.")
+        else:
+            self.changed("error", _error(error, self.config))
 
     async def open(self) -> None:
         self.touched = time.monotonic()
@@ -124,13 +150,15 @@ class MCPConnection:
                     import httpx2
                     from mcp.client.streamable_http import streamable_http_client
 
+                    self.oauth = await self.owner.oauth_for(self.config)
+
                     async def check_auth(response):
                         if response.status_code in {401, 403}:
-                            raise ValueError(f"HTTP {response.status_code}: Access was denied. Check this server's authentication headers and permissions.")
+                            raise ValueError(f"HTTP {response.status_code}: Access was denied. Configure OAuth or check this server's authentication headers and permissions.")
 
-                    http = await stack.enter_async_context(httpx2.AsyncClient(headers=self.config["headers"],
+                    http = await stack.enter_async_context(httpx2.AsyncClient(headers=self.config["headers"], auth=self.oauth,
                                                                           timeout=httpx2.Timeout(15, read=120),
-                                                                          event_hooks={"response": [check_auth]}))
+                                                                          event_hooks={} if self.oauth else {"response": [check_auth]}))
                     transport = streamable_http_client(self.config["url"], http_client=http)
 
                 async def roots(_context):
@@ -141,7 +169,7 @@ class MCPConnection:
                     if isinstance(message, ToolListChangedNotification):
                         self.wake.set()
                     elif isinstance(message, Exception):
-                        self.changed("error", _error(message, self.config))
+                        self.failed(message)
                         self.stop.set()
                         self.wake.set()
 
@@ -183,7 +211,7 @@ class MCPConnection:
         except asyncio.CancelledError:
             self.changed("disconnected")
         except Exception as error:
-            self.changed("error", _error(error, self.config))
+            self.failed(error)
         finally:
             self.client = None
             self.ready.set()
@@ -252,6 +280,8 @@ class MCPConnection:
         args = parse_arguments(arguments)
         if isinstance(args, str):
             return Output(args, True)
+        if self.oauth and self.oauth.status != "authorized":
+            return Output("Sign in to this server in MCP settings, then retry the tool call.", True)
         if self.retired or self.client is None or self.phase != "connected":
             return Output("The MCP server is no longer connected. Refresh its tools before retrying.", True)
         self.active += 1
@@ -295,7 +325,7 @@ class MCPConnection:
                           bool(result.is_error or unsupported), attachments=images)
         except Exception as error:
             cancel.raise_if_cancelled()
-            message = _error(error, self.config)
+            message = (self.oauth.error or "Sign in to this server in MCP settings.") if self.oauth and self.oauth.status != "authorized" else _error(error, self.config)
             self.error = message
             return Output("MCP tool failed: " + message, True)
         finally:
@@ -312,7 +342,38 @@ class MCPServers:
         self.home = home
         self.connections: dict[tuple[str, str], MCPConnection] = {}
         self.retiring: set[MCPConnection] = set()
+        self.oauth: dict[str, MCPOAuth] = {}
         self.generation = 0
+
+    def changed(self) -> None:
+        self.generation += 1
+
+    async def oauth_for(self, config: dict) -> MCPOAuth | None:
+        if not config.get("oauth"):
+            return None
+        identity = config["id"]
+        if identity not in self.oauth:
+            auth = MCPOAuth(self.home, config, self.changed)
+            # Publish before awaiting so workspace requests share the SDK's refresh lock.
+            self.oauth[identity] = auth
+            auth.loading = asyncio.create_task(auth.load())
+        auth = self.oauth[identity]
+        try:
+            if auth.loading is not None:
+                await asyncio.shield(auth.loading)
+        except Exception:
+            if self.oauth.get(identity) is auth:
+                self.oauth.pop(identity, None)
+            raise
+        return auth
+
+    def disconnect(self, identity: str) -> None:
+        for key, connection in list(self.connections.items()):
+            if key[0] == identity:
+                connection.retire()
+                self.retiring.add(connection)
+                del self.connections[key]
+        self.changed()
 
     def configs(self) -> list[dict]:
         path = self.home / "capabilities.sqlite3"
@@ -321,13 +382,17 @@ class MCPServers:
         with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='mcp_servers'").fetchone():
                 return []
-            return [{**json.loads(row[2]), "id": row[0], "version": row[1]}
+            return [{"oauth": None, **json.loads(row[2]), "id": row[0], "version": row[1]}
                     for row in db.execute("SELECT id, version, config FROM mcp_servers ORDER BY rowid")]
 
     def save(self, config: ServerConfig, identity: str = "", version: int = 0) -> str:
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self.home / "capabilities.sqlite3"
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
         with closing(sqlite3.connect(path, timeout=5)) as db, db:
+            db.execute("CREATE TABLE IF NOT EXISTS mcp_oauth (id TEXT PRIMARY KEY, binding TEXT NOT NULL, data TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS mcp_servers (id TEXT PRIMARY KEY, version INTEGER NOT NULL, config TEXT NOT NULL)")
             if identity and version:
                 changed = db.execute("UPDATE mcp_servers SET config=?,version=version+1 WHERE id=? AND version=?",
@@ -342,6 +407,7 @@ class MCPServers:
                         raise ValueError("This request already created a different MCP server.")
                 else:
                     db.execute("INSERT INTO mcp_servers VALUES (?,1,?)", (identity, config.model_dump_json()))
+            db.execute("DELETE FROM mcp_oauth WHERE id=? AND binding<>?", (identity, oauth_binding(config.model_dump())))
         path.chmod(0o600)
         return identity
 
@@ -349,10 +415,22 @@ class MCPServers:
         with closing(sqlite3.connect(self.home / "capabilities.sqlite3", timeout=5)) as db, db:
             if db.execute("DELETE FROM mcp_servers WHERE id=? AND version=?", (identity, version)).rowcount != 1:
                 raise ValueError("This server changed in another client. Refresh before removing it.")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='mcp_oauth'").fetchone():
+                db.execute("DELETE FROM mcp_oauth WHERE id=?", (identity,))
 
     async def reconcile(self) -> list[dict]:
         configs = await asyncio.to_thread(self.configs)
         active = {config["id"]: config for config in configs if config["enabled"]}
+        all_configs = {config["id"]: config for config in configs}
+        for identity, auth in list(self.oauth.items()):
+            current = all_configs.get(identity)
+            if not current or not current.get("oauth") or oauth_binding(current) != auth.binding:
+                await auth.close()
+                if self.oauth.get(identity) is auth:
+                    self.oauth.pop(identity, None)
+            elif current["version"] != auth.config["version"]:
+                await auth.cancel()
+                auth.config = current
         for key, connection in list(self.connections.items()):
             if key[0] not in active or active[key[0]]["version"] != connection.config["version"]:
                 connection.retire()
@@ -368,7 +446,7 @@ class MCPServers:
             raise ValueError("Enable this server before connecting.")
         key = (identity, str(cwd))
         connection = self.connections.get(key)
-        if connection is not None and (connection.phase == "idle" or retry and connection.phase in {"error", "disconnected"}):
+        if connection is not None and (connection.phase == "idle" or retry and connection.phase in {"error", "disconnected", "auth_required"}):
             connection.retire()
             self.retiring.add(connection)
             connection = None
@@ -389,7 +467,7 @@ class MCPServers:
 
         connections = await cancel.guard(asyncio.gather(*(open_config(c) for c in configs if c["enabled"])))
         for connection in connections:
-            if connection.phase != "connected":
+            if connection.phase != "connected" or connection.oauth and connection.oauth.status != "authorized":
                 continue
             for schema in connection.tools:
                 async def run(arguments, token, connection=connection, name=schema["name"]):
@@ -410,15 +488,24 @@ class MCPServers:
         rows = []
         for config in await self.reconcile():
             connection = self.connections.get((config["id"], str(cwd)))
+            auth = await self.oauth_for(config)
+            public_oauth = {key: value for key, value in (config.get("oauth") or {}).items() if key != "client_secret"}
+            if public_oauth:
+                public_oauth["has_client_secret"] = bool(config["oauth"].get("client_secret"))
             finishing = sum(c.active for c in self.retiring if c.config["id"] == config["id"] and c.cwd == cwd)
-            rows.append({**{key: value for key, value in config.items() if key not in {"env", "headers"}},
+            rows.append({**{key: value for key, value in config.items() if key not in {"env", "headers", "oauth"}},
+                         "oauth": public_oauth or None, "auth_status": auth.status if auth else "none",
+                         "auth_flow_id": auth.flow_id if auth and auth.status == "signing_in" else "",
+                         "auth_error": auth.error if auth else "",
                          "env_names": list(config["env"]), "header_names": list(config["headers"]),
-                         "status": "disabled" if not config["enabled"] else connection.phase if connection else "idle",
+                         "status": "disabled" if not config["enabled"] else "auth_required" if auth and auth.status != "authorized" else connection.phase if connection else "idle",
                          "error": connection.error if connection else "", "active_calls": finishing + (connection.active if connection else 0),
                          "tools": connection.tools if connection else [], "info": connection.info if connection else {}})
         return rows
 
     async def aclose(self) -> None:
+        await asyncio.gather(*(auth.close() for auth in self.oauth.values()))
+        self.oauth.clear()
         connections = {*self.connections.values(), *self.retiring}
         for connection in connections:
             connection.retire()

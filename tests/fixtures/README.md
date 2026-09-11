@@ -17,3 +17,9 @@ uv run --with reportlab --with pypdf python tests/fixtures/generate_pdf.py
 
 The opt-in PDF benchmark generates its own 1,000-page, >1 MiB document in pytest's
 temporary directory using Qt's QPdfWriter, with a reproducible image and Chinese text.
+
+`oauth_server.py` runs a loopback OAuth authority and MCP peer with synthetic credentials.
+It checks PKCE, one-time authorization codes, refresh-token rotation and protected tool calls.
+The public-catalog mode reproduces Gmail's late authentication challenge without reading mail
+or contacting Google. `test_mcp_oauth_sdk.py` adds small Google discovery fixtures (including
+its issuer spelling and gzip responses) to keep compatibility checks deterministic.

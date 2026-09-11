@@ -97,7 +97,7 @@ class BackendState:
                 "version": version("ava"),
                 "pid": os.getpid(),
                 "started_at": datetime.now(UTC).isoformat(),
-                "capabilities": ["projects", "sessions", "event-replay", "session-review", "automations", "skills", "mcp", "analytics"],
+                "capabilities": ["projects", "sessions", "event-replay", "session-review", "automations", "skills", "mcp", "mcp-oauth", "analytics"],
             }
         except (KeyError, ValueError, TypeError, OSError) as error:
             self.close()
