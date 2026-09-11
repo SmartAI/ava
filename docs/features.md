@@ -9,7 +9,7 @@ with isolated demo data and a scripted local model, not a model-performance test
 Click an image to inspect it at full resolution.
 
 - [Research and writing](#research-and-writing) · [Data analysis](#data-analysis)
-- [Desktop workbench](#desktop-workbench) · [Browser handoff](#browser-handoff)
+- [Quick Chat](#quick-chat) · [Desktop workbench](#desktop-workbench) · [Browser handoff](#browser-handoff)
 - [Skills and MCP](#skills-and-mcp) · [Automations](#automations-and-background-work)
 - [Sessions and remote machines](#sessions-and-remote-machines)
 - [Session board and analytics](#session-board-and-analytics)
@@ -44,6 +44,29 @@ runs a Python summary, and writes a Markdown brief.
 
 Document conversion and specialized analysis may require additional programs.
 Web access comes through the desktop browser or tools you configure.
+
+## Quick Chat
+
+Ask Ava something without switching to the full workbench. With Ava Desktop
+running on macOS, press **⌘⌥Space** (Command–Option–Space) from any app to open a
+compact, always-on-top chatbox on the display under your pointer. The composer
+is focused so you can start typing immediately—ask a question, capture an idea,
+or give Ava a task.
+
+![Quick Chat showing a weekly project update conversation, a follow-up draft, and the Open in Ava button](assets/tour/desktop-quick-chat.png)
+
+- **Dismiss and resume:** press **Esc**, click the close button, or press
+  **⌘⌥Space** again to hide the panel. Reopen it to continue the conversation;
+  hiding it keeps your unsent draft while the desktop is running.
+- **Start fresh:** use **+** to start a new quick chat.
+- **Move into the workbench:** choose **Open in Ava** to continue the same
+  conversation alongside files, previews, and the rest of the desktop tools.
+
+The system-wide shortcut is **macOS-only** and requires Ava Desktop to remain
+running, not just the background backend. It needs no Accessibility or Input
+Monitoring permission. If another app already uses **⌘⌥Space**, registration may
+fail. On other platforms, **Ctrl+Alt+Space** toggles Quick Chat within Ava; it is
+not a global shortcut.
 
 ## Desktop workbench
 

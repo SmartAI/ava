@@ -36,12 +36,15 @@ doesn't have to be a code repository.
 
 ## Highlights
 
+- **[Quick Chat](docs/features.md#quick-chat)** — press **⌘⌥Space** on macOS to bring up Ava from any app, ask a question or start a task, then get back to what you were doing.
 - **[Native desktop workbench](docs/features.md#desktop-workbench)** — conversations, files, images, and PDF previews together.
 - **[Skills and MCP](docs/features.md#skills-and-mcp)** — reusable instructions and connected tools.
 - **[Durable sessions and SSH](docs/features.md#sessions-and-remote-machines)** — pick up work locally or on another machine.
 - **[Session board and analytics](docs/features.md#session-board-and-analytics)** — track active work, results, and usage.
 - **[Your choice of model](docs/features.md#models-and-providers)** — Anthropic, OpenAI, DeepSeek, Codex, and custom endpoints.
 - **[Multiple interfaces](docs/features.md#interfaces)** — desktop, Web UI, CLI, and Python API.
+
+[![Ava Quick Chat with a weekly project update conversation and a follow-up draft](docs/assets/tour/desktop-quick-chat.png)](docs/features.md#quick-chat)
 
 Interested in the full feature set? [Review the feature guide and screenshot tour →](docs/features.md)
 
