@@ -519,9 +519,10 @@ ApplicationWindow {
                         anchors.margins: 24
                         spacing: 22
                         clip: true
-                        reuseItems: true
-                        // Keep the tail alive while following: its measured bottom is stable
-                        // even when pooled messages change the estimated content height.
+                        // Pooling unloads the variable-height Loaders, feeding zero/stale
+                        // heights back into ListView. Destroy offscreen delegates instead.
+                        reuseItems: false
+                        // Follow the measured last row, not the estimated footer position.
                         currentIndex: follow ? count - 1 : -1
                         model: window.backend.transcript
                         footer: Item {
@@ -644,29 +645,38 @@ ApplicationWindow {
                             }
                         }
                         property bool follow: true
+                        function alignTail() {
+                            if (!follow || !currentItem)
+                                return;
+                            contentY = Math.max(originY, currentItem.y + currentItem.height + (footerItem ? footerItem.height : 0) - height);
+                        }
                         function followLatest() {
                             if (!follow)
                                 return;
-                            const tail = footerItem && footerItem.visible ? footerItem : currentItem;
-                            if (tail) {
-                                forceLayout();
-                                contentY = Math.max(originY, tail.y + tail.height - height);
-                            }
+                            forceLayout();
+                            alignTail();
+                        }
+                        // Geometry changes during polish must align in the same frame,
+                        // without forceLayout() re-entering the layout that emitted them.
+                        Connections {
+                            target: conversation.currentItem
+                            function onHeightChanged() { conversation.alignTail(); }
+                            function onYChanged() { conversation.alignTail(); }
+                        }
+                        Connections {
+                            target: conversation.footerItem
+                            function onHeightChanged() { conversation.alignTail(); }
                         }
                         onMovementStarted: follow = false
                         onMovementEnded: follow = atYEnd
                         onHeightChanged: Qt.callLater(followLatest)
                         onWidthChanged: Qt.callLater(followLatest)
                         onCurrentItemChanged: Qt.callLater(followLatest)
-                        onContentHeightChanged: Qt.callLater(followLatest)
+                        onContentHeightChanged: alignTail()
                         onCountChanged: {
                             if (count === 0)
                                 follow = true;
                             Qt.callLater(followLatest);
-                        }
-                        Connections {
-                            target: window.backend.transcript
-                            function onDataChanged() { Qt.callLater(conversation.followLatest); }
                         }
                         ScrollBar.vertical: ScrollBar {
                             onPressedChanged: conversation.follow = !pressed && conversation.atYEnd
@@ -684,7 +694,6 @@ ApplicationWindow {
                             required property int groupRunning
                             required property int groupFailed
                             required property bool outputExpanded
-                            property bool pooled: false
                             width: conversation.width
                             height: messageColumn.implicitHeight
                             Column {
@@ -738,7 +747,7 @@ ApplicationWindow {
                                 Loader {
                                     id: messageLoader
                                     width: parent.width
-                                    active: !transcriptRow.pooled && (transcriptRow.groupCount <= 1 || transcriptRow.groupExpanded)
+                                    active: transcriptRow.groupCount <= 1 || transcriptRow.groupExpanded
                                     visible: active
                                     sourceComponent: TranscriptMessage {
                                         kind: transcriptRow.kind
@@ -757,8 +766,6 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            ListView.onPooled: pooled = true
-                            ListView.onReused: pooled = false
                         }
                     }
                     NativeButton {
@@ -772,7 +779,8 @@ ApplicationWindow {
                         tip: "Jump to latest message"
                         onClicked: {
                             conversation.follow = true;
-                            conversation.followLatest();
+                            conversation.positionViewAtEnd();
+                            Qt.callLater(conversation.followLatest);
                         }
                     }
                     ColumnLayout {
