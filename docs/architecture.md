@@ -139,14 +139,23 @@ except desktop-owned state, which lives on the desktop machine.
 | `sessions/` (`*.jsonl.zst`) | Conversation events, queued input, model selection, usage, and recovery. CLI callers can choose an explicit log path. |
 | `web.json` | Project registration and conversation navigation metadata, including pins, archives, and review markers. |
 | `automations.sqlite3` | Schedules and execution bookkeeping; each run has its own conversation log. |
-| `capabilities.sqlite3` | Skill availability and MCP server configuration, including configured secrets. Skill instruction files remain in their discovery locations. |
+| `capabilities.sqlite3` | Skill availability and MCP server configuration, including configured secrets and OAuth tokens/client registrations. Owner-only permissions, not encrypted at rest. Skill instruction files remain in their discovery locations. |
 | `analytics.sqlite3` | Rebuildable incremental index derived from session history, not a second conversation authority. |
 | `settings.json` / `auth.json` | Provider configuration and saved credentials. Environment credentials can take precedence. Codex uses its separate file-based login. |
 | `machine.json` / `backend.json` | Durable machine identity / private current-process endpoint and bearer token. |
 | `desktop.ini` / `browser/` | Desktop preferences and machine navigation / local browser profile and imported data. |
 | `worktrees/` | Actual Git checkouts; archiving a conversation does not delete them. |
 
-Backend shutdown stops scheduling, closes agents and shared MCP connections, then releases
+MCP OAuth uses the SDK's `OAuthClientProvider`, with one auth instance/refresh lock per
+server shared across workspace connections. The backend persists absolute token expiry and
+validated authorization/resource metadata alongside the tokens so refresh survives restarts.
+Config binding and a credential generation fence prevent stale callbacks or in-flight refreshes
+from restoring credentials after removal or sign-out. Interactive login is a separate,
+time-bounded task, not a blocked agent request. A desktop-only loopback listener forwards the
+code/state/issuer through the existing authenticated connection to the originating backend;
+SSH machines need no public callback endpoint. OAuth URLs/codes/tokens are not conversation events.
+
+Backend shutdown stops scheduling, cancels pending OAuth logins, closes agents and shared MCP connections, then releases
 ownership. A crash leaves logs recoverable but does not automatically rerun interrupted tools
 or unconfirmed automation executions. Schedules require an awake machine and running backend.
 See [usage](usage.md#automations) for missed-run and restart policies.

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices
 
 from .board import SummaryList
+from .oauth import OAuthCallbackListener
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -35,6 +37,11 @@ class MCPView(QObject):
         self._create_id = ""
         self._revisions: dict[str, tuple[str, str]] = {}
         self._context = ("", "")
+        self._auth: dict | None = None
+        self._auth_error = ""
+        self._callback = OAuthCallbackListener(self)
+        self._callback.received.connect(self._complete_auth)
+        self._callback.failed.connect(self._auth_failed)
         owner.navigationChanged.connect(self._navigation_changed)
         owner.machinesChanged.connect(self._navigation_changed)
 
@@ -65,7 +72,7 @@ class MCPView(QObject):
 
     @Property(str, notify=changed)
     def error(self) -> str:
-        return self._error
+        return self._error or self._auth_error
 
     @Property(str, notify=changed)
     def editorError(self) -> str:
@@ -87,6 +94,15 @@ class MCPView(QObject):
     def available(self) -> bool:
         return self._connection() is not None
 
+    @Property(bool, notify=changed)
+    def oauthAvailable(self) -> bool:
+        machine = self.owner._machines.get(self._option().get("machine", ""))
+        return bool(machine and "mcp-oauth" in machine.runtime.info.get("capabilities", []))
+
+    @Property(bool, notify=changed)
+    def authenticating(self) -> bool:
+        return self._auth is not None
+
     def _option(self) -> dict:
         return next((p for p in self._projects if p["id"] == self._project), {})
 
@@ -106,6 +122,8 @@ class MCPView(QObject):
             self.optionsChanged.emit()
         if not self._option():
             self.chooseProject(options[0]["id"] if options else "")
+        if self._auth and self._auth["connection"] is not self._connection():
+            self.cancelAuth()
         self.changed.emit()
 
     @Slot(bool)
@@ -132,6 +150,8 @@ class MCPView(QObject):
     def chooseProject(self, identity: str) -> None:
         if self._saving or self._project == identity:
             return
+        self.cancelAuth()
+        self._auth_error = ""
         self._project = identity
         self._epoch += 1
         self._pending = False
@@ -174,6 +194,7 @@ class MCPView(QObject):
     @Slot(str)
     def select(self, identity: str) -> None:
         if identity != self._selected:
+            self.cancelAuth()
             self._schema = ""
             self._tool_search = ""
         self._selected = identity
@@ -199,6 +220,7 @@ class MCPView(QObject):
 
     @Slot(bool)
     def edit(self, existing: bool) -> None:
+        self.cancelAuth()
         self._editor_error = ""
         self._create_id = uuid4().hex
         self.editRequested.emit(dict(self._detail) if existing else {})
@@ -217,11 +239,88 @@ class MCPView(QObject):
     def action(self, action: str) -> None:
         if not self._selected:
             return
+        if action in {"toggle", "remove", "sign_out"}:
+            self.cancelAuth()
         body = {"version": self._detail["version"]}
         if action == "toggle":
             body["enabled"] = not self._detail["enabled"]
+        elif action == "cancel_auth":
+            body["flow_id"] = self._detail.get("auth_flow_id", "")
         self._write("DELETE" if action == "remove" else "POST", self._selected,
                     "" if action == "remove" else action, body)
+
+    @Slot()
+    def signIn(self) -> None:
+        connection = self._connection()
+        if not connection or self._auth or not self.oauthAvailable or not self._detail.get("oauth"):
+            return
+        self._error = ""
+        self._auth_error = self._callback.start(self._detail["oauth"]["redirect_uri"])
+        if self._auth_error:
+            self.changed.emit()
+            return
+        context = {"connection": connection, "version": self._detail["version"],
+                   "start": self._path(self._selected, "authenticate"),
+                   "callback": self._path(self._selected, "oauth_callback"),
+                   "cancel": self._path(self._selected, "cancel_auth"), "flow_id": ""}
+        self._auth = context
+        self.changed.emit()
+
+        def started(payload, error):
+            if error:
+                if self._auth is context:
+                    self._auth_failed(error)
+                return
+            context["flow_id"] = payload["flow_id"]
+            if self._auth is not context:
+                connection.call("POST", context["cancel"], {"version": context["version"], "flow_id": context["flow_id"]}, lambda *_: None)
+                return
+            url = payload["authorization_url"]
+            parsed = urlsplit(url)
+            if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+                self._auth_failed("The server returned an invalid OAuth login URL.")
+                return
+            self._callback.state = parse_qs(parsed.query).get("state", [""])[0]
+            if not self._callback.state or not QDesktopServices.openUrl(QUrl(url)):
+                self._auth_failed("Could not open the sign-in page in your browser. Try again.")
+                return
+            self.refresh()
+            self.changed.emit()
+
+        connection.call("POST", context["start"], {"version": context["version"]}, started)
+
+    def _complete_auth(self, payload: dict) -> None:
+        context = self._auth
+        if not context or not context["flow_id"]:
+            return
+
+        def completed(_payload, error):
+            if self._auth is not context:
+                return
+            self._auth = None
+            self._callback.close()
+            self._auth_error = error
+            self.refresh()
+            self.changed.emit()
+
+        context["connection"].call("POST", context["callback"],
+                                   {**payload, "version": context["version"], "flow_id": context["flow_id"]}, completed)
+
+    def _auth_failed(self, error: str) -> None:
+        self.cancelAuth()
+        self._auth_error = error
+        self.changed.emit()
+
+    @Slot()
+    def cancelAuth(self) -> None:
+        context, self._auth = self._auth, None
+        self._callback.close()
+        if context and context["flow_id"]:
+            context["connection"].call("POST", context["cancel"],
+                                       {"version": context["version"], "flow_id": context["flow_id"]},
+                                       lambda *_: self.refresh())
+        if context:
+            self.changed.emit()
 
     def _write(self, method: str, identity: str, action: str, body: dict, *, editor: bool = False) -> None:
         connection = self._connection()

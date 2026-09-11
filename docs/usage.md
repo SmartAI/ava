@@ -119,6 +119,27 @@ Drafts and staged attachments are kept separately for each conversation while th
   endpoint. Choose the execution machine and workspace first. Programs must be installed
   on that machine; quote arguments containing spaces. Optional environment variables and
   HTTP headers are saved there, with existing values hidden when editing.
+  For an HTTP server that requires browser login, choose **Authentication → OAuth**.
+  Enter the client ID, secret (if required), and authorization-server issuer for an existing
+  OAuth client; leave the client fields blank only if the server supports automatic registration.
+  Register the displayed **Callback URL** with your OAuth provider. Save, then choose **Sign in**.
+  Ava opens your system browser; the short-lived loopback callback runs on the desktop,
+  even for SSH execution machines. No browser opens automatically during agent work.
+  Tokens and client secrets stay on the execution machine in `capabilities.sqlite3`
+  (owner-only `0600` permissions, not encrypted at rest). The SDK refreshes tokens automatically,
+  including after a backend restart. **Sign out** removes Ava's saved tokens; it does not revoke
+  the grant at the provider. Revoke that separately in the provider's account settings if needed.
+  Permission changes require a new sign-in. A server can advertise tools without granting access:
+  **Sign-in required** means its account-dependent tools are not yet available to the agent.
+  **Gmail:** use `https://gmailmcp.googleapis.com/mcp/v1`, with issuer
+  `https://accounts.google.com` and your Google Cloud OAuth client ID and secret.
+  Enable both the Gmail API and Gmail MCP API and configure consent/test users as described in
+  [Google's setup guide](https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server).
+  Google currently lists the integration as Developer Preview. Register Ava's exact callback URL
+  (default `http://127.0.0.1:8766/oauth/callback`), not another MCP client's callback.
+  Gmail defaults to `https://www.googleapis.com/auth/gmail.readonly`; add only the scopes you need
+  for writes. If the callback port is occupied, finish the other login or change the URL both
+  in Ava and in your OAuth client's registered redirects. Update older SSH backends to enable OAuth.
   Configurations live in `$AVA_HOME/capabilities.sqlite3` and apply across that machine's
   projects. Each workspace gets its own connection and working directory. Agent tool calls
   use that connection; closing the desktop leaves the backend and active calls running.
@@ -134,7 +155,7 @@ Drafts and staged attachments are kept separately for each conversation while th
   remain in saved history. Each call accepts up to four images, with 7.5 MB total image
   data per tool batch. Model context retains up to ten recent tool images within 8 MiB,
   reduced when necessary to leave room for user attachments; older images remain in history.
-  Audio results, interactive OAuth login, and separate MCP resource/prompt browsers are not yet supported.
+  Audio results and separate MCP resource/prompt browsers are not yet supported.
 - `/context` shows estimated tokens and model-window usage, with category bars sorted
   by their share of the estimated total. Small nonzero shares remain visible as `<0.1%`;
   unknown model limits are labelled explicitly. The provider's last reported input count

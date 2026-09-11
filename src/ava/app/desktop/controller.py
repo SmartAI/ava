@@ -2236,6 +2236,7 @@ class Controller(QObject):
         if self._quitting:
             return
         self._quitting = True
+        self._mcp_view.cancelAuth()
         self._heartbeat.stop()
         self.pdf_images.close()
         self._browser.shutdown()

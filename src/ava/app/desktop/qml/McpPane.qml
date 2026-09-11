@@ -17,7 +17,8 @@ Pane {
     background: Rectangle { color: page.palette.window }
     Component.onCompleted: servers.activate(true)
     Component.onDestruction: { if (servers) servers.activate(false); }
-    function status(value) { return ({idle: "Ready to connect", connecting: "Connecting…", connected: "Connected", disconnected: "Disconnected", disabled: "Disabled", error: "Connection failed"})[value] || ""; }
+    function status(value) { return ({idle: "Ready to connect", connecting: "Connecting…", connected: "Connected", disconnected: "Disconnected", disabled: "Disabled", error: "Connection failed", auth_required: "Sign-in required"})[value] || ""; }
+    function serverStatus(entry) { return entry.enabled && (entry.auth_status === "signing_in" || entry.id === page.servers.selected && page.servers.authenticating) ? "Waiting for browser sign-in…" : status(entry.status); }
     ColumnLayout {
         anchors.fill: parent
         spacing: 16
@@ -77,7 +78,7 @@ Pane {
                         contentItem: ColumnLayout {
                             spacing: 6
                             Label { text: row.entry.name; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
-                            Label { text: page.status(row.entry.status); color: row.entry.status === "connected" ? Theme.success : palette.placeholderText; font.pixelSize: 12 }
+                            Label { text: page.serverStatus(row.entry); color: row.entry.status === "connected" ? Theme.success : palette.placeholderText; font.pixelSize: 12 }
                             Label { text: (row.entry.transport === "stdio" ? "Local process" : "HTTP") + " · " + row.entry.tool_count + " tools"; color: palette.placeholderText; font.pixelSize: 11 }
                         }
                     }
@@ -94,10 +95,12 @@ Pane {
                     Layout.leftMargin: page.narrow ? 0 : 16
                     spacing: 10
                     Label { text: page.detail.name || "Choose a server"; Layout.fillWidth: true; font.pixelSize: 21; font.weight: Font.DemiBold; wrapMode: Text.Wrap }
-                    Label { text: page.detail.id ? page.status(page.detail.status) + (page.detail.active_calls ? " · " + page.detail.active_calls + " active calls" : "") : "MCP servers give Ava additional tools for your work."; Layout.fillWidth: true; wrapMode: Text.Wrap; color: palette.placeholderText }
+                    Label { text: page.detail.id ? page.serverStatus(page.detail) + (page.detail.active_calls ? " · " + page.detail.active_calls + " active calls" : "") : "MCP servers give Ava additional tools for your work."; Layout.fillWidth: true; wrapMode: Text.Wrap; color: palette.placeholderText }
                     Label { visible: !!page.detail.id; text: page.detail.command_line || page.detail.url || ""; Layout.fillWidth: true; font.pixelSize: 12; maximumLineCount: 3; wrapMode: Text.WrapAnywhere; elide: Text.ElideRight; color: palette.placeholderText }
+                    Label { visible: !!page.detail.oauth; Layout.fillWidth: true; text: page.detail.auth_status === "authorized" ? "OAuth authorized · tokens refresh automatically" : page.detail.auth_status === "signing_in" ? "Complete sign-in in your browser, then return to Ava. No tools run during sign-in." : "Sign in to authorize this server. Discovering tools does not grant account access."; wrapMode: Text.Wrap; font.pixelSize: 12; color: page.detail.auth_status === "authorized" ? Theme.success : palette.placeholderText }
+                    Label { visible: !!page.detail.auth_error; Layout.fillWidth: true; text: page.detail.auth_error || ""; wrapMode: Text.Wrap; font.pixelSize: 12; color: palette.link }
                     RowLayout {
-                        visible: !!page.detail.error
+                        visible: !!page.detail.error && page.detail.error !== page.detail.auth_error
                         Layout.fillWidth: true
                         Label { text: page.detail.error || ""; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight; wrapMode: Text.WrapAnywhere; color: palette.link }
                         NativeButton { objectName: "mcpErrorDetailsButton"; text: "Details…"; quiet: true; onClicked: { schemaDialog.title = "Connection error"; schemaDialog.body = page.detail.error; schemaDialog.open(); } }
@@ -106,7 +109,10 @@ Pane {
                         visible: !!page.detail.id
                         Layout.fillWidth: true
                         spacing: 8
-                        NativeButton { objectName: "connectMcpButton"; text: page.detail.status === "error" ? "Retry connection" : "Connect"; visible: !!page.detail.enabled && page.detail.status !== "connected"; enabled: !page.servers.saving && page.servers.available; onClicked: page.servers.action("connect") }
+                        NativeButton { objectName: "signInMcpButton"; text: "Sign in…"; primary: true; visible: !!page.detail.oauth && !!page.detail.enabled && page.detail.auth_status === "required" && !page.servers.authenticating; enabled: !page.servers.saving && !page.servers.authenticating && page.servers.oauthAvailable; onClicked: page.servers.signIn() }
+                        NativeButton { objectName: "cancelMcpSignInButton"; text: "Cancel sign-in"; visible: page.servers.authenticating || page.detail.auth_status === "signing_in"; enabled: !page.servers.saving; onClicked: { if (page.servers.authenticating) page.servers.cancelAuth(); else page.servers.action("cancel_auth"); } }
+                        NativeButton { objectName: "signOutMcpButton"; text: "Sign out"; visible: !!page.detail.oauth && page.detail.auth_status === "authorized"; enabled: !page.servers.saving && page.servers.available; onClicked: page.servers.action("sign_out") }
+                        NativeButton { objectName: "connectMcpButton"; text: page.detail.status === "error" ? "Retry connection" : "Connect"; visible: !!page.detail.enabled && page.detail.status !== "connected" && page.detail.status !== "auth_required"; enabled: !page.servers.saving && page.servers.available; onClicked: page.servers.action("connect") }
                         NativeButton { objectName: "refreshMcpToolsButton"; text: "Refresh tools"; visible: page.detail.status === "connected"; enabled: !page.servers.saving && page.servers.available; onClicked: page.servers.action("refresh") }
                         NativeButton { objectName: "toggleMcpButton"; text: page.detail.enabled ? "Disable" : "Enable"; enabled: !page.servers.saving && page.servers.available; onClicked: page.servers.action("toggle") }
                         NativeButton { objectName: "editMcpButton"; text: "Edit…"; enabled: !page.servers.saving && page.servers.available; onClicked: page.servers.edit(true) }

@@ -118,7 +118,11 @@ machine. Browse tools and their parameter schemas, refresh catalogs, inspect
 connection errors, and enable or disable a server.
 
 Results can include text, structured data, and images. Integrations depend on the
-servers you install or connect; interactive MCP OAuth login is not yet supported.
+servers you install or connect. HTTP servers support manual authentication headers or
+OAuth browser sign-in, including existing OAuth clients such as Google's Gmail MCP service.
+Ava uses the MCP SDK for discovery, PKCE, token exchange, and refresh. The desktop opens
+the browser only when you choose **Sign in**; credentials stay on the execution machine.
+See [MCP setup and Gmail configuration](usage.md#qt-quick-desktop-app).
 
 ![A connected Research library MCP server with two discoverable tools](assets/demo/mcp-servers.png)
 
