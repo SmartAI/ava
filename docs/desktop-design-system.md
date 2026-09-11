@@ -1,5 +1,8 @@
 # Desktop design system
 
+[Feature tour](features.md#desktop-workbench) · [Usage](usage.md#qt-quick-desktop-app) ·
+[Architecture](architecture.md)
+
 Ava is a calm, native-feeling desktop workspace. Content takes priority over chrome.
 Use system fonts, clear hierarchy, quiet neutral surfaces, and blue selection/focus.
 Do not emulate glass with translucent content or add shadows to every panel.
@@ -7,17 +10,24 @@ Do not emulate glass with translucent content or add shadows to every panel.
 ## Tokens
 
 `src/ava/app/desktop/qml/Theme.qml` owns appearance tokens. `Main.qml` binds its
-saved light/dark preference to the theme and maps semantic colors to the Qt palette,
-so built-in controls, text selection, and embedded views inherit the same appearance.
+saved light/dark preference to the theme and maps semantic colors to the Qt palette.
+The desktop uses Qt Quick Controls' Basic style with shared QML components, not OS-native
+widgets. Native text rendering and platform font fallbacks are configured in
+`application.py`; preferences are saved in `$AVA_HOME/desktop.ini`.
+The terminal receives an explicit theme; external web pages retain their own styling.
 
 - Surfaces: workspace, sidebar, surface, inset, hover, selection.
-- Text: primary, secondary, disabled; accent and on-accent are a separate pair.
-- Status: success, warning, danger; always accompany color with text.
-- Spacing: 4, 8, 12, 16, 24, 32 logical pixels.
-- Type: 13 controls, 12 supporting text, 11 dense metadata, 15 reading,
-  17 section headings, 21 detail headings, 24 page headings, 28 metrics.
-  Conversation reading size remains user-adjustable. Code retains the system fixed font.
-- Controls: 32 high, 28 for compact actions; 16-pixel icons.
+- Text: `text`, `secondaryText`, `disabledText`; `accent` / `accentText` for
+  selection and focus, separate from `primary` / `primaryText` for action buttons.
+- Status: success, warning, danger; warning/danger surfaces; accompany color with text.
+- Edges and overlays: border, shadow, scrim.
+- Spacing tokens: `spaceXs` 4, `spaceSm` 8, `spaceMd` 12, `spaceLg` 16,
+  `spaceXl` 24 logical pixels. Larger spacing is currently local to its layout.
+- Type tokens: `body` 13, `caption` 12, `captionSmall` 11, `sectionTitle` 17,
+  `pageTitle` 24. The application default is 14; conversation reading defaults to
+  15 and is user-adjustable. Detail headings (21) and metrics (28) are pane-local
+  conventions, not Theme properties. Code uses the platform fixed-font fallback chain.
+- Controls: `controlHeight` 32 and `iconSize` 16. Compact 28-high actions are local overrides.
 - Corners: 8 controls/rows, 12 cards/popovers, 16 dialogs/composer.
 - Motion: 120ms state transitions, disabled by the Reduce motion preference.
 
@@ -47,10 +57,24 @@ use the existing Label rather than a new badge wrapper unless a badge is needed.
 
 ## Evaluation
 
-Baseline on the pre-migration working tree: 7 focused desktop acceptance tests passed
-(workbench, theme/search, board, and composer alignment). Captures and test logs live
-in the agent scratch directory, not in the repository. Design-system checks capture
-each requested appearance and verify capture does not change it.
+Use the current implementation as the baseline, with the deterministic acceptance
+flows in `tests/test_desktop.py` as the repeatable benchmark. Measure behavioral
+correctness, QML warnings/binding loops, contrast, clipping, focus visibility, and
+interaction latency. The [feature tour](features.md) provides visual references,
+not pixel-diff goldens or proof that every platform has passed visual review.
+Design-system checks capture each requested appearance and verify capture does not
+change it. Keep captures and performance logs outside source control.
+
+A focused check of shared components and layout:
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software uv run --extra desktop pytest -q tests/test_desktop.py -k 'design_system or settings_theme or message_composer_alignment'
+uv run --extra desktop pyside6-qmllint --max-warnings 0 src/ava/app/desktop/qml/*.qml
+```
+
+Set `AVA_DESKTOP_SCREENSHOT` to an absolute PNG path in a scratch directory to
+retain captures. Run the full desktop suite for feature coverage; the focused
+selection above does not test every pane.
 
 On macOS, select the test platform explicitly: an inherited XQuartz `DISPLAY` can
 otherwise prevent the acceptance fixture from choosing its offscreen fallback.

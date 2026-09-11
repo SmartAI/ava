@@ -72,9 +72,9 @@ In a **22-task SWE-bench Pro coding pilot**, Ava solved **11/22 tasks**; Pi solv
 
 - [Features and screenshots](docs/features.md)
 - [Usage and configuration](docs/usage.md)
-- [Architecture](docs/architecture.md)
+- [Architecture and system diagram](docs/architecture.md)
+- [Desktop design system](docs/desktop-design-system.md)
 - [Evaluation guide](eval/README.md)
-- [Port notes](docs/port-notes.md)
 
 ## License
 

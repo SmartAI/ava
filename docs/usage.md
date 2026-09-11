@@ -153,9 +153,10 @@ Drafts and staged attachments are kept separately for each conversation while th
   text and internal links. Pages render on demand; each tab keeps its own position
   and zoom. Encrypted documents request a password, and damaged files show a retryable
   error. PDF preview does not enable PDF message attachments.
-  Large PDFs and pages with dense vector graphics can take several seconds to display
-  and may cause interface pauses. On-demand rendering does not yet ensure smooth
-  interaction for every document; further large-PDF performance optimization is deferred.
+  Pages rasterize on demand in a separate helper process, isolating Qt's PDF rendering
+  lock from chat interaction. Dense vector pages can still take several seconds to
+  display; this is not a guarantee of fast rendering for every document. Closing the
+  active preview cancels its renderer without waiting on the GUI thread.
   **Add to message** stages the selected file, subject to the composer's attachment limits.
 - Browser tabs accept HTTP(S) addresses, including localhost, with back, forward and reload.
   Links in assistant replies open in the inspector. Browser storage persists under
@@ -367,8 +368,12 @@ sidebar handles actually resize, and the embedded browser executes JavaScript an
 history, multiple tabs, supported/unsupported video, cross-project session switching, and
 cookie persistence across application restarts. All browser tests use synthetic profiles and
 a local HTTP server. Context charts are checked against real API totals, including attachments,
-small shares, unknown limits and overflow. Runtime QML binding loops fail the suite. Set `AVA_DESKTOP_SCREENSHOT=/tmp/ava.png`
-to retain light/dark, narrow-window, attachment, command, and browser screenshots for visual review.
+small shares, unknown limits and overflow. Runtime QML binding loops fail the suite.
+Set `AVA_DESKTOP_SCREENSHOT` to an absolute PNG path in a scratch directory to retain
+light/dark, narrow-window, attachment, command, and browser screenshots for visual review.
+On macOS, set `QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software` explicitly for
+headless checks: an inherited XQuartz `DISPLAY` can prevent the fixture from selecting
+its offscreen fallback. Use `QT_QPA_PLATFORM=cocoa QT_QUICK_BACKEND=` for native GPU review.
 
 Run the native macOS performance scenario, including a 2,000-entry directory, a 16,000-line
 source file, a 288 KB single-line JavaScript bundle, a 45 KB Markdown report with 300 code blocks,
@@ -384,6 +389,12 @@ remain bounded. Qt APIs: [QFileSystemModel](https://doc.qt.io/qt-6/qfilesystemmo
 [TreeView](https://doc.qt.io/qt-6/qml-qtquick-treeview.html),
 [ListView](https://doc.qt.io/qt-6/qml-qtquick-listview.html), and
 [WebEngine media support](https://doc.qt.io/qt-6/qtwebengine-features.html#audio-and-video-codecs).
+
+With the same native environment and `AVA_DESKTOP_PERF=1`,
+`-k pdf_complex_page_does_not_block_chat` checks typing and GUI timer stalls during
+dense-vector PDF rendering, renderer failure/retry, and renderer cancellation on tab close.
+`-k pdf_lazy_rendering_performance` exercises a generated 1,000-page PDF and bounded
+page delegates. These opt-in benchmarks are separate from regular PDF acceptance tests.
 
 With the same native environment, `-k terminal_output_backpressure` exercises 4.3 MB of
 real shell output and writes `terminal-benchmark.json`. It checks GUI stalls, output
@@ -526,7 +537,7 @@ fields and tool-calling behaviour required by the selected adapter:
 uv sync --extra desktop
 uv run --extra desktop pytest
 uv run --extra desktop ruff check src tests eval
-uv run --extra desktop mypy src eval/run.py
+uv run --extra desktop mypy src eval/run.py eval/benchmark.py eval/diagnose.py eval/evolve.py eval/incidents.py eval/integrations/agent_config.py
 npm ci
 npm run check
 npm test

@@ -65,8 +65,10 @@ Browse local or remote files and preview source, Markdown, images, and PDFs.
 
 ![File browser with project files and a Markdown preview](assets/demo/file-browser.png)
 
-PDF previews support page navigation, zoom, and selectable text. Previewing a PDF
-is separate from attaching one: direct PDF message attachments are not supported.
+PDF previews support page navigation, zoom, selectable text, internal links, and
+password-protected documents. Pages render on demand in a helper process, separate
+from the conversation UI. Previewing a PDF is separate from attaching one: direct
+PDF message attachments are not supported.
 
 ![A multi-page research PDF open beside the conversation](assets/tour/desktop-pdf.png)
 
@@ -189,9 +191,9 @@ its conversation also marks it reviewed; a later result needs attention again.
 
 ![Running, completed, and reviewed conversations in the session board](assets/demo/session-board.png)
 
-### Session information
+### Analytics (session information)
 
-Explore 7-day and 30-day trends for tokens, active agent time, tools, and observed
+Open **Analytics** to explore 7-day and 30-day trends for tokens, active agent time, tools, and observed
 skill loads, filtered by machine or project. Missing usage is identified rather
 than guessed. These are usage metrics, not a billing dashboard or a measurement
 of task correctness; the chart below uses sample history.

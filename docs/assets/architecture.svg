@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1000" viewBox="0 0 1200 1000" role="img" aria-labelledby="title description">
+  <title id="title">Ava runtime and deployment architecture</title>
+  <desc id="description">The Qt desktop connects over authenticated HTTP and SSE to a persistent local backend or through SSH to a remote backend. A standalone React Web UI uses its own foreground server. Both servers compose the same headless Agent runtime and application services. CLI and Python callers embed Agent directly. Each execution machine owns tools, providers, sessions and application stores. Browser pages, PDF rendering and interactive terminals remain desktop-owned.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#586476"/></marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; fill: #202631; }
+      .title { font-size: 28px; font-weight: 700; }
+      .heading { font-size: 18px; font-weight: 650; }
+      .body { font-size: 15px; }
+      .small { font-size: 14px; fill: #586476; }
+      .label { font-size: 13px; font-weight: 650; fill: #0065d1; letter-spacing: 1px; }
+      .card { fill: #fff; stroke: #c6ceda; stroke-width: 1.5; }
+      .flow { fill: none; stroke: #586476; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1200" height="1000" rx="16" fill="#fafbfc"/>
+  <text x="40" y="49" class="title">Ava architecture</text>
+  <text x="40" y="77" class="body">Client lifetimes, execution boundaries, and authoritative storage</text>
+
+  <rect x="40" y="106" width="460" height="206" rx="12" class="card"/>
+  <text x="60" y="135" class="label">DESKTOP MACHINE · ava-desktop</text>
+  <text x="60" y="164" class="heading">Qt Quick / QML + Python controller</text>
+  <text x="60" y="194" class="body">Conversations · board · files · settings · machines</text>
+  <text x="60" y="226" class="body">Qt WebEngine pages / cookies · PDF helper</text>
+  <text x="60" y="250" class="body">Interactive PTY / SSH terminals + xterm.js</text>
+  <text x="60" y="284" class="small">UI closes: backend tasks continue; terminals stop.</text>
+
+  <rect x="540" y="106" width="290" height="206" rx="12" class="card"/>
+  <text x="560" y="135" class="label">WEB BROWSER</text>
+  <text x="560" y="164" class="heading">React Web UI</text>
+  <text x="560" y="194" class="body">Conversations · tools</text>
+  <text x="560" y="218" class="body">Attachments · providers</text>
+  <text x="560" y="260" class="small">Served by ava --serve</text>
+  <text x="560" y="284" class="small">Qt is not required.</text>
+
+  <rect x="870" y="106" width="290" height="206" rx="12" class="card"/>
+  <text x="890" y="135" class="label">DIRECT CALLERS</text>
+  <text x="890" y="164" class="heading">CLI / Python API</text>
+  <text x="890" y="194" class="body">ava -p · embedded Agent</text>
+  <text x="890" y="226" class="body">No API server required</text>
+  <text x="890" y="260" class="small">Caller owns runtime lifetime</text>
+  <text x="890" y="284" class="small">and its session writer.</text>
+
+  <path d="M270 312V374" class="flow"/>
+  <text x="40" y="339" class="small">Bearer HTTP / SSE; SSH for remote execution</text>
+  <text x="40" y="360" class="small">Browser handoff: long-poll actions + posted results</text>
+  <path d="M685 312V374" class="flow"/>
+  <text x="588" y="348" class="small">Loopback HTTP / SSE</text>
+
+  <rect x="40" y="378" width="1120" height="530" rx="16" fill="#f0f4fa" stroke="#b5c7df" stroke-width="1.5"/>
+  <text x="60" y="408" class="label">EXECUTION MACHINE · LOCAL OR REMOTE · ONE API SERVER OWNER PER AVA_HOME</text>
+  <rect x="60" y="428" width="750" height="150" rx="10" class="card"/>
+  <text x="80" y="456" class="heading">Shared FastAPI / uvicorn application</text>
+  <text x="80" y="483" class="body">Persistent ava-backend OR foreground ava --serve — not a proxy chain</text>
+  <text x="80" y="512" class="body">Registry / driver handoff · automations · skills / MCP · workspace / Git</text>
+  <text x="80" y="538" class="body">Analytics · provider settings · ephemeral desktop browser bridge</text>
+  <text x="80" y="561" class="small">Host / Origin fence; persistent backend also requires a per-process token.</text>
+
+  <path d="M1015 312V612" class="flow"/>
+  <text x="1030" y="487" class="small">Direct</text>
+  <text x="1030" y="508" class="small">Agent API</text>
+  <path d="M435 578V612" class="flow"/>
+
+  <rect x="60" y="616" width="1080" height="120" rx="10" fill="#e7f0ff" stroke="#95b6e5" stroke-width="1.5"/>
+  <text x="80" y="646" class="heading">Headless runtime · Agent</text>
+  <text x="80" y="675" class="body">Durable inbox → turn / step driver → sequential tool dispatch → provider-neutral context</text>
+  <text x="80" y="704" class="body">Pause / abort / recovery · compaction · prompt / skill discovery · event subscriptions</text>
+  <text x="80" y="725" class="small">No Qt or React dependency. Optional I/O recording is diagnostic, not session authority.</text>
+
+  <path d="M235 736V772" class="flow"/>
+  <path d="M600 736V772" class="flow"/>
+  <path d="M965 736V772" class="flow"/>
+  <rect x="60" y="776" width="340" height="110" rx="10" class="card"/>
+  <text x="80" y="805" class="heading">Tools and external systems</text>
+  <text x="80" y="834" class="body">read · write · edit · bash · MCP</text>
+  <text x="80" y="859" class="body">Filesystem / processes / MCP servers</text>
+  <text x="80" y="878" class="small">Browser actions return to the desktop.</text>
+  <rect x="420" y="776" width="340" height="110" rx="10" class="card"/>
+  <text x="440" y="805" class="heading">Provider adapters</text>
+  <text x="440" y="834" class="body">Anthropic · OpenAI-compatible</text>
+  <text x="440" y="859" class="body">Codex · mock (deterministic tests)</text>
+  <text x="440" y="878" class="small">Requests use execution-machine credentials.</text>
+  <rect x="780" y="776" width="360" height="110" rx="10" class="card"/>
+  <text x="800" y="805" class="heading">Session authority</text>
+  <text x="800" y="834" class="body">Append-only JSONL / Zstandard frames</text>
+  <text x="800" y="859" class="body">Context · replay · usage · recovery</text>
+  <text x="800" y="878" class="small">Application metadata uses separate stores.</text>
+
+  <text x="40" y="940" class="body">Application stores: web.json · automations.sqlite3 · capabilities.sqlite3 · analytics.sqlite3 (rebuildable)</text>
+  <text x="40" y="967" class="small">Tools are not sandboxed. API authentication is not per-call approval. See architecture.md for ownership and reliability limits.</text>
+</svg>

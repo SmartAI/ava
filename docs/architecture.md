@@ -1,20 +1,79 @@
 # Architecture
 
-Ava has a headless core and two thin application surfaces: the CLI and the loopback Web UI.
-Dependencies point inward; provider wire formats and frontend concerns do not enter the agent or
-session packages.
+Ava has a headless Python runtime, a Qt Quick desktop workbench, a React Web UI,
+and a CLI. Python applications can embed the runtime directly. The desktop is a
+client of a persistent backend, not the owner of the agent loop.
 
-```text
-app ──► agent ──► session ──► llm ──► transport
-          │           │          │
-          └──► tool ──┴──► proc  └──► base
-```
+![Ava architecture: desktop and Web clients, execution backend, headless runtime, and storage](assets/architecture.svg)
+
+The diagram shows runtime and deployment relationships, not a complete Python import graph.
+
+## Applications and process boundaries
+
+| Entry point | Execution and lifetime |
+| --- | --- |
+| `ava-desktop` | PySide6/QML UI with Qt networking. Starts or reconnects to a local backend; can connect to remote backends over SSH. Closing the UI does not stop backend tasks. |
+| `ava-backend` | Persistent FastAPI/uvicorn process. Owns projects, agents, scheduling, MCP connections, and analytics. Starts detached on demand or through launchd/systemd. |
+| `ava --serve` (also bare `ava`) | Foreground loopback server serving the React bundle and the same API implementation. It owns its agents; it is not a proxy to an existing backend. |
+| `ava -p` / Python API | Runs `Agent` directly, without an HTTP server or Qt. Lifetime belongs to the caller. |
+
+`app/web/server.py:create_app` composes the shared API, registry, scheduler, and
+analytics. The `web` package name does not mean these facilities are browser-only.
+`app/desktop/controller.py` coordinates desktop state; `connection.py` sends HTTP
+commands and consumes SSE. Durable event replay and live status updates are distinct:
+conversation history comes from session events, while status and catalog/summary
+refreshes describe current process state.
+
+Only one API server may own an `AVA_HOME`. The standalone Web server and persistent
+backend cannot use that home concurrently. The desktop also has a per-home instance
+lock. An independent CLI must not resume a session already owned by a backend.
+
+### Remote machines and desktop-owned resources
+
+`app/remote.py` and `app/desktop/ssh.py` bootstrap a matching backend package and an
+SSH tunnel after host-key verification. Each execution machine owns its providers,
+credentials, projects, session logs, schedules, and MCP processes. The desktop
+aggregates machine summaries; it does not copy remote session storage locally.
+Compatible reconnects verify machine/process identity and do not resend prompts.
+Updates wait for active work rather than canceling it.
+
+Files and Git operations run on the selected machine. Remote previews use bounded,
+version-checked temporary downloads. Interactive terminals are desktop-owned PTY/SSH
+sessions rendered with bundled xterm.js; they are separate from the agent's `bash`
+tool and stop when the desktop closes. PDF rasterization runs in a helper process
+(`desktop/_pdf_worker.py`) so Qt's PDF lock does not stall the conversation UI.
+
+Qt WebEngine pages, cookies, and browser import stay on the desktop. A session-scoped
+handoff exposes a browser tool in the backend. The desktop long-polls for actions,
+executes them against the visible tab, and posts results; this also works over the
+remote tunnel. Revocation, expiry, and disconnect end the handoff. Timed-out actions
+may already have taken effect and are not automatically retried.
+
+## Code responsibilities
+
+| Package | Responsibility |
+| --- | --- |
+| `app` | Entry points, HTTP API, registry, persistence of application metadata, desktop/Web presentation, and machine orchestration. |
+| `agent` | Public agent API, inbox/driver lifecycle, prompt and skill discovery, tool dispatch, compaction, and diagnostic recording. |
+| `session` | Provider-neutral event schema, compressed log, writer, context reconstruction, inspection, and recovery. |
+| `llm` | Provider-neutral items/events plus Anthropic, OpenAI-compatible, Codex, and mock adapters; configuration and credentials. |
+| `tool` | Tool contracts and read/write/edit/bash implementations; MCP connections and result adaptation. |
+| `transport` / `proc` / `base` | HTTP/SSE, subprocess execution, cancellation, errors, home paths, and image limits. |
+
+The core does not import Qt, React, or application routes. `agent` uses `session`,
+`llm`, and `tool`; session context uses neutral LLM types. Provider adapters use
+transport, and shell tools use process helpers. This is not a strict linear stack.
 
 ## Public seam
 
-`Agent` is the application boundary. Applications submit input, control the driver, subscribe to
-durable events, and read provider-neutral status or context reports through that object. Access to
-`Agent.state` is reserved for agent internals and invariant-focused tests.
+`Agent` is the primary application boundary. Applications submit input, control the driver,
+subscribe to durable events, and read provider-neutral status or context reports through it.
+
+The boundary is not yet fully encapsulated: `app/web/registry.py` assigns shared MCP ownership
+through `Agent.state`; `routes.py` reads session state and updates provider model overrides;
+`browser.py` attaches browser tools through it. These are existing coupling points, not a
+recommended extension API. Embedders should use the public methods and explicit tool/prompt
+arguments. Moving these application accesses behind public methods remains architectural work.
 
 An agent owns its provider, durable writer, and scratchpad. Call `await agent.aclose()` when done,
 or use `async with`. The Web registry closes every chat agent during the FastAPI lifespan shutdown.
@@ -69,6 +128,29 @@ only after their bytes reach the kernel. Recovery may repair a torn final frame 
 The JSONL codec is intentionally explicit. Its event-by-event mapping is compatibility and
 validation code, not generic object serialization, and unknown future event kinds are preserved.
 
+## Storage authority
+
+The session stream is authoritative for conversations, not for every application feature.
+Paths below are relative to the execution machine's `AVA_HOME` (default `~/.ava`),
+except desktop-owned state, which lives on the desktop machine.
+
+| Store | Authority / lifetime |
+| --- | --- |
+| `sessions/` (`*.jsonl.zst`) | Conversation events, queued input, model selection, usage, and recovery. CLI callers can choose an explicit log path. |
+| `web.json` | Project registration and conversation navigation metadata, including pins, archives, and review markers. |
+| `automations.sqlite3` | Schedules and execution bookkeeping; each run has its own conversation log. |
+| `capabilities.sqlite3` | Skill availability and MCP server configuration, including configured secrets. Skill instruction files remain in their discovery locations. |
+| `analytics.sqlite3` | Rebuildable incremental index derived from session history, not a second conversation authority. |
+| `settings.json` / `auth.json` | Provider configuration and saved credentials. Environment credentials can take precedence. Codex uses its separate file-based login. |
+| `machine.json` / `backend.json` | Durable machine identity / private current-process endpoint and bearer token. |
+| `desktop.ini` / `browser/` | Desktop preferences and machine navigation / local browser profile and imported data. |
+| `worktrees/` | Actual Git checkouts; archiving a conversation does not delete them. |
+
+Backend shutdown stops scheduling, closes agents and shared MCP connections, then releases
+ownership. A crash leaves logs recoverable but does not automatically rerun interrupted tools
+or unconfirmed automation executions. Schedules require an awake machine and running backend.
+See [usage](usage.md#automations) for missed-run and restart policies.
+
 ## Session diagnostics and task evaluation
 
 `ava session inspect` derives a read-only report from the event log. It does not
@@ -113,26 +195,10 @@ Every architectural change must keep these gates green:
 - every persisted model tool call has one result after completion, abort, or recovery;
 - pause/resume and provider failure leave replayable history;
 - `ruff`, `mypy`, the Python 3.12 test suite, and the frontend build pass;
-- application code has no direct `agent.state` access;
+- application changes do not add new direct `agent.state` coupling; existing exceptions are listed above;
 - provider clients close on agent replacement and shutdown.
 
-## Engineering foundations
-
-```text
-CLI / loopback Web UI / Python application
-                    │
-                    ▼
-                  Agent ─────► read · write · edit · bash
-                    │
-                    ├────────► Anthropic · OpenAI-compatible · Codex · mock
-                    │
-                    ▼
-          append-only session events
-                    │
-                    ├────────► model context and compaction
-                    ├────────► browser history and metrics
-                    └────────► resume and recovery
-```
+## Reliability and trust boundaries
 
 The session event stream is the source of truth for conversation state, queued input,
 and recovery. The optional I/O recording is a diagnostic artifact for offline replay.
@@ -152,4 +218,14 @@ Input acknowledgement follows a write to the kernel; `fsync` occurs at separate 
 boundaries. These are process-recovery guarantees, not exactly-once external command
 execution or a promise that every acknowledged input survives power loss.
 
-See the [port notes](port-notes.md) for differences from the original C++ runtime.
+The persistent backend additionally requires a per-process bearer token. Standalone
+`ava --serve` uses the loopback Host/Origin fence without that token; neither mode is
+intended as an internet-facing multi-user service. SSH supplies the remote transport.
+These controls protect API access, not tool execution: file, shell, and MCP tools
+run with the execution user's permissions, without a sandbox or per-call approval.
+Browser handoff is a separate explicit grant, not a general approval mechanism.
+Provider requests may transmit workspace content externally.
+
+See [permissions and privacy](features.md#permissions-and-privacy),
+[desktop design system](desktop-design-system.md), and [usage](usage.md) for
+user-facing behavior and operational commands.
