@@ -4891,6 +4891,64 @@ def test_desktop_new_session_workspace_choice(desktop, model_server, project, ho
     assert not (home / "worktrees").exists()
 
 
+def test_quick_chat_shortcut_window_lifetime(home, project):
+    # Run the real entrypoint without a fixture retaining the main-window wrapper.
+    # Exercise shortcut wiring without OS registration or starting a backend.
+    script = """
+import gc
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+from PySide6.QtQuick import QQuickWindow
+from ava.app.desktop import application
+
+create_engine = application.create_engine
+passed = False
+def capture_engine(controller):
+    engine = create_engine(controller)
+    controller.start = lambda: None
+    def register(shortcut):
+        def exercise():
+            global passed
+            try:
+                gc.collect()
+                engine.collectGarbage()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                shortcut.activated.emit()
+                window = engine.rootObjects()[0]
+                panel = window.findChild(QQuickWindow, "quickChatWindow")
+                assert panel is not None and panel.isVisible()
+                shortcut.activated.emit()
+                assert not panel.isVisible()
+                shortcut.activated.emit()
+                assert panel.isVisible()
+                panel.close()
+                assert not panel.isVisible()
+                shortcut.activated.emit()
+                assert panel.isVisible()
+                panel.hide()
+                passed = True
+            finally:
+                QCoreApplication.exit(0)
+        QTimer.singleShot(0, exercise)
+        return True
+    application.QuickChatShortcut.register = register
+    return engine
+
+application.create_engine = capture_engine
+result = application.run()
+assert passed
+raise SystemExit(result)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, "--project", str(project)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "QT_QUICK_BACKEND": "software"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr, result.stderr
+
+
 @pytest.mark.parametrize("dark", [False, True])
 def test_quick_chat_focus_send_and_resume(desktop, model_server, dark, tmp_path):
     from ava.app.desktop.quick_chat import toggle_quick_chat

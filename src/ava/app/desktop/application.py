@@ -101,7 +101,9 @@ def run() -> int:
         lock.unlock()
         return 1
     shortcut = QuickChatShortcut(app)
-    panel = engine.rootObjects()[0].findChild(QQuickWindow, "quickChatWindow")
+    # Keep the root wrapper alive: releasing it can invalidate child window wrappers.
+    window = engine.rootObjects()[0]
+    panel = window.findChild(QQuickWindow, "quickChatWindow")
     if panel is not None:
         shortcut.activated.connect(lambda: toggle_quick_chat(panel))
         if not shortcut.register():
