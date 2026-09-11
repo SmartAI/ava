@@ -4158,23 +4158,46 @@ def test_desktop_default_selection_applies_only_to_new_sessions(desktop, model_s
     click(window, "settingsProvidersTab")
     dialog = window.findChild(QObject, "settingsDialog")
     until(lambda: dialog.property("ready"), controller.providerSettingsChanged)
-    assert find_item(window, "settingsDefaultProvider").property("currentValue") == "desktop-test"
+    defaults = find_item(window, "settingsDefaultProvider")
+    connection = find_item(window, "settingsApiKey")
+    until(lambda: defaults.mapToItem(connection, QPointF(0, 0)).y() > connection.height(), window.frameSwapped)
+    scroll = find_item(window, "settingsProviderScroll")
+    scroll.setProperty("contentY", scroll.property("contentHeight") - scroll.height())
+    assert defaults.property("currentValue") == "desktop-test"
+    effort = find_item(window, "settingsDefaultEffort")
+    assert not effort.property("enabled")
     click(window, "settingsDefaultModel")
     QTest.keyClick(window, Qt.Key.Key_End)
     QTest.keyClick(window, Qt.Key.Key_Return)
     assert find_item(window, "settingsDefaultModel").property("currentValue") == "fixture-reasoning"
+    assert effort.property("enabled")
+    assert dialog.property("defaultEfforts") == ["low", "high"]
+    click(window, "settingsDefaultEffort")
+    QTest.keyClick(window, Qt.Key.Key_End)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert effort.property("currentValue") == "high"
     click(window, "saveDefaultSelection")
     until(lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged)
     assert controller.providerSettingsState["error"] == ""
-    assert json.loads((home / "settings.json").read_text())["model"] == "fixture-reasoning"
+    saved = json.loads((home / "settings.json").read_text())
+    assert saved["model"] == "fixture-reasoning"
+    assert saved["effort"] == "high"
     assert dict(controller.selection) == original
     click(window, "closeSettingsButton")
     click(window, "settingsButton")
     until(lambda: dialog.property("ready"), controller.providerSettingsChanged)
     assert find_item(window, "settingsDefaultModel").property("currentValue") == "fixture-reasoning"
+    assert effort.property("currentValue") == "high"
+    scroll.setProperty("contentY", scroll.property("contentHeight") - scroll.height())
+    click(window, "settingsDefaultModel")
+    QTest.keyClick(window, Qt.Key.Key_Home)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert not effort.property("enabled")
+    assert effort.property("currentValue") == ""
     click(window, "closeSettingsButton")
     start_chat(window)
     until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
+    assert controller.selection["effort"] == "high"
 
 
 def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_server, home):
@@ -4202,7 +4225,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     save_screenshot(window, "provider-settings")
     key.setProperty("text", "desktop-test-new-key")
     scroll = find_item(window, "settingsProviderScroll")
-    scroll.setProperty("contentY", scroll.property("contentHeight") - scroll.height())
+    scroll.setProperty("contentY", max(0, scroll.property("contentY") + key.mapToItem(scroll, QPointF(0, 0)).y() - 80))
     QTest.qWait(30)
     key.forceActiveFocus()
     QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
@@ -4256,6 +4279,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
             QTest.keyClick(window, Qt.Key.Key_Down)
         QTest.keyClick(window, Qt.Key.Key_Return)
 
+    scroll.setProperty("contentY", 0)
     connections = window.findChild(QObject, "settingsDialog").property("connections").toVariant()
     choose("settingsProviderPicker", next(i for i, item in enumerate(connections) if item["id"] == "codex"))
     assert find_item(window, "settingsProviderPicker").property("currentValue") == "codex"

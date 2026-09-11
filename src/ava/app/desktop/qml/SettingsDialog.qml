@@ -19,6 +19,9 @@ NativeDialog {
     property string defaultSummary: ""
     property string defaultProvider: ""
     property string defaultModel: ""
+    property string defaultEffort: ""
+    readonly property var defaultProfile: defaultModels.find(item => item.id === defaultModel) || ({})
+    readonly property var defaultEfforts: defaultProfile.effort_values || []
     readonly property var defaultProviders: connections.filter(item => item.valid)
     readonly property var defaultModels: (defaultProviders.find(item => item.id === defaultProvider) || {}).models || []
     readonly property var connection: connections.find(item => item.id === selectedProvider) || ({})
@@ -41,6 +44,7 @@ NativeDialog {
         const defaults = values.default_selection || {};
         defaultProvider = defaults.provider || "";
         defaultModel = defaults.model || "";
+        defaultEffort = defaultEfforts.indexOf(defaults.effort) >= 0 ? defaults.effort : "";
         const defaultEntry = connections.find(item => item.id === defaults.provider);
         defaultSummary = defaults.provider
             ? (defaultEntry ? defaultEntry.label : defaults.provider)
@@ -331,69 +335,6 @@ NativeDialog {
                     id: providers
                     width: parent.width - 12
                     spacing: 16
-                    Label { text: "Defaults for new sessions"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
-                    ColumnLayout {
-                        visible: dialog.ready
-                        enabled: !dialog.state.saving && !dialog.state.loading
-                        Layout.fillWidth: true
-                        spacing: 8
-                        Label { text: "Default provider"; font.pixelSize: 12 }
-                        NativeCombo {
-                            objectName: "settingsDefaultProvider"
-                            Layout.fillWidth: true
-                            model: dialog.defaultProviders
-                            textRole: "label"
-                            valueRole: "id"
-                            currentIndex: dialog.defaultProviders.findIndex(item => item.id === dialog.defaultProvider)
-                            Accessible.name: "Default provider"
-                            onActivated: (index) => {
-                                dialog.defaultProvider = dialog.defaultProviders[index].id;
-                                dialog.defaultModel = dialog.defaultModels[0]?.id || "";
-                            }
-                        }
-                        Label { text: "Default model"; font.pixelSize: 12 }
-                        NativeCombo {
-                            objectName: "settingsDefaultModel"
-                            Layout.fillWidth: true
-                            model: dialog.defaultModels
-                            textRole: "id"
-                            valueRole: "id"
-                            currentIndex: dialog.defaultModels.findIndex(item => item.id === dialog.defaultModel)
-                            Accessible.name: "Default model"
-                            onActivated: (index) => dialog.defaultModel = dialog.defaultModels[index].id
-                        }
-                        Label {
-                            visible: !dialog.defaultProviders.length
-                            text: "Connect a provider below, then refresh to choose a default."
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: palette.placeholderText
-                        }
-                        NativeButton {
-                            objectName: "saveDefaultSelection"
-                            text: "Save defaults"
-                            enabled: dialog.defaultModels.some(item => item.id === dialog.defaultModel)
-                            onClicked: dialog.backend.saveProviderSettings({default_selection: {
-                                provider: dialog.defaultProvider, model: dialog.defaultModel, effort: null
-                            }})
-                        }
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        text: "Saved defaults apply to new conversations unless overridden by environment variables or launch options. Choose a conversation’s model from its model name."
-                        font.pixelSize: 12
-                        color: palette.placeholderText
-                        wrapMode: Text.WordWrap
-                    }
-                    Label {
-                        objectName: "providerDefaultSummary"
-                        visible: dialog.ready
-                        Layout.fillWidth: true
-                        text: dialog.defaultSummary ? "Saved default: " + dialog.defaultSummary : "Saved default unavailable."
-                        font.pixelSize: 12
-                        color: palette.placeholderText
-                        wrapMode: Text.WordWrap
-                    }
                     Label {
                         visible: !dialog.ready
                         Layout.fillWidth: true
@@ -532,6 +473,92 @@ NativeDialog {
                             color: palette.placeholderText
                             wrapMode: Text.WordWrap
                         }
+                    }
+                    Label { text: "Defaults for new sessions"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
+                    ColumnLayout {
+                        visible: dialog.ready
+                        enabled: !dialog.state.saving && !dialog.state.loading
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label { text: "Default provider"; font.pixelSize: 12 }
+                        NativeCombo {
+                            objectName: "settingsDefaultProvider"
+                            Layout.fillWidth: true
+                            model: dialog.defaultProviders
+                            textRole: "label"
+                            valueRole: "id"
+                            currentIndex: dialog.defaultProviders.findIndex(item => item.id === dialog.defaultProvider)
+                            Accessible.name: "Default provider"
+                            onActivated: (index) => {
+                                dialog.defaultProvider = dialog.defaultProviders[index].id;
+                                dialog.defaultModel = dialog.defaultModels[0]?.id || "";
+                                dialog.defaultEffort = "";
+                            }
+                        }
+                        Label { text: "Default model"; font.pixelSize: 12 }
+                        NativeCombo {
+                            objectName: "settingsDefaultModel"
+                            Layout.fillWidth: true
+                            model: dialog.defaultModels
+                            textRole: "id"
+                            valueRole: "id"
+                            currentIndex: dialog.defaultModels.findIndex(item => item.id === dialog.defaultModel)
+                            Accessible.name: "Default model"
+                            onActivated: (index) => {
+                                dialog.defaultModel = dialog.defaultModels[index].id;
+                                dialog.defaultEffort = "";
+                            }
+                        }
+                        Label { text: "Default effort"; font.pixelSize: 12 }
+                        NativeCombo {
+                            objectName: "settingsDefaultEffort"
+                            Layout.fillWidth: true
+                            model: [{label: "Provider default", value: ""}].concat(dialog.defaultEfforts.map(value => ({label: value, value: value})))
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: dialog.defaultEffort ? dialog.defaultEfforts.indexOf(dialog.defaultEffort) + 1 : 0
+                            enabled: dialog.defaultEfforts.length > 0
+                            onActivated: dialog.defaultEffort = currentValue
+                            Accessible.name: "Default effort"
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: dialog.defaultEfforts.length ? "Higher effort can take longer and use more tokens." : "This model does not advertise reasoning effort."
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            color: palette.placeholderText
+                        }
+                        Label {
+                            visible: !dialog.defaultProviders.length
+                            text: "Connect a provider above, then refresh to choose a default."
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: palette.placeholderText
+                        }
+                        NativeButton {
+                            objectName: "saveDefaultSelection"
+                            text: "Save defaults"
+                            enabled: !!dialog.defaultProfile.id && (!dialog.defaultEffort || dialog.defaultEfforts.indexOf(dialog.defaultEffort) >= 0)
+                            onClicked: dialog.backend.saveProviderSettings({default_selection: {
+                                provider: dialog.defaultProvider, model: dialog.defaultModel, effort: dialog.defaultEffort || null
+                            }})
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Saved defaults apply to new conversations unless overridden by environment variables or launch options. Choose a conversation’s model from its model name."
+                        font.pixelSize: 12
+                        color: palette.placeholderText
+                        wrapMode: Text.WordWrap
+                    }
+                    Label {
+                        objectName: "providerDefaultSummary"
+                        visible: dialog.ready
+                        Layout.fillWidth: true
+                        text: dialog.defaultSummary ? "Saved default: " + dialog.defaultSummary : "Saved default unavailable."
+                        font.pixelSize: 12
+                        color: palette.placeholderText
+                        wrapMode: Text.WordWrap
                     }
                 }
             }
