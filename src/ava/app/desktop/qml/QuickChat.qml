@@ -16,6 +16,8 @@ ApplicationWindow {
     signal attach()
     width: 680
     height: 560
+    minimumWidth: Math.min(520, Screen.desktopAvailableWidth)
+    minimumHeight: Math.min(440, Screen.desktopAvailableHeight)
     visible: false
     title: "Quick Chat · Ava"
     color: "transparent"
@@ -58,6 +60,48 @@ ApplicationWindow {
             }
         }
     }
+    // The card is inset from the transparent window bounds. Put resize targets
+    // on its visible edges; manual resizing also works on macOS, where Qt's
+    // startSystemResize is not supported.
+    Repeater {
+        model: [Qt.LeftEdge, Qt.RightEdge, Qt.TopEdge, Qt.BottomEdge,
+                Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.TopEdge,
+                Qt.LeftEdge | Qt.BottomEdge, Qt.RightEdge | Qt.BottomEdge]
+        MouseArea {
+            required property int modelData
+            readonly property bool resizeLeft: (modelData & Qt.LeftEdge) !== 0
+            readonly property bool resizeRight: (modelData & Qt.RightEdge) !== 0
+            readonly property bool resizeTop: (modelData & Qt.TopEdge) !== 0
+            readonly property bool resizeBottom: (modelData & Qt.BottomEdge) !== 0
+            readonly property bool corner: (resizeLeft || resizeRight) && (resizeTop || resizeBottom)
+            x: resizeLeft ? surface.x - 6 : resizeRight ? surface.x + surface.width - 6 : surface.x + 6
+            y: resizeTop ? surface.y - 6 : resizeBottom ? surface.y + surface.height - 6 : surface.y + 6
+            width: resizeLeft || resizeRight ? 12 : surface.width - 12
+            height: resizeTop || resizeBottom ? 12 : surface.height - 12
+            z: 10
+            cursorShape: corner ? (resizeLeft === resizeTop ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor)
+                                : (resizeLeft || resizeRight ? Qt.SizeHorCursor : Qt.SizeVerCursor)
+            acceptedButtons: Qt.LeftButton
+            property point origin
+            property rect initial
+            onPressed: function(mouse) {
+                origin = mapToGlobal(mouse.x, mouse.y);
+                initial = Qt.rect(panel.x, panel.y, panel.width, panel.height);
+            }
+            onPositionChanged: function(mouse) {
+                if (!pressed) return;
+                const point = mapToGlobal(mouse.x, mouse.y);
+                const dx = point.x - origin.x;
+                const dy = point.y - origin.y;
+                const w = Math.max(panel.minimumWidth, initial.width + (resizeLeft ? -dx : resizeRight ? dx : 0));
+                const h = Math.max(panel.minimumHeight, initial.height + (resizeTop ? -dy : resizeBottom ? dy : 0));
+                if (resizeLeft) panel.x = initial.x + initial.width - w;
+                if (resizeTop) panel.y = initial.y + initial.height - h;
+                panel.width = w;
+                panel.height = h;
+            }
+        }
+    }
     Shortcut { sequence: "Escape"; onActivated: panel.hide() }
     FolderDialog {
         id: folder
@@ -65,6 +109,7 @@ ApplicationWindow {
         onAccepted: panel.backend.newChatInFolder(selectedFolder.toString())
     }
     Surface {
+        id: surface
         objectName: "quickChatSurface"
         elevation: 2
         anchors.fill: parent

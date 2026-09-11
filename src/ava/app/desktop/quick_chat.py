@@ -79,8 +79,8 @@ def toggle_quick_chat(window) -> None:
     if screen:
         window.setScreen(screen)
         rect = screen.availableGeometry()
-        window.setWidth(min(680, rect.width()))
-        window.setHeight(min(560, rect.height()))
+        window.setWidth(min(window.width(), rect.width()))
+        window.setHeight(min(window.height(), rect.height()))
         window.setPosition(rect.x() + (rect.width() - window.width()) // 2,
                            rect.y() + (rect.height() - window.height()) // 2)
     window.show()

@@ -4983,6 +4983,37 @@ raise SystemExit(result)
     assert "Traceback (most recent call last)" not in result.stderr, result.stderr
 
 
+def test_quick_chat_resize_and_reopen(desktop):
+    from ava.app.desktop.quick_chat import toggle_quick_chat
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    panel = window.findChild(QQuickWindow, "quickChatWindow")
+    toggle_quick_chat(panel)
+    until(lambda: controller.connected and bool(panel.property("sessionId")), controller.changed)
+    assert QTest.qWaitForWindowExposed(panel)
+    original = panel.size()
+    # Drag the visible card's bottom-right edge, not the transparent window edge.
+    start = QPoint(panel.width() - 24, panel.height() - 24)
+    end = start - QPoint(60, 50)
+    QTest.mousePress(panel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+    QTest.mouseMove(panel, end, 30)
+    QTest.mouseRelease(panel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+    assert panel.width() == original.width() - 60
+    assert panel.height() == original.height() - 50
+    resized = panel.size()
+    toggle_quick_chat(panel)
+    toggle_quick_chat(panel)
+    assert panel.size() == resized
+    panel.resize(panel.minimumWidth(), panel.minimumHeight())
+    QTest.qWait(50)
+    for name in ("chatComposerArea", "sendButton", "sessionProjectChoice"):
+        item = find_item(panel, name)
+        assert visible_rect(panel, item).height() == item.height(), name
+    panel.hide()
+
+
 @pytest.mark.parametrize("dark", [False, True])
 def test_quick_chat_focus_send_and_resume(desktop, model_server, dark, tmp_path):
     from ava.app.desktop.quick_chat import toggle_quick_chat
