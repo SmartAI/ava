@@ -226,6 +226,19 @@ skill loads, filtered by machine or project. Missing usage is identified rather
 than guessed. These are usage metrics, not a billing dashboard or a measurement
 of task correctness; the chart below uses sample history.
 
+The total and token breakdown show exact counts: uncached input + cache reads +
+cache writes + output (including reasoning). Usage is counted across all recorded
+providers and models in the selected projects and machines, not just the currently
+selected model. Anthropic, OpenAI, Codex, DeepSeek, and compatible/local endpoints
+use their reported usage; missing counts are never estimated from text.
+
+Cache writes are input tokens the provider reports saving for reuse, not files
+written by Ava. Anthropic reports cache creation explicitly; many other endpoints
+report cache reads but no separate write count. An unreported cache-write count is
+shown as **—**, labeled **Not reported by these providers**, rather than zero.
+When only some requests report cache writes, the breakdown shows how many did.
+The total includes known counts only; it is not a billing estimate.
+
 ![Seven-day sample usage with token trends, tool activity, and observed skill loads](assets/demo/session-information.png)
 
 ## Git and terminals

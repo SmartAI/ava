@@ -23,7 +23,7 @@ class QuickChatShortcut(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._carbon = None
+        self._carbon: ctypes.CDLL | None = None
         self._handler = ctypes.c_void_p()
         self._hotkey = ctypes.c_void_p()
         self.error = ""
