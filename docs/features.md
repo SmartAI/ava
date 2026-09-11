@@ -166,7 +166,7 @@ also switches to the appropriate workspace.
 
 ### SSH machines
 
-Connect an SSH alias or `user@hostname` from **Machines**. Keep projects and agent
+Connect an SSH alias or `user@hostname` from **Settings → Machines**. Keep projects and agent
 execution on the selected machine while using one desktop to browse files, open
 terminals, manage skills and MCP servers, schedule work, and review results.
 

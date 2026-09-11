@@ -338,45 +338,6 @@ Pane {
                 font.pixelSize: 12
             }
         }
-        Repeater {
-            model: sidebar.backend.machines
-            delegate: NativeButton {
-                id: backendStatus
-                required property var modelData
-                objectName: "backendIndicator_" + modelData.id
-                Layout.fillWidth: true
-                quiet: true
-                tip: (modelData.host ? "SSH · " + modelData.host : "Local") + " · " + modelData.status + "\nManage backend and restart"
-                onClicked: sidebar.machinesRequested()
-                contentItem: RowLayout {
-                    spacing: 8
-                    Rectangle {
-                        implicitWidth: 7
-                        implicitHeight: 7
-                        radius: 4
-                        color: backendStatus.modelData.state === "online" ? Theme.success : backendStatus.modelData.state === "offline" ? Theme.danger : Theme.warning
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        text: backendStatus.modelData.name
-                        elide: Text.ElideRight
-                        font.pixelSize: 11
-                    }
-                    Label {
-                        text: backendStatus.modelData.restarting ? "Restarting" : backendStatus.modelData.state === "online" ? "Connected" : backendStatus.modelData.state === "offline" ? "Offline" : "Connecting"
-                        color: Theme.secondaryText
-                        font.pixelSize: 10
-                    }
-                }
-            }
-        }
-        NavigationItem {
-            objectName: "machinesButton"
-            text: "Machines"
-            Layout.fillWidth: true
-            icon.source: "icons/machine.svg"
-            onClicked: sidebar.machinesRequested()
-        }
         NavigationItem {
             objectName: "settingsButton"
             text: "Settings"

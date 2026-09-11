@@ -264,7 +264,7 @@ user manager; continuing after logout and starting before login additionally req
 Settings reports the actual linger state; Ava does not enable it or request administrator access.
 Neither service prevents system sleep. macOS service errors go to `$AVA_HOME/backend.log`; on Linux,
 use `journalctl --user -u NAME`, with the name returned by `service-status`.
-Use **Machines** in the sidebar to connect an SSH alias or `user@hostname`. Ava uses system OpenSSH,
+Use **Settings → Machines** to connect an SSH alias or `user@hostname`. Ava uses system OpenSSH,
 your SSH configuration and existing verified host keys. The remote user needs Python 3.12+,
 `venv`/pip and a working user service manager. First connection uploads the matching Ava package,
 checks its SHA-256, installs an independent environment under `~/.local/share/ava/backends/`, and

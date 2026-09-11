@@ -3,17 +3,31 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-NativeDialog {
-    id: dialog
+Flickable {
+    id: pane
     required property var backend
-    title: "Machines"
-    modal: true
-    focus: true
-    width: Math.min(640, parent.width - 40)
-    onOpened: host.forceActiveFocus()
+    signal machineOpened()
+    contentWidth: width
+    contentHeight: body.implicitHeight + 20
+    clip: true
+    boundsBehavior: Flickable.StopAtBounds
+    ScrollBar.vertical: ScrollBar {}
+    FontMetrics {
+        id: actionMetrics
+        font.pixelSize: Theme.body
+        font.weight: Font.Medium
+    }
+    readonly property real restartWidth: Math.ceil(actionMetrics.advanceWidth("Restarting…")) + Theme.iconSize + Theme.spaceSm + Theme.spaceMd * 2
+    readonly property real openWidth: Math.ceil(actionMetrics.advanceWidth("Connecting…")) + Theme.spaceMd * 2
     ColumnLayout {
-        width: parent.width
+        id: body
+        width: parent.width - 12
         spacing: 14
+        Label {
+            text: "Machines"
+            font.pixelSize: Theme.sectionTitle
+            font.weight: Font.DemiBold
+        }
         Label {
             Layout.fillWidth: true
             text: "Projects and chats stay on the machine where they run."
@@ -25,10 +39,10 @@ NativeDialog {
             id: machines
             objectName: "machineConnectionsList"
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.min(250, dialog.parent.height * 0.3, Math.max(80, contentHeight))
+            Layout.preferredHeight: Math.min(250, Math.max(80, contentHeight))
             clip: true
             spacing: 8
-            model: dialog.backend.machines
+            model: pane.backend.machines
             ScrollBar.vertical: ScrollBar {}
             delegate: Pane {
                 id: machine
@@ -38,7 +52,8 @@ NativeDialog {
                 padding: 12
                 background: Surface {
                     color: machine.modelData.active ? Theme.selection : Theme.inset
-                    border.color: machine.modelData.active ? Theme.accent : Theme.border
+                    border.width: 0
+                    radius: Theme.controlRadius
                 }
                 ColumnLayout {
                     id: machineBody
@@ -46,6 +61,7 @@ NativeDialog {
                     spacing: 6
                     RowLayout {
                         Layout.fillWidth: true
+                        spacing: Theme.spaceSm
                         Rectangle {
                             implicitWidth: 6
                             implicitHeight: 6
@@ -64,42 +80,40 @@ NativeDialog {
                             objectName: "restartMachine_" + machine.modelData.id
                             icon.source: "icons/reload.svg"
                             text: machine.modelData.restarting ? "Restarting…" : "Restart"
-                            implicitHeight: 30
-                            enabled: !machine.modelData.busy
+                            quiet: true
+                            Layout.preferredWidth: pane.restartWidth
+                            enabled: !machine.modelData.busy && !pane.backend.serviceState.loading
                             tip: "Restart backend; active tasks must be stopped first"
-                            onClicked: dialog.backend.restartMachine(machine.modelData.id)
-                        }
-                        NativeButton {
-                            objectName: "updateMachine_" + machine.modelData.id
-                            text: "Update backend"
-                            visible: !!machine.modelData.update_pending
-                            enabled: machine.modelData.online && !machine.modelData.busy
-                            implicitHeight: 30
-                            tip: "Apply the update if no tasks are active"
-                            onClicked: dialog.backend.updateMachine(machine.modelData.id)
+                            onClicked: pane.backend.restartMachine(machine.modelData.id)
                         }
                         NativeButton {
                             objectName: "selectMachine_" + machine.modelData.id
                             text: machine.modelData.online ? "Open" : machine.modelData.busy ? "Connecting…" : "Reconnect"
+                            primary: machine.modelData.online
+                            tip: machine.modelData.online ? "Open projects on " + machine.modelData.name : "Reconnect to " + machine.modelData.name
                             enabled: !machine.modelData.busy
-                            implicitHeight: 30
+                            Layout.preferredWidth: pane.openWidth
                             onClicked: {
                                 if (machine.modelData.online) {
-                                    dialog.backend.selectMachine(machine.modelData.id);
-                                    dialog.close();
-                                } else dialog.backend.reconnectMachine(machine.modelData.id);
+                                    pane.backend.selectMachine(machine.modelData.id);
+                                    pane.machineOpened();
+                                } else pane.backend.reconnectMachine(machine.modelData.id);
                             }
                         }
-                        NativeButton {
-                            objectName: "removeMachine_" + machine.modelData.id
-                            visible: !!machine.modelData.host
-                            enabled: !machine.modelData.restarting
-                            icon.source: "icons/close.svg"
-                            quiet: true
-                            tip: "Remove connection; remote tasks keep running"
-                            implicitHeight: 30
-                            implicitWidth: 30
-                            onClicked: dialog.backend.removeMachine(machine.modelData.id)
+                        // Reserve the same action column for local and SSH machines.
+                        Item {
+                            Layout.preferredWidth: Theme.controlHeight
+                            Layout.preferredHeight: Theme.controlHeight
+                            NativeButton {
+                                anchors.fill: parent
+                                objectName: "removeMachine_" + machine.modelData.id
+                                visible: !!machine.modelData.host
+                                enabled: !machine.modelData.restarting
+                                icon.source: "icons/close.svg"
+                                quiet: true
+                                tip: "Remove connection; remote tasks keep running"
+                                onClicked: pane.backend.removeMachine(machine.modelData.id)
+                            }
                         }
                     }
                     Label {
@@ -109,14 +123,25 @@ NativeDialog {
                         color: palette.placeholderText
                         elide: Text.ElideMiddle
                     }
-                    Label {
+                    RowLayout {
                         Layout.fillWidth: true
                         visible: !!machine.modelData.update_pending
-                        text: "Connected to the previous backend. Update when your tasks are finished."
-                        textFormat: Text.PlainText
-                        wrapMode: Text.WordWrap
-                        font.pixelSize: 11
-                        color: palette.placeholderText
+                        spacing: Theme.spaceSm
+                        Label {
+                            Layout.fillWidth: true
+                            text: "Connected to the previous backend. Update when your tasks are finished."
+                            textFormat: Text.PlainText
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: Theme.captionSmall
+                            color: palette.placeholderText
+                        }
+                        NativeButton {
+                            objectName: "updateMachine_" + machine.modelData.id
+                            text: "Update backend"
+                            enabled: machine.modelData.online && !machine.modelData.busy
+                            tip: "Apply the update if no tasks are active"
+                            onClicked: pane.backend.updateMachine(machine.modelData.id)
+                        }
                     }
                     Label {
                         Layout.fillWidth: true
@@ -160,18 +185,14 @@ NativeDialog {
             Layout.fillWidth: true
             Item { Layout.fillWidth: true }
             NativeButton {
-                text: "Done"
-                onClicked: dialog.close()
-            }
-            NativeButton {
                 id: add
                 objectName: "addMachineAction"
                 text: "Connect"
                 primary: true
                 enabled: /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]*$/.test(host.text.trim())
                 onClicked: {
-                    dialog.forceActiveFocus();
-                    dialog.backend.addMachine(host.text, name.text);
+                    pane.forceActiveFocus();
+                    pane.backend.addMachine(host.text, name.text);
                     host.text = "";
                     name.text = "";
                 }

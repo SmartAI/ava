@@ -134,6 +134,7 @@ NativeDialog {
                 model: [
                     {label: "General", name: "settingsGeneralTab", icon: "settings"},
                     {label: "Providers", name: "settingsProvidersTab", icon: "model"},
+                    {label: "Machines", name: "settingsMachinesTab", icon: "machine"},
                     {label: "Shortcuts", name: "settingsShortcutsTab", icon: "command"}
                 ]
                 delegate: NavigationItem {
@@ -481,6 +482,10 @@ NativeDialog {
                     }
                 }
             }
+            MachinesPane {
+                backend: dialog.backend
+                onMachineOpened: dialog.close()
+            }
             Flickable {
                 contentWidth: width
                 contentHeight: shortcuts.implicitHeight + 20
@@ -533,7 +538,7 @@ NativeDialog {
             Label {
                 objectName: "providerSettingsFeedback"
                 Layout.fillWidth: true
-                text: dialog.page === 1 ? (dialog.state.error || dialog.state.notice || "Credentials are stored separately from settings. Conversations are unchanged.") : "Appearance changes are saved automatically."
+                text: dialog.page === 1 ? (dialog.state.error || dialog.state.notice || "Credentials are stored separately from settings. Conversations are unchanged.") : dialog.page === 0 ? "Appearance changes are saved automatically." : ""
                 font.pixelSize: 11
                 color: dialog.page === 1 && dialog.state.error ? Theme.danger : dialog.palette.placeholderText
                 wrapMode: Text.Wrap

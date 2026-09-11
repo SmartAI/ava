@@ -181,12 +181,6 @@ ApplicationWindow {
         onAccepted: window.backend.newChatInFolder(selectedFolder.toString())
     }
     WorktreeDialog { backend: window.backend }
-    MachinesDialog {
-        id: machinesDialog
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        backend: window.backend
-    }
     HostKeyDialog { backend: window.backend; codeFont: window.codeFont }
     NativeDialog {
         id: remoteProjectDialog
@@ -285,7 +279,7 @@ ApplicationWindow {
             backend: window.backend
             onHideRequested: window.leftOpen = false
             onAddProjectRequested: window.backend.remoteMachine ? remoteProjectDialog.openForProject() : folderDialog.open()
-            onMachinesRequested: machinesDialog.open()
+            onMachinesRequested: { settingsDialog.page = 2; settingsDialog.open(); }
             onSettingsRequested: settingsDialog.open()
             onBoardRequested: window.workspacePage = "board"
             onAutomationsRequested: window.workspacePage = "automations"

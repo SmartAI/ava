@@ -726,7 +726,8 @@ def test_desktop_backend_restart_protects_active_tasks(desktop, model_server):
     QTest.keyClick(window, Qt.Key.Key_Return)
     until(lambda: any(row["body"] == "Hello " for row in controller._transcript.rows), controller.changed)
     before = controller.runtime.info["instance_id"]
-    click(window, "machinesButton")
+    click(window, "settingsButton")
+    click(window, "settingsMachinesTab")
     click(window, "restartMachine_local")
     until(lambda: not controller.machines[0]["restarting"], controller.machinesChanged)
     assert "Tasks are active" in controller.machines[0]["error"]
@@ -750,13 +751,16 @@ def test_desktop_machine_management_shows_local_connection(desktop):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    assert find_item(window, "machinesButton") is not None, "Machines need a visible management entry"
-    click(window, "machinesButton")
+    assert find_item(window, "machinesButton") is None, "Machines belong in Settings, not the sidebar"
+    click(window, "settingsButton")
+    click(window, "settingsMachinesTab")
     assert find_item(window, "machineHostField") is not None
     assert controller.machines[0]["name"] == ("This Mac" if sys.platform == "darwin" else "This computer")
     assert controller.machines[0]["online"]
     assert controller.machines[0]["state"] == "online"
-    assert find_item(window, "backendIndicator_local") is not None
+    until(lambda: find_item(window, "backendStatus_local") is not None, window.frameSwapped)
+    assert find_item(window, "backendIndicator_local") is None
+    assert find_item(window, "backendStatus_local").isVisible()
     before = controller.runtime.info["instance_id"]
     projects = [p["id"] for p in controller.projects]
     click(window, "restartMachine_local")
@@ -801,7 +805,8 @@ def test_desktop_remote_machine_host_trust(desktop, tmp_path, monkeypatch):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "machinesButton")
+    click(window, "settingsButton")
+    click(window, "settingsMachinesTab")
     find_item(window, "machineHostField").setProperty("text", "ava-test")
     find_item(window, "machineNameField").setProperty("text", "Fedora 首次连接")
     click(window, "addMachineAction")
@@ -914,7 +919,8 @@ with httpx.Client(base_url=f"http://127.0.0.1:{info['port']}", headers={'Authori
 """))
         controller.start()
         until(lambda: bool(controller.projects) and len(model_server) == 1, controller.changed, window.frameSwapped)
-        click(window, "machinesButton")
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         find_item(window, "machineHostField").setProperty("text", "ava-test")
         find_item(window, "machineNameField").setProperty("text", "Fedora development")
         click(window, "addMachineAction")
@@ -937,7 +943,8 @@ with httpx.Client(base_url=f"http://127.0.0.1:{info['port']}", headers={'Authori
         type_message(window, "Keep this draft through the update")
         inventory_code = "from pathlib import Path; import json; p=Path.home()/'.local/share/ava/backends'; print(json.dumps({str(f.relative_to(p)):f.stat().st_mtime_ns for f in p.glob('*/*') if f.name=='.ready' or f.suffix=='.whl'}))"
         inventory = remote(inventory_code)
-        click(window, "machinesButton")
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         click(window, "updateMachine_" + identity)
         until(lambda: machine.connection is None, controller.machinesChanged)
         until(lambda: controller.connected and machine.connection is not None, controller.changed, controller.machinesChanged, timeout=45_000)
@@ -949,7 +956,8 @@ with httpx.Client(base_url=f"http://127.0.0.1:{info['port']}", headers={'Authori
         QTest.keyClick(window, Qt.Key.Key_Escape)
         model_server[0].release.set()
         until(lambda: controller.status == "idle" and any(row["body"] == "Hello 世界" for row in controller._transcript.rows), controller.changed)
-        click(window, "machinesButton")
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         click(window, "updateMachine_" + identity)
         until(lambda: machine.connection is None, controller.machinesChanged)
         until(lambda: controller.connected and machine.connection is not None, controller.changed, controller.machinesChanged, timeout=70_000)
@@ -1166,7 +1174,8 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
         until(lambda: controller.connected, controller.changed)
         local_chat = controller.chatId
         type_message(window, "Local draft stays here")
-        click(window, "machinesButton")
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         find_item(window, "machineHostField").setProperty("text", "ava-test")
         find_item(window, "machineNameField").setProperty("text", "Fedora 测试")
         pulses = [time.perf_counter()]
@@ -1391,7 +1400,8 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
         window.setProperty("dark", True)
         window.setWidth(800)
         save_screenshot(window, "machines-remote-pinned")
-        click(window, "machinesButton")
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         save_screenshot(window, "machines-remote-connected")
         QTest.keyClick(window, Qt.Key.Key_Escape)
         window.close()
@@ -1407,7 +1417,8 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
             assert restored.property("sessionRows")[1]["id"] == remote_chat
             assert restored.runtime.info["instance_id"] == instance
             save_screenshot(restored_window, "machines-restored")
-            click(restored_window, "machinesButton")
+            click(restored_window, "settingsButton")
+            click(restored_window, "settingsMachinesTab")
             click(restored_window, "removeMachine_" + identity)
             until(lambda: len(restored.property("machines")) == 1, restored.machinesChanged)
             assert not restored.remoteMachine and len(restored.property("projects")) == 1
@@ -6145,7 +6156,8 @@ skill.write_text('---\nname: review\ndescription: Fedora review instructions.\n-
         click(window, 'sendButton')
         until(lambda: len(model_server) == 2, controller.changed)
         # Keep this turn open while the remote turn runs, creating a real overlap.
-        click(window, 'machinesButton')
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         find_item(window, 'machineHostField').setProperty('text', 'ava-test')
         find_item(window, 'machineNameField').setProperty('text', 'Fedora acceptance')
         click(window, 'addMachineAction')
@@ -6235,7 +6247,8 @@ skill.write_text('---\nname: review\ndescription: Fedora review instructions.\n-
         error = [message for message in model_server[-1].request['messages'] if message['role'] == 'tool'][-1]['content']
         assert 'desktop' in error.lower() or 'control' in error.lower(), error
         model_server[-1].release.set()
-        click(window, 'machinesButton')
+        click(window, "settingsButton")
+        click(window, "settingsMachinesTab")
         click(window, 'selectMachine_'+machine.id)
         until(lambda: machine.connection is not None and controller.connected, controller.machinesChanged, controller.changed, timeout=70000)
         assert machine.runtime.info['instance_id'] == instance
