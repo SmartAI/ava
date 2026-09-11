@@ -184,12 +184,20 @@ class AnalyticsView(QObject):
                 notices.append(machine.name + ": indexing history; totals are still updating")
             if report["unavailable"] or report["incomplete"] or report.get("error"):
                 notices.append(machine.name + ": some history is unavailable or incomplete")
+            legacy_tokens = report.get("token_accounting_version", 1) < 2
+            if legacy_tokens:
+                notices.append("Update the Ava backend on " + machine.name + " for cache-write reporting availability")
             for source in report["days"][-self._days:]:
                 if not first <= source["date"] <= last.isoformat():
                     continue
                 target = days.setdefault(source["date"], {"date": source["date"], "intervals": [], "tool_counts": [], "skill_counts": []})
                 for name in (*TOKEN_FIELDS, "tokens", "responses", "missing_usage", "tools", "tool_errors", "skills", "runs", "run_ms"):
-                    target[name] = target.get(name, 0) + source[name]
+                    value = source[name]
+                    if legacy_tokens and name in ("output", "tokens"):
+                        value += source["reasoning"]
+                    target[name] = target.get(name, 0) + value
+                # Older backends cannot distinguish unreported writes from zero.
+                target["cache_write_reports"] = target.get("cache_write_reports", 0) + source.get("cache_write_reports", 0)
                 for name in ("intervals", "tool_counts", "skill_counts"):
                     target[name].extend(source[name])
         series = sorted(days.values(), key=lambda day: day["date"])

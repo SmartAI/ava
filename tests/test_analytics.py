@@ -61,14 +61,16 @@ def test_analytics_totals_overlap_dst_append_restart_and_replacement(tmp_path, s
     try:
         catch_up(index, sources)
         report = index.query(7, 'America/Los_Angeles', now=NOW)
-        assert report['totals']['tokens'] == 440  # 190 + 250; reasoning/1h cache write are subsets.
+        assert report['totals']['tokens'] == 450  # 200 + 250; only 1h cache write is a logged subset.
+        assert report['totals']['output'] == 90
+        assert report['totals']['cache_write_reports'] == 1
         assert report['totals']['responses'] == 2 and not report['totals']['missing_usage']
         assert report['totals']['active_ms'] == 3*3600_000
         assert report['totals']['run_ms'] == 4*3600_000
         assert report['totals']['tools'] == report['totals']['skills'] == 1
         dst = next(day for day in report['days'] if day['date'] == '2026-11-01')
         assert dst['end'] - dst['start'] == 25*3600_000
-        assert index.query(project='p1', now=NOW)['totals']['tokens'] == 190
+        assert index.query(project='p1', now=NOW)['totals']['tokens'] == 200
         frames = index.frames_read
         computed = index.days_computed
         for _ in range(3):
@@ -78,7 +80,7 @@ def test_analytics_totals_overlap_dst_append_restart_and_replacement(tmp_path, s
         put(first, [('2026-11-02T12:00:00.000Z', {'kind':'attempt/timing','attempt_id':'missing','elapsed_ms':20})], append=True, start=len(rows))
         index.scan(sources)
         changed = index.query(7, 'America/Los_Angeles', now=NOW)
-        assert changed['totals']['missing_usage'] == 1 and changed['totals']['tokens'] == 440
+        assert changed['totals']['missing_usage'] == 1 and changed['totals']['tokens'] == 450
         assert index.days_computed == computed + 1, 'Only the affected day should be recalculated'
     finally:
         index.close()
@@ -86,7 +88,7 @@ def test_analytics_totals_overlap_dst_append_restart_and_replacement(tmp_path, s
     try:
         catch_up(index, sources)
         assert index.frames_read == 0, 'Restart validates a physical checkpoint without decompressing history'
-        assert index.query(now=NOW)['totals']['tokens'] == 440
+        assert index.query(now=NOW)['totals']['tokens'] == 450
         replacement = first.with_name('replacement'+suffix)
         put(replacement, [header(), ('2026-11-01T10:00:00.000Z', {'kind':'usage','attempt_id':'new','tokens':{'input':1,'output':2}})])
         replacement.replace(first)
@@ -120,6 +122,101 @@ def test_analytics_checkpoints_only_complete_frames(tmp_path):
         assert index.query(now=NOW)['totals']['tokens'] == 7
         index.scan(sources)
         assert index.query(now=NOW)['totals']['tokens'] == 7
+    finally:
+        index.close()
+
+
+@pytest.mark.parametrize('provider,model,payloads,expected', [
+    # Expected counts come from the wire contract, not the normalized Usage object.
+    ('anthropic', 'claude-sonnet', [{'input_tokens': 100, 'cache_read_input_tokens': 20,
+      'cache_creation_input_tokens': 30, 'cache_creation': {'ephemeral_1h_input_tokens': 10}},
+      {'output_tokens': 50}], (200, 50, 30, 1, 0)),
+    ('anthropic', 'claude-opus-thinking', [{'input_tokens': 100, 'output_tokens': 50,
+      'cache_creation_input_tokens': 0}], (150, 50, 0, 1, 0)),
+    ('custom-anthropic', 'arbitrary-model', [{'input_tokens': 100}, {'output_tokens': 50}], (150, 50, 0, 0, 0)),
+    ('openai', 'gpt-reasoning', [{'prompt_tokens': 100, 'completion_tokens': 50,
+      'prompt_tokens_details': {'cached_tokens': 20},
+      'completion_tokens_details': {'reasoning_tokens': 30}}], (150, 50, 0, 0, 0)),
+    ('openai', 'gpt-nonreasoning', [{'prompt_tokens': 100, 'completion_tokens': 50}], (150, 50, 0, 0, 0)),
+    ('codex', 'codex-reasoning', [{'input_tokens': 100, 'output_tokens': 50,
+      'input_tokens_details': {'cached_tokens': 20},
+      'output_tokens_details': {'reasoning_tokens': 30}}], (150, 50, 0, 0, 0)),
+    ('codex', 'codex-no-details', [{'input_tokens': 100, 'output_tokens': 50}], (150, 50, 0, 0, 0)),
+    ('deepseek', 'deepseek-reasoner', [{'prompt_tokens': 100, 'prompt_cache_hit_tokens': 20,
+      'prompt_cache_miss_tokens': 80, 'completion_tokens': 50,
+      'completion_tokens_details': {'reasoning_tokens': 30}}], (150, 50, 0, 0, 0)),
+    ('deepseek', 'deepseek-chat', [{'prompt_cache_hit_tokens': 20,
+      'prompt_cache_miss_tokens': 80, 'completion_tokens': 50}], (150, 50, 0, 0, 0)),
+    ('custom-openai', 'arbitrary-model', [{'prompt_tokens': 100, 'completion_tokens': 50}], (150, 50, 0, 0, 0)),
+    ('llamacpp', 'local-model', [{}], (0, 0, 0, 0, 1)),
+    ('custom-openai', 'partial-usage', [{'completion_tokens': 50,
+      'completion_tokens_details': {'reasoning_tokens': 30}}], (50, 50, 0, 0, 1)),
+])
+def test_provider_usage_survives_logging_and_analytics(home, project, tmp_path, provider, model, payloads, expected):
+    from types import SimpleNamespace
+
+    from ava.agent.step import Timing, append_accounting, merge_usage
+    from ava.llm.anthropic import _emit_usage as anthropic_usage
+    from ava.llm.codex import _emit_usage as codex_usage
+    from ava.llm.openai import _emit_openai_usage
+    from ava.llm.provider import Usage
+    from ava.session import Log
+
+    emit = (anthropic_usage if 'anthropic' in provider else codex_usage if provider == 'codex'
+            else _emit_openai_usage)
+    events = []
+    for payload in payloads:
+        emit(payload, events.append)
+    usage = Usage()
+    for event in events:
+        merge_usage(usage, event.usage)
+    log = Log.create_default(project, provider, model)
+    try:
+        state = SimpleNamespace(append=log.append)
+        # Multiple turns with distinct attempts; timing must not double-count usage.
+        for attempt in ('first', 'second'):
+            append_accounting(state, attempt, usage, Timing(elapsed_ms=10))
+        log.sync()
+        sources = {str(log.path): ('project', False)}
+    finally:
+        log.close()
+    index = AnalyticsIndex(tmp_path/'provider-analytics.sqlite3')
+    try:
+        index.scan(sources)
+        report = index.query()
+        total = report['totals']
+        keys = ('tokens', 'output', 'cache_write', 'cache_write_reports', 'missing_usage')
+        assert tuple(total[key] for key in keys) == tuple(value * 2 for value in expected)
+        assert total['responses'] == 2
+        assert total['tokens'] == sum(total[key] for key in ('input', 'cached_read', 'cache_write', 'output'))
+        assert report['token_accounting_version'] == 2
+    finally:
+        index.close()
+
+
+def test_analytics_upgrades_derived_days_without_replaying_history(tmp_path):
+    path = tmp_path/'session.jsonl'
+    put(path, [header(), ('2026-11-01T10:00:00.000Z', {'kind': 'usage', 'attempt_id': '1',
+              'tokens': {'input': 100, 'output': 20, 'reasoning': 30}})])
+    sources = {str(path): ('p1', False)}
+    cache = tmp_path/'analytics.sqlite3'
+    index = AnalyticsIndex(cache)
+    try:
+        catch_up(index, sources)
+        index.query(now=NOW)
+        # Reproduce an existing v1 cache with stale day aggregates and intact facts.
+        with index.db:
+            index.db.execute("UPDATE days SET body='{}'")
+            index.db.execute('PRAGMA user_version=1')
+    finally:
+        index.close()
+    index = AnalyticsIndex(cache)
+    try:
+        catch_up(index, sources)
+        assert index.query(now=NOW)['totals']['tokens'] == 150
+        assert index.query(now=NOW)['totals']['output'] == 50
+        assert index.frames_read == 0
+        assert index.db.execute('PRAGMA user_version').fetchone()[0] == 2
     finally:
         index.close()
 
