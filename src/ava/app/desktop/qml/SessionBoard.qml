@@ -17,6 +17,15 @@ Pane {
     padding: narrow ? Theme.spaceLg : Theme.spaceXl
     background: Rectangle { color: board.palette.window }
 
+    Shortcut {
+        sequences: [StandardKey.Find]
+        enabled: board.visible
+        onActivated: {
+            search.forceActiveFocus();
+            search.selectAll();
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 18
@@ -43,7 +52,7 @@ Pane {
                 Layout.fillWidth: true
                 Layout.minimumWidth: 100
                 Layout.columnSpan: board.narrow ? 2 : 1
-                placeholderText: "Search sessions"
+                placeholderText: "Search sessions (" + (Qt.platform.os === "osx" ? "⌘ F" : "Ctrl F") + ")"
                 Component.onCompleted: text = board.summaries.filters.search
                 onTextEdited: searchDelay.restart()
                 Timer { id: searchDelay; interval: 120; onTriggered: board.summaries.filter("search", search.text) }

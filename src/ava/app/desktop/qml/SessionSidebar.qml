@@ -93,6 +93,7 @@ Pane {
             text: "Session board"
             icon.source: "icons/board.svg"
             selected: sidebar.currentPage === "board"
+            tip: "Session board (" + (Qt.platform.os === "osx" ? "⌘ Shift B" : "Ctrl Shift B") + ")"
             accessory: sidebar.backend.board.totals[1] > 0 ? sidebar.backend.board.totals[1] : ""
             Layout.fillWidth: true
             onClicked: sidebar.boardRequested()

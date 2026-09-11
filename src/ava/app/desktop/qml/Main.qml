@@ -176,6 +176,14 @@ ApplicationWindow {
         onActivated: window.leftOpen = !window.leftOpen
     }
     Shortcut {
+        sequence: "Ctrl+Shift+B"
+        onActivated: {
+            window.workspacePage = window.boardOpen ? "chat" : "board";
+            if (!window.boardOpen)
+                window.backend.reviewCurrentChat();
+        }
+    }
+    Shortcut {
         sequence: "Ctrl+Alt+B"
         onActivated: {
             window.rightOpen = !window.rightOpen;

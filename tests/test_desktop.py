@@ -6120,6 +6120,38 @@ def test_desktop_automation_list_virtualizes_and_preserves_state(desktop, capfd)
     save_screenshot(window, "automation-thousand-tasks")
 
 
+def test_desktop_session_board_shortcuts(desktop):
+    if QGuiApplication.platformName() == "cocoa":
+        pytest.skip("CLI-launched Cocoa windows cannot reliably activate; run shortcuts offscreen")
+    controller, window = desktop
+    assert QTest.qWaitForWindowExposed(window)
+    window.requestActivate()
+    until(lambda: window.isActive(), window.activeChanged)
+    left_open = window.property("leftOpen")
+
+    QTest.keySequence(window, QKeySequence("Ctrl+Shift+B"))
+    until(lambda: window.property("boardOpen"), window.frameSwapped)
+    assert not controller.conversationVisible
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.Find))
+    search = find_item(window, "boardSearch")
+    assert search.hasActiveFocus()
+    for character in "session":
+        QTest.keyClick(window, character)
+    until(lambda: controller.board.filters["search"] == "session", controller.board.changed)
+    assert window.property("boardOpen")
+    QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.Find))
+    assert search.property("selectedText") == "session"
+
+    # The toggle also works while typing, without toggling the sidebar.
+    QTest.keySequence(window, QKeySequence("Ctrl+Shift+B"))
+    until(lambda: not window.property("boardOpen"), window.frameSwapped)
+    assert controller.conversationVisible
+    assert window.property("leftOpen") == left_open
+    QTest.keySequence(window, QKeySequence("Ctrl+Shift+B"))
+    until(lambda: window.property("boardOpen"), window.frameSwapped)
+    assert find_item(window, "boardSearch").property("text") == "session"
+
+
 def test_desktop_session_board_filters_and_virtualizes_large_summary_lists(desktop):
     """Benchmark the native view with summaries; HTTP tests cover their durable source."""
     from datetime import UTC, datetime, timedelta

@@ -83,6 +83,8 @@ Drafts and staged attachments are kept separately for each conversation while th
   **Needs review** and **Reviewed**. Completed results appear newest first; each inactive
   column initially shows 20 sessions, with **Review more** to expand it. Filter by machine,
   project, session title or outcomes needing attention. Narrow windows use column tabs.
+  Use **Command/Ctrl+Shift+B** to toggle the board and **Command/Ctrl+F** to focus
+  session search while the board is open.
   A result is considered reviewed once you see it in the conversation page, whether it
   finishes while you are watching or you open it later from the sessions list. You can
   also use **Mark reviewed** without leaving the board. This marker survives backend
