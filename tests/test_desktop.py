@@ -6,6 +6,7 @@ import gc
 import json
 import os
 import plistlib
+import queue
 import re
 import shlex
 import sqlite3
@@ -109,6 +110,7 @@ def qt_app():
 class Exchange:
     request: dict
     release: threading.Event = field(default_factory=threading.Event)
+    chunks: queue.Queue[str | None] = field(default_factory=queue.Queue)
 
 
 @pytest.fixture
@@ -235,6 +237,13 @@ def model_server(home, monkeypatch):
                 self.wfile.flush()
 
             try:
+                if request.get("model") == "fixture-stream":
+                    while (delta := exchange.chunks.get()) is not None:
+                        chunk({"content": delta})
+                    chunk({}, "stop")
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
                 if request.get("model") == "fixture-browser-guards":
                     results = [message for message in request["messages"] if message["role"] == "tool"]
                     number = len(results)
@@ -372,6 +381,7 @@ def model_server(home, monkeypatch):
         shutting_down.set()
         for exchange in exchanges:
             exchange.release.set()
+            exchange.chunks.put(None)
         server.shutdown()
         server.server_close()
         thread.join(2)
@@ -3978,6 +3988,116 @@ def test_desktop_activity_is_lazy_and_preserves_reading_position(desktop, model_
     model.append("error", "bash", "Invalid command argument", '{"command":123}')
     model.append("error", "read", "Invalid read argument", "null")
     save_screenshot(window, "activity")
+
+
+@pytest.mark.parametrize("interval", [5, 25])
+def test_desktop_sse_frames_keep_markdown_and_reading_position_stable(
+    desktop, model_server, home, interval
+):
+    # Exercise provider HTTP -> durable events -> Qt SSE -> the actual QML window.
+    # Inspect rendered frames, not just the position after the stream has stopped.
+    settings_path = home / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["model"] = "fixture-stream"
+    settings_path.write_text(json.dumps(settings))
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller.newChat()
+    until(lambda: controller.connected, controller.changed)
+    model = controller.transcript
+    view = find_item(window, "transcriptView")
+    for index in range(12):
+        model.append("assistant", "Ava", "## History\n\n" + "Completed 中文段落。\n\n" * (70 if index == 0 else 1))
+    type_message(window, "Stream a long response")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: bool(model_server), controller.changed)
+    exchange = model_server[0]
+    prefix = (
+        "## 实时 Markdown\n\n**粗体**与 `inline_code`。\n\n"
+        "```python\nprint('你好 👋')\n```\n\n"
+        "> 引用内容。\n\n- 第一项\n- 第二项\n\n"
+        "| 名称 | 内容 |\n| --- | --- |\n| 状态 | **已完成** |\n\n"
+        + "已经完成的段落，不应在后续输出时重新改变行高。\n\n" * 20
+        + "Frozen anchor\n\n"
+    )
+    exchange.chunks.put(prefix)
+    until(
+        lambda: model.rows[-1]["body"] == prefix and view.property("atYEnd")
+        and (item := find_item(window, "assistantMarkdown")) is not None
+        and "Frozen anchor" in item.property("text"),
+        window.frameSwapped,
+    )
+    output = find_item(window, "assistantMarkdown")
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert document.begin().blockFormat().headingLevel() == 2
+    assert document.find("粗体").charFormat().fontWeight() >= 600
+    assert any(isinstance(frame, QTextTable) for frame in document.rootFrame().childFrames())
+    QTest.qWait(80)
+    anchor_y = document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y()
+    tail = view.property("currentItem")
+    tail_id = getCppPointer(tail)[0]
+    resets = QSignalSpy(model.modelReset)
+    insertions = QSignalSpy(model.rowsInserted)
+    frames = []
+
+    def record():
+        current = view.property("currentItem")
+        if current is None or not isValid(output):
+            frames.append((float("inf"), 0, 0, 0))
+            return
+        bottom = current.mapToScene(QPointF(0, current.height())).y()
+        footer = find_item(window, "runStatus")
+        viewport_bottom = view.mapToScene(QPointF(0, view.height())).y()
+        anchor = document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y()
+        frames.append((bottom + footer.height() - viewport_bottom, anchor, getCppPointer(current)[0], bottom - current.height()))
+
+    suffix = "".join(f"新内容 {index}：持续输出时保持视口稳定。\n\n" for index in range(45))
+    chunks = iter(suffix[index:index + 18] for index in range(0, len(suffix), 18))
+    timer = QTimer()
+    timer.setInterval(interval)
+
+    def emit_chunk():
+        chunk = next(chunks, None)
+        if chunk is None:
+            timer.stop()
+        else:
+            exchange.chunks.put(chunk)
+
+    timer.timeout.connect(emit_chunk)
+    window.frameSwapped.connect(record)
+    timer.start()
+    try:
+        until(lambda: model.rows[-1]["body"] == prefix + suffix and not timer.isActive(), window.frameSwapped, timeout=10000)
+        QTest.qWait(80)
+    finally:
+        timer.stop()
+        window.frameSwapped.disconnect(record)
+    assert len(frames) >= 10
+    assert max(abs(frame[0]) for frame in frames) <= 1, frames
+    assert max(abs(frame[1] - anchor_y) for frame in frames) <= 1, frames
+    assert {frame[2] for frame in frames} == {tail_id}, "Streaming must not rebuild the active delegate"
+    assert all(b[3] <= a[3] + 1 for a, b in zip(frames, frames[1:], strict=False)), "Append-only output must not bounce backwards"
+    assert not resets.count() and not insertions.count()
+
+    # Wheel input opts out. More network chunks must leave the visible text alone.
+    position = view.mapToScene(QPointF(view.width() / 2, view.height() / 2))
+    QTest.wheelEvent(window, position, QPoint(0, 1200))
+    until(lambda: not view.property("moving"), view.movingChanged)
+    assert not view.property("follow")
+    reading_y = view.property("contentY")
+    extra = "后续输出，不打断阅读。\n\n" * 15
+    exchange.chunks.put(extra)
+    exchange.chunks.put(None)
+    until(lambda: controller.status == "idle", controller.changed)
+    QTest.qWait(80)
+    assert abs(view.property("contentY") - reading_y) <= 1
+    assert model.rows[-1]["body"] == prefix + suffix + extra
+    click(window, "jumpToLatest")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    assert view.property("follow")
+    save_screenshot(window, f"stable-sse-{interval}ms")
 
 
 def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server):

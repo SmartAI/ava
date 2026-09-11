@@ -28,7 +28,9 @@ TextArea {
         decorations = backend.formatMarkdown(textDocument, linkColor, codeBackground, codeFont);
         formatting = false;
     }
-    onTextChanged: scheduleFormat()
+    // Apply paragraph metrics before ListView can lay out the new text. Deferring
+    // this exposes the unstyled height for a frame, then scrolls back after styling.
+    onTextChanged: formatDocument()
     onTextFormatChanged: {
         decorations = [];
         scheduleFormat();
