@@ -29,7 +29,7 @@ from ava.llm import (
     make_image_block,
     make_text_block,
 )
-from ava.llm.configuration import save_provider_connection
+from ava.llm.configuration import remember_selection, save_provider_connection
 from ava.llm.credentials import delete_api_key, save_api_key
 from ava.llm.provider import Selection
 
@@ -197,6 +197,31 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             return JSONResponse(await settings_payload(), headers={"cache-control": "no-store"})
         except AvaError as error:
             return error_response(503, error.message)
+
+    @app.put("/api/settings/defaults")
+    async def update_defaults(request: Request) -> Response:
+        body = await parse_body(request, SelectionBody)
+        if body is None or not body.provider or not body.model:
+            return error_response(400, "provider and model are required")
+        try:
+            if body.provider not in provider_names():
+                return error_response(400, "choose a configured provider")
+            entry, provider = await open_catalog(body.provider)
+            if provider is None:
+                return error_response(400, entry["message"])
+            try:
+                profile = next((item for item in entry["models"] if item["id"] == body.model), None)
+                if profile is None:
+                    return error_response(400, "choose an available model")
+                if body.effort is not None and body.effort not in profile["effort_values"]:
+                    return error_response(400, "choose an available reasoning effort")
+                remember_selection(Selection(body.provider, body.model, body.effort))
+            finally:
+                await provider.aclose()
+            return JSONResponse(await settings_payload(), headers={"cache-control": "no-store"})
+        except AvaError as error:
+            status = 400 if error.kind in (ErrorKind.invalid_argument, ErrorKind.parse) else 503
+            return error_response(status, error.message)
 
     @app.put("/api/settings")
     async def update_settings(request: Request) -> Response:

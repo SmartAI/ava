@@ -17,6 +17,10 @@ NativeDialog {
     property var connections: []
     property string selectedProvider: ""
     property string defaultSummary: ""
+    property string defaultProvider: ""
+    property string defaultModel: ""
+    readonly property var defaultProviders: connections.filter(item => item.valid)
+    readonly property var defaultModels: (defaultProviders.find(item => item.id === defaultProvider) || {}).models || []
     readonly property var connection: connections.find(item => item.id === selectedProvider) || ({})
     readonly property var state: backend.providerSettingsState
     readonly property var startup: backend.serviceState
@@ -35,6 +39,8 @@ NativeDialog {
     function load(values) {
         connections = (values.providers || []).map(item => Object.assign({}, item, {display: item.label + " · " + item.status + (item.is_default ? " · Default" : "")}));
         const defaults = values.default_selection || {};
+        defaultProvider = defaults.provider || "";
+        defaultModel = defaults.model || "";
         const defaultEntry = connections.find(item => item.id === defaults.provider);
         defaultSummary = defaults.provider
             ? (defaultEntry ? defaultEntry.label : defaults.provider)
@@ -325,7 +331,53 @@ NativeDialog {
                     id: providers
                     width: parent.width - 12
                     spacing: 16
-                    Label { text: "Provider connections"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
+                    Label { text: "Defaults for new sessions"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
+                    ColumnLayout {
+                        visible: dialog.ready
+                        enabled: !dialog.state.saving && !dialog.state.loading
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label { text: "Default provider"; font.pixelSize: 12 }
+                        NativeCombo {
+                            objectName: "settingsDefaultProvider"
+                            Layout.fillWidth: true
+                            model: dialog.defaultProviders
+                            textRole: "label"
+                            valueRole: "id"
+                            currentIndex: dialog.defaultProviders.findIndex(item => item.id === dialog.defaultProvider)
+                            Accessible.name: "Default provider"
+                            onActivated: (index) => {
+                                dialog.defaultProvider = dialog.defaultProviders[index].id;
+                                dialog.defaultModel = dialog.defaultModels[0]?.id || "";
+                            }
+                        }
+                        Label { text: "Default model"; font.pixelSize: 12 }
+                        NativeCombo {
+                            objectName: "settingsDefaultModel"
+                            Layout.fillWidth: true
+                            model: dialog.defaultModels
+                            textRole: "id"
+                            valueRole: "id"
+                            currentIndex: dialog.defaultModels.findIndex(item => item.id === dialog.defaultModel)
+                            Accessible.name: "Default model"
+                            onActivated: (index) => dialog.defaultModel = dialog.defaultModels[index].id
+                        }
+                        Label {
+                            visible: !dialog.defaultProviders.length
+                            text: "Connect a provider below, then refresh to choose a default."
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: palette.placeholderText
+                        }
+                        NativeButton {
+                            objectName: "saveDefaultSelection"
+                            text: "Save defaults"
+                            enabled: dialog.defaultModels.some(item => item.id === dialog.defaultModel)
+                            onClicked: dialog.backend.saveProviderSettings({default_selection: {
+                                provider: dialog.defaultProvider, model: dialog.defaultModel, effort: null
+                            }})
+                        }
+                    }
                     Label {
                         Layout.fillWidth: true
                         text: "Saved defaults apply to new conversations unless overridden by environment variables or launch options. Choose a conversation’s model from its model name."
@@ -355,6 +407,7 @@ NativeDialog {
                         text: "Try again"
                         onClicked: dialog.backend.loadProviderSettings()
                     }
+                    Label { text: "Provider connections"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                     ColumnLayout {
                         visible: dialog.ready
                         enabled: !dialog.state.saving && !dialog.state.loading
@@ -501,6 +554,8 @@ NativeDialog {
                         model: [
                             {action: Qt.platform.os === "osx" ? "Quick chat (global)" : "Quick chat (in app)", key: "Alt Space"},
                             {action: "New chat", key: "N"}, {action: "Search chats", key: "K"},
+                            {action: "Toggle session board", key: "Shift B"},
+                            {action: "Search sessions (on board)", key: "F"},
                             {action: "Toggle sidebar", key: "B"}, {action: "Toggle inspector", key: "Alt B"},
                             {action: "Toggle terminal", key: "J"}, {action: "Settings", key: ","}
                         ]

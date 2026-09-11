@@ -155,6 +155,35 @@ async def test_selection_is_atomic_session_scoped_and_survives_restart(home, pro
         assert cleared.json()["effort"] is None
 
 
+async def test_saved_defaults_are_validated_and_used_for_new_sessions(home, project, catalog_server):
+    url, _ = catalog_server
+    configuration = {
+        "provider": "first", "model": "fixture", "effort": "high",
+        "providers": {name: connection(url) for name in ("first", "second")},
+    }
+    (home / "settings.json").write_text(json.dumps(configuration))
+    for name in ("first", "second"):
+        save_api_key(name, "valid-test-key")
+    chosen = {"provider": "second", "model": "fixture-reasoning", "effort": None}
+    async with _running_client(create_app(project)) as client:
+        assert (await client.post("/api/chats", json={"project_id": "workspace"})).status_code == 201
+        for bad in (chosen | {"model": "unknown"}, chosen | {"provider": "missing"}, chosen | {"effort": "invalid"}):
+            response = await client.put("/api/settings/defaults", json=bad)
+            assert response.status_code == 400, response.text
+            assert json.loads((home / "settings.json").read_text()) == configuration
+        response = await client.put("/api/settings/defaults", json=chosen)
+        assert response.status_code == 200, response.text
+        assert response.json()["default_selection"] == chosen
+        saved = json.loads((home / "settings.json").read_text())
+        assert saved["providers"] == configuration["providers"]
+        assert "effort" not in saved
+        assert (await client.get("/api/chats/c1/models")).json()["provider"] == "first"
+    async with _running_client(create_app(project)) as client:
+        assert (await client.post("/api/chats", json={"project_id": "workspace"})).status_code == 201
+        catalog = (await client.get("/api/chats/c2/models")).json()
+        assert {key: catalog[key] for key in chosen} == chosen
+
+
 async def test_empty_setup_can_open_a_conversation_but_not_select_unconfigured_models(home, project):
     async with _running_client(create_app(project)) as client:
         response = await client.post("/api/chats", json={"project_id": "workspace"})

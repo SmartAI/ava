@@ -609,6 +609,7 @@ class Controller(QObject):
         }
         self.providerSettingsChanged.emit()
         machine_id = self._active_machine
+        defaults = values.get("default_selection")
 
         def saved(payload: Any, error: str) -> None:
             if machine_id != self._active_machine:
@@ -616,11 +617,17 @@ class Controller(QObject):
             self._provider_settings_state.update(saving=False, error=error)
             if not error:
                 entry: dict[str, Any] = next((item for item in payload.get("providers", []) if item["id"] == payload.get("saved_provider")), {})
-                self._provider_settings_state["notice"] = "Connection saved. " + entry.get("message", "")
+                self._provider_settings_state["notice"] = (
+                    "Defaults saved for new conversations." if defaults is not None
+                    else "Connection saved. " + entry.get("message", "")
+                )
                 self.providerSettingsLoaded.emit(payload)
             self.providerSettingsChanged.emit()
 
-        self._connection.call("PUT", "/api/settings", values, saved)
+        self._connection.call(
+            "PUT", "/api/settings/defaults" if defaults is not None else "/api/settings",
+            defaults if defaults is not None else values, saved,
+        )
 
     @Slot(str)
     def removeProviderKey(self, provider: str) -> None:
