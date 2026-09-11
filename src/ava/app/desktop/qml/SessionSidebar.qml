@@ -44,8 +44,8 @@ Pane {
     }
     function newConversation(project = "") {
         sidebar.conversationRequested();
-        if (project) sidebar.backend.newChat(project);
-        else sidebar.backend.newChat();
+        if (project) sidebar.backend.prepareNewChat(project);
+        else sidebar.backend.prepareNewChat();
     }
     ColumnLayout {
         anchors.fill: parent
@@ -92,7 +92,7 @@ Pane {
                     id: newChatMenu
                     popupType: Popup.Item
                     NativeMenuItem {
-                        text: "New chat in current folder"
+                        text: "New chat…"
                         onTriggered: sidebar.newConversation()
                     }
                     NativeMenuItem {

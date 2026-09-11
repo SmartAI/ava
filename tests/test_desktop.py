@@ -481,6 +481,11 @@ def click(window, name):
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, position)
 
 
+def start_chat(window, name="newChatButton"):
+    click(window, name)
+    click(window, "createOriginalChatButton")
+
+
 def type_message(window, text, *, append=False):
     composer = find_item(window, "composer")
     before = composer.property("text") if append else ""
@@ -683,7 +688,7 @@ def test_desktop_background_startup_can_be_enabled_and_disabled(desktop, model_s
             lambda: not (button := find_item(window, "closeSettingsButton")) or not button.isVisible(),
             window.frameSwapped,
         )
-        click(window, "newChatButton")
+        start_chat(window)
         until(lambda: controller.connected or bool(controller.error), controller.changed)
         assert controller.connected, controller.error
         type_message(window, "A task using saved credentials in the supervised backend")
@@ -1126,7 +1131,7 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
     try:
         controller.start()
         until(lambda: bool(controller.projects), controller.changed)
-        click(window, "newChatButton")
+        start_chat(window)
         until(lambda: controller.connected, controller.changed)
         local_chat = controller.chatId
         type_message(window, "Local draft stays here")
@@ -1155,7 +1160,7 @@ def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, mod
         until(lambda: "remote 项目" in controller.projectPath or bool(controller.error), controller.changed)
         assert "remote 项目" in controller.projectPath, controller.error
         assert len(controller.projects) == 2
-        click(window, "newChatButton")
+        start_chat(window)
         until(lambda: controller.connected, controller.changed)
         remote_chat = controller.chatId
         assert remote_chat.endswith("~" + local_chat), (local_chat, remote_chat)
@@ -1393,7 +1398,7 @@ def test_desktop_close_keeps_agent_running_and_reopens_session(desktop, model_se
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     identity = controller.chatId
     type_message(window, "Finish this task after I close the desktop.")
@@ -1432,7 +1437,7 @@ def test_desktop_close_keeps_agent_running_and_reopens_session(desktop, model_se
         assert len(model_server) == 1
         save_screenshot(restored_window, "persistent-session")
         # Client launch flags apply to new chats without reconfiguring a shared daemon.
-        click(restored_window, "newChatButton")
+        start_chat(restored_window)
         until(
             lambda: reopened.connected and reopened.chatId != identity
             and reopened.property("selection").get("model") == "fixture-reasoning",
@@ -1461,7 +1466,7 @@ def test_desktop_send_stream_reconnect_switch_cancel_and_restore(
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
     assert not controller.error
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: bool(controller.connected) or bool(controller.error), controller.changed)
     assert not controller.error
     identity = controller.chatId
@@ -1499,7 +1504,7 @@ def test_desktop_send_stream_reconnect_switch_cancel_and_restore(
 
     # Drafts belong to the conversation; another conversation never receives its events.
     type_message(window, "unsent draft")
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.chatId != identity and controller.connected, controller.changed)
     second = controller.chatId
     assert not controller._transcript.rows
@@ -1577,7 +1582,7 @@ def test_project_switch_and_ime_preedit(desktop, model_server, project, tmp_path
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: bool(controller.connected), controller.changed)
     first_project = controller.projectId
     composer = find_item(window, "composer")
@@ -1622,7 +1627,7 @@ def test_desktop_context_chart_matches_report(desktop, model_server, project):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: bool(controller.connected), controller.changed)
     type_message(window, "/context")
     QTest.keyClick(window, Qt.Key.Key_Return)
@@ -1917,7 +1922,7 @@ def test_running_status_is_at_transcript_tail_and_tracks_elapsed_time(desktop, m
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
 
     type_message(window, "Show the running state")
@@ -1967,7 +1972,7 @@ def test_pause_queue_resume_and_backend_failure(desktop, model_server):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: bool(controller.connected), controller.changed)
     identity = controller.chatId
     type_message(window, "first turn")
@@ -2104,7 +2109,7 @@ def test_desktop_models_attachments_skills_markdown_and_files(
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and bool(controller._skills), controller.changed)
     first_chat = controller.chatId
 
@@ -2157,7 +2162,7 @@ def test_desktop_models_attachments_skills_markdown_and_files(
     assert [a["kind"] for a in controller.attachments] == ["file", "image"]
     save_screenshot(window, "attachments")
 
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != first_chat, controller.changed)
     assert not controller.attachments
     controller.openChat(first_chat)
@@ -2276,7 +2281,7 @@ def test_desktop_embedded_browser_navigation(desktop, model_server, home, monkey
         db.execute("INSERT INTO moz_bookmarks VALUES (1, 1, '中文资料')")
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     click(window, "toggleRightSidebar")
     click(window, "browserTab")
@@ -2462,7 +2467,7 @@ def test_desktop_sessions_group_by_project_and_switch_without_picker(
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     first_project, first_chat = controller.projectId, controller.chatId
     type_message(window, "Draft for the first project")
@@ -2473,7 +2478,7 @@ def test_desktop_sessions_group_by_project_and_switch_without_picker(
     controller.addProject(other.as_uri())
     until(lambda: controller.projectId != first_project, controller.changed)
     second_project = controller.projectId
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     second_chat = controller.chatId
     type_message(window, "另一个项目的草稿")
@@ -2506,7 +2511,7 @@ def test_desktop_sessions_group_by_project_and_switch_without_picker(
     assert controller.draft == "另一个项目的草稿" and not controller.attachments
     save_screenshot(window, "project-groups")
 
-    click(window, "newChat_" + first_project)
+    start_chat(window, "newChat_" + first_project)
     until(
         lambda: (
             controller.connected
@@ -2549,6 +2554,9 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
     other = tmp_path / "chosen folder"
     other.mkdir()
     controller.newChatInFolder(other.as_uri())
+    until(lambda: controller.worktreeState.get("project") == controller.projectId, controller.worktreeChanged)
+    assert not controller.chatId
+    click(window, "createOriginalChatButton")
     until(
         lambda: controller.connected
         and controller.chatId
@@ -2563,6 +2571,7 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
     # including re-selecting the same folder without leaving an unused chat behind.
     first_chat = controller.chatId
     controller.newChatInFolder(other.as_uri())
+    click(window, "createOriginalChatButton")
     until(
         lambda: controller.connected
         and controller.chatId
@@ -2578,6 +2587,7 @@ def test_desktop_new_chat_shows_working_directory_and_can_switch(desktop, model_
     third = tmp_path / "third folder"
     third.mkdir()
     controller.newChatInFolder(third.as_uri())
+    click(window, "createOriginalChatButton")
     until(
         lambda: controller.connected
         and controller.chatId
@@ -2600,7 +2610,7 @@ def test_desktop_session_title_is_single_line(desktop, model_server):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     identity = controller.chatId
     type_message(window, "更新后的文字\n只读网页 Read only content")
@@ -3284,7 +3294,7 @@ def test_desktop_transcript_renders_markdown_tools_and_expands_complete_output(
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     body = (
         "# 项目状态\n\n**已完成** 中文优化，*正在测试*。\n\n- 第一项\n- 第二项\n\n> 保留清晰的引用。\n\n```python\nprint('你好 👋')\nreturn 42\n```\n\n| 功能 | 状态 |\n| --- | --- |\n| Markdown | 已验证 |\n\n"
@@ -3348,7 +3358,7 @@ def test_desktop_markdown_streaming_code_blocks_and_source_files(desktop, model_
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     body = (
         "## 渲染检查\n\n**中文粗体**与 `inline_code`。\n\n"
@@ -3443,7 +3453,7 @@ def test_desktop_remove_project_hides_history_without_stopping_tasks(
     preserved.write_text("Project removal must leave this file intact.\n")
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     first, project_id = controller.chatId, controller.projectId
     type_message(window, "后台任务在隐藏项目后继续运行")
@@ -3502,7 +3512,7 @@ def test_desktop_remove_project_undo_and_other_client_keep_selection_and_drafts(
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     first, first_project = controller.chatId, controller.projectId
     controller.renameChat(first, "Keep this conversation")
@@ -3511,7 +3521,7 @@ def test_desktop_remove_project_undo_and_other_client_keep_selection_and_drafts(
     other.mkdir()
     controller.addProject(str(other))
     until(lambda: controller.projectPath == str(other), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != first, controller.changed)
     second, second_project = controller.chatId, controller.projectId
     click(window, "sessionMenu_" + second)
@@ -3610,7 +3620,7 @@ def test_desktop_pin_moves_chats_above_project_groups(desktop, model_server, pro
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     first, first_project = controller.chatId, controller.projectId
     controller.renameChat(first, "中文置顶会话")
@@ -3619,7 +3629,7 @@ def test_desktop_pin_moves_chats_above_project_groups(desktop, model_server, pro
     other.mkdir()
     controller.addProject(str(other))
     until(lambda: controller.projectPath == str(other), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != first, controller.changed)
     second, second_project = controller.chatId, controller.projectId
 
@@ -3696,7 +3706,7 @@ def test_desktop_search_manage_and_restore_conversations(desktop, model_server, 
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     first = controller.chatId
     click(window, "sessionMenu_" + first)
@@ -3712,7 +3722,7 @@ def test_desktop_search_manage_and_restore_conversations(desktop, model_server, 
     second_project.mkdir()
     controller.addProject(str(second_project))
     until(lambda: controller.projectPath == str(second_project), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != first, controller.changed)
     click(window, "searchChatsButton")
     search = find_item(window, "chatSearchField")
@@ -3744,7 +3754,7 @@ def test_desktop_activity_is_lazy_and_preserves_reading_position(desktop, model_
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     model = controller._transcript
     for index in range(40):
@@ -3811,7 +3821,7 @@ def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     model = controller._transcript
     view = find_item(window, "transcriptView")
@@ -3858,7 +3868,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     click(window, "settingsButton")
     click(window, "settingsProvidersTab")
@@ -3975,7 +3985,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     until(lambda: not window.findChild(QObject, "modelDialog").property("visible"), window.frameSwapped)
     save_screenshot(window, "conversation-provider")
     previous = controller.chatId
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != previous, controller.changed)
     assert controller.selection["provider"] == "desktop-test"
     controller.openChat(previous)
@@ -4033,11 +4043,11 @@ def test_desktop_settings_theme_and_keyboard_search(desktop, model_server):
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     first = controller.chatId
     type_message(window, "Keep this draft")
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != first, controller.changed)
     click(window, "settingsButton")
     click(window, "readingSizePicker")
@@ -4153,7 +4163,7 @@ def test_desktop_review_stage_unstage_and_commit(desktop, model_server, project)
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     click(window, "reviewChangesButton")
     until(lambda: bool(find_item(window, "reviewPane")), window.frameSwapped)
@@ -4460,6 +4470,91 @@ def test_desktop_terminal_output_backpressure(
     save_screenshot(window, "terminal-throughput")
 
 
+def test_desktop_new_session_workspace_choice(desktop, model_server, project, home, tmp_path):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+
+    # New conversation always offers both choices; cancelling creates nothing.
+    click(window, "newChatButton")
+    assert find_item(window, "originalDirectoryChoice").property("checked")
+    assert not controller.chatId and not controller.projects[0]["chats"]
+    click(window, "cancelNewChatButton")
+    assert not controller.projects[0]["chats"]
+    assert not (home / "worktrees").exists()
+
+    # A plain directory remains usable even when Git cannot create a worktree.
+    click(window, "newChatButton")
+    click(window, "newWorktreeChoice")
+    until(lambda: bool(controller.worktreeState.get("options_error")), controller.worktreeChanged)
+    assert not find_item(window, "createWorktreeChatButton").property("enabled")
+    assert find_item(window, "worktreeError").property("visible")
+    click(window, "originalDirectoryChoice")
+    assert not find_item(window, "worktreeError").property("visible")
+    click(window, "createOriginalChatButton")
+    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
+    assert controller.workspacePath == str(project)
+    assert not (home / "worktrees").exists()
+    type_message(window, "Keep this original-directory draft")
+    original_chat = controller.chatId
+
+    # Selecting a different folder leads to the same choice, not immediate creation.
+    chosen = tmp_path / "chosen repository"
+    chosen.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(chosen)], check=True)
+    (chosen / "tracked.txt").write_text("committed\n")
+    subprocess.run(["git", "-C", str(chosen), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(chosen), "-c", "user.name=Ava fixture",
+        "-c", "user.email=ava@example.invalid", "-c", "commit.gpgsign=false",
+        "commit", "-qm", "Initial commit",
+    ], check=True)
+    (chosen / "tracked.txt").write_text("uncommitted\n")
+    controller.newChatInFolder(chosen.as_uri())
+    until(lambda: controller.projectPath == str(chosen), controller.changed)
+    assert not controller.chatId
+    assert not next(p for p in controller.projects if p["id"] == controller.projectId)["chats"]
+    click(window, "newWorktreeChoice")
+    first_branch = controller.worktreeState["branch"]
+    assert re.fullmatch(r"ava/[0-9a-f]{32}", first_branch)
+    save_screenshot(window, "new-session-worktree-choice")
+    click(window, "createWorktreeChatButton")
+    until(lambda: controller.connected and bool(controller.chatId), controller.changed)
+    first_workspace = Path(controller.workspacePath)
+    first_chat = controller.chatId
+    assert (first_workspace / "tracked.txt").read_text() == "committed\n"
+    assert (chosen / "tracked.txt").read_text() == "uncommitted\n"
+    type_message(window, "Keep the first worktree draft")
+
+    # No branch entry is needed, and consecutive sessions get independent worktrees.
+    click(window, "newChatButton")
+    click(window, "newWorktreeChoice")
+    second_branch = controller.worktreeState["branch"]
+    assert re.fullmatch(r"ava/[0-9a-f]{32}", second_branch)
+    assert second_branch != first_branch
+    window.resize(800, 600)
+    until(lambda: not controller.worktreeState["loading"], controller.worktreeChanged)
+    frame = QSignalSpy(window.frameSwapped)
+    window.update()
+    assert frame.count() or frame.wait(2000)
+    for name in ("originalDirectoryChoice", "worktreeBranchField", "createWorktreeChatButton"):
+        item = find_item(window, name)
+        rect = item.mapRectToScene(QRectF(0, 0, item.width(), item.height()))
+        assert QRectF(0, 0, window.width(), window.height()).contains(rect), name
+    click(window, "createWorktreeChatButton")
+    until(lambda: controller.connected and controller.chatId != first_chat, controller.changed)
+    second_workspace = Path(controller.workspacePath)
+    assert second_workspace != first_workspace
+    listing = subprocess.check_output(["git", "-C", str(chosen), "worktree", "list", "--porcelain"], text=True)
+    for workspace, branch in ((first_workspace, first_branch), (second_workspace, second_branch)):
+        assert f"worktree {workspace}" in listing and f"branch refs/heads/{branch}" in listing
+    assert len(controller.projects) == 2
+    controller.openChat(original_chat)
+    until(lambda: controller.connected and controller.chatId == original_chat, controller.changed)
+    assert controller.workspacePath == str(project)
+    assert controller.draft == "Keep this original-directory draft"
+
+
 def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, model_server, project, home):
     def git(*args):
         return subprocess.check_output(['git', '-C', str(project), *args], text=True)
@@ -4529,7 +4624,7 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     assert terminal.root == str(workspace)
     click(window, 'hideTerminalButton')
     save_screenshot(window, 'worktree-chat')
-    click(window, 'newChatButton')
+    start_chat(window)
     until(lambda: controller.connected and controller.chatId != chat_id, controller.changed)
     assert controller.workspacePath == str(project)
     assert any(chat['id'] == chat_id for chat in controller.projects[0]['chats'])
@@ -4612,7 +4707,7 @@ def test_desktop_text_context_preserves_selection_and_pastes_images(desktop, mod
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     type_message(window, "Keep this 中文 selection")
     composer = find_item(window, "composer")
@@ -4674,7 +4769,7 @@ def test_desktop_readonly_text_context_copies_markdown_and_code(desktop, model_s
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     controller.selectModel("fixture-reasoning")
     until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
@@ -4797,7 +4892,7 @@ def test_desktop_pdf_complex_page_does_not_block_chat(desktop, model_server, pro
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     click(window, "toggleRightSidebar")
     until(lambda: bool(find_item(window, "file_drawing.pdf")), window.frameSwapped)
@@ -4883,7 +4978,7 @@ def test_desktop_session_board_tracks_completion_and_explicit_review(desktop, mo
     controller, window = desktop
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
-    click(window, "newChatButton")
+    start_chat(window)
     until(lambda: controller.connected, controller.changed)
     chat_id = controller.chatId
     type_message(window, "Review this session from the board")

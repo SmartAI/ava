@@ -1507,7 +1507,7 @@ class Controller(QObject):
         elif name == "skills":
             self.skillsRequested.emit()
         elif name in ("new", "clear"):
-            self.newChat()
+            self.prepareNewChat()
         elif name in ("pause", "abort", "resume"):
             self.control(name)
         elif name == "diff":
@@ -1798,7 +1798,7 @@ class Controller(QObject):
 
     @Slot(str)
     def newChatInFolder(self, path: str) -> None:
-        self._add_project(path, lambda project_id: self.newChat(project_id))
+        self._add_project(path, self.prepareNewChat)
 
     def _add_project(self, path: str, after: Callable[[str], None] | None = None) -> None:
         if not self._connection:
@@ -1850,12 +1850,21 @@ class Controller(QObject):
     @Slot()
     @Slot(str)
     def prepareWorktree(self, project_id: str = "") -> None:
+        self._prepare_chat(project_id, worktree=True)
+
+    @Slot()
+    @Slot(str)
+    def prepareNewChat(self, project_id: str = "") -> None:
+        self._prepare_chat(project_id, worktree=False)
+
+    def _prepare_chat(self, project_id: str, *, worktree: bool) -> None:
         project_id = project_id or self._project_id
         machine = self._machine_for(project_id)
         if not machine.connection or self._worktree.get("creating"):
             return
         self._worktree = {"project": project_id, "loading": True, "creating": False,
-                          "error": "", "refs": [], "request_id": uuid.uuid4().hex}
+                          "new_worktree": worktree, "branch": "ava/" + uuid.uuid4().hex,
+                          "error": "", "options_error": "", "refs": [], "request_id": uuid.uuid4().hex}
         self.worktreeChanged.emit()
         self.worktreeRequested.emit()
         request_id = self._worktree["request_id"]
@@ -1863,7 +1872,7 @@ class Controller(QObject):
         def loaded(payload: dict, error: str) -> None:
             if self._worktree.get("request_id") != request_id:
                 return
-            self._worktree.update(loading=False, error=error)
+            self._worktree.update(loading=False, options_error=error)
             if not error:
                 self._worktree.update(payload)
             self.worktreeChanged.emit()
@@ -1875,6 +1884,18 @@ class Controller(QObject):
         if self._worktree.get("error") and self._worktree.get("refs") and not self._worktree.get("creating"):
             self._worktree["error"] = ""
             self.worktreeChanged.emit()
+
+    @Slot()
+    def createOriginalChat(self) -> None:
+        if not self._worktree or self._worktree.get("creating"):
+            return
+        if self._worktree.get("specification", ("current",)) != ("current",):
+            self._worktree["request_id"] = uuid.uuid4().hex
+        self._worktree.update(specification=("current",), creating=True, error="")
+        self.worktreeChanged.emit()
+        self._create_chat(self._worktree["project"], {
+            "workspace": "current", "request_id": self._worktree["request_id"],
+        })
 
     @Slot(str, str)
     def createWorktreeChat(self, branch: str, base: str) -> None:

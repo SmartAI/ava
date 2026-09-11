@@ -133,7 +133,7 @@ ApplicationWindow {
         enabled: window.backend.online && !window.backend.busy
         onActivated: {
             window.workspacePage = "chat";
-            window.backend.newChat();
+            window.backend.prepareNewChat();
         }
     }
     Shortcut {
@@ -226,7 +226,7 @@ ApplicationWindow {
                 NativeButton {
                     id: remoteProjectAdd
                     objectName: "addRemoteProjectAction"
-                    text: remoteProjectDialog.createChat ? "Create chat" : "Add project"
+                    text: remoteProjectDialog.createChat ? "Continue" : "Add project"
                     primary: true
                     enabled: !!remoteProjectPath.text.trim() && window.backend.online
                     onClicked: {
@@ -821,7 +821,7 @@ ApplicationWindow {
                                 primary: true
                                 visible: !window.backend.chatId
                                 enabled: window.backend.online && !window.backend.busy
-                                onClicked: window.backend.projectId ? window.backend.newChat() : folderDialog.open()
+                                onClicked: window.backend.projectId ? window.backend.prepareNewChat() : folderDialog.open()
                             }
                             NativeButton {
                                 objectName: "chooseChatFolderButton"
