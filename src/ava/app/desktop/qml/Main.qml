@@ -49,6 +49,7 @@ ApplicationWindow {
     onLeftOpenChanged: backend.savePreference("leftSidebar", leftOpen)
     onRightOpenChanged: backend.savePreference("rightSidebar", rightOpen)
     onDarkChanged: backend.savePreference("dark", dark)
+    onWorkspacePageChanged: backend.conversationVisible = workspacePage === "chat"
     onClosing: function (close) {
         close.accepted = closing;
         if (!closing) {
@@ -58,6 +59,7 @@ ApplicationWindow {
     }
     function showPanel(name) {
         workspacePage = "chat";
+        window.backend.reviewCurrentChat();
         if (name === "toggleTerminal") {
             terminalOpen = !terminalOpen;
             if (terminalOpen)
@@ -266,7 +268,10 @@ ApplicationWindow {
             AnalyticsPane {
                 backend: window.backend
                 sidebarVisible: window.leftOpen
-                onCloseRequested: window.workspacePage = "chat"
+                onCloseRequested: {
+                    window.workspacePage = "chat";
+                    window.backend.reviewCurrentChat();
+                }
                 onSidebarRequested: window.leftOpen = true
             }
         }
@@ -279,7 +284,10 @@ ApplicationWindow {
                     window.workspacePage = "chat";
                     window.backend.openChat(identity);
                 }
-                onCloseRequested: window.workspacePage = "chat"
+                onCloseRequested: {
+                    window.workspacePage = "chat";
+                    window.backend.reviewCurrentChat();
+                }
                 onSidebarRequested: window.leftOpen = true
             }
         }
@@ -289,7 +297,10 @@ ApplicationWindow {
                 backend: window.backend
                 sidebarVisible: window.leftOpen
                 codeFont: window.codeFont
-                onCloseRequested: window.workspacePage = "chat"
+                onCloseRequested: {
+                    window.workspacePage = "chat";
+                    window.backend.reviewCurrentChat();
+                }
                 onSidebarRequested: window.leftOpen = true
             }
         }
@@ -299,7 +310,10 @@ ApplicationWindow {
                 backend: window.backend
                 sidebarVisible: window.leftOpen
                 onUseRequested: { window.workspacePage = "chat"; Qt.callLater(chatComposer.focusInputAtEnd); }
-                onCloseRequested: window.workspacePage = "chat"
+                onCloseRequested: {
+                    window.workspacePage = "chat";
+                    window.backend.reviewCurrentChat();
+                }
                 onSidebarRequested: window.leftOpen = true
             }
         }
@@ -312,7 +326,10 @@ ApplicationWindow {
                     window.workspacePage = "chat";
                     window.backend.openChat(identity);
                 }
-                onCloseRequested: window.workspacePage = "chat"
+                onCloseRequested: {
+                    window.workspacePage = "chat";
+                    window.backend.reviewCurrentChat();
+                }
                 onSidebarRequested: window.leftOpen = true
             }
         }

@@ -126,8 +126,8 @@ Pane {
             Repeater {
                 model: [
                     {name: "In progress", key: "active", entries: board.summaries.activeSessions, color: "#4b9b70", empty: "No work in progress", note: "Running and paused sessions appear here."},
-                    {name: "Needs review", key: "review", entries: board.summaries.needsReview, color: "#ba884b", empty: "You're all caught up", note: "New results will wait here for your review."},
-                    {name: "Reviewed", key: "reviewed", entries: board.summaries.reviewedSessions, color: "#8a8a91", empty: "No reviewed results", note: "Mark a result reviewed after checking it."}
+                    {name: "Needs review", key: "review", entries: board.summaries.needsReview, color: "#ba884b", empty: "You're all caught up", note: "Results you have not seen in a conversation wait here."},
+                    {name: "Reviewed", key: "reviewed", entries: board.summaries.reviewedSessions, color: "#8a8a91", empty: "No reviewed results", note: "Opening a result here marks it reviewed; you can also use Mark reviewed."}
                 ]
                 Rectangle {
                     id: column

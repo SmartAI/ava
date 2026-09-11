@@ -4743,16 +4743,15 @@ def test_desktop_session_board_tracks_completion_and_explicit_review(desktop, mo
     assert not window.property("boardOpen"), (controller.connected, controller.chatId, controller.error)
     until(lambda: controller.connected and not window.property("boardOpen"), controller.changed)
     click(window, "sessionBoardButton")
-    assert board.needsReview.rowCount() == 1, "Opening a session must not mark its result reviewed"
-    click(window, "reviewBoardChat_" + chat_id)
+    # Match the existing read-on-open behavior; an unseen result still needs explicit review.
     until(lambda: board.reviewedSessions.rowCount() == 1 and board.needsReview.rowCount() == 0, board.changed)
     click(window, "openBoardChat_reviewed_" + chat_id)
     type_message(window, "A new result must need review again")
     QTest.keyClick(window, Qt.Key.Key_Return)
     until(lambda: len(model_server) == 2, controller.changed)
+    click(window, "sessionBoardButton")
     model_server[1].release.set()
     until(lambda: controller.status == "idle", controller.changed)
-    click(window, "sessionBoardButton")
     until(lambda: board.needsReview.rowCount() == 1, board.changed)
     window.setProperty("dark", True)
     window.setWidth(800)

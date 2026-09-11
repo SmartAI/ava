@@ -59,9 +59,11 @@ Drafts and staged attachments are kept separately for each conversation while th
   **Needs review** and **Reviewed**. Completed results appear newest first; each inactive
   column initially shows 20 sessions, with **Review more** to expand it. Filter by machine,
   project, session title or outcomes needing attention. Narrow windows use column tabs.
-  Opening a conversation does not change its review status: use **Mark reviewed** after
-  checking the result. This marker survives backend restarts and syncs to other desktops;
-  a later result needs review again. Archived sessions and removed projects are excluded.
+  A result is considered reviewed once you see it in the conversation page, whether it
+  finishes while you are watching or you open it later from the sessions list. You can
+  also use **Mark reviewed** without leaving the board. This marker survives backend
+  restarts and syncs to other desktops; a later result needs review again. Archived
+  sessions and removed projects are excluded.
   Offline machines show their last known status and require reconnection before opening
   or reviewing a result. Older backends may need updating to support review tracking.
 - **Analytics** shows 7-day and 30-day trends for tokens, active agent time, tool activity,

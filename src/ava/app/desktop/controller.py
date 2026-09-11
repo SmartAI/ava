@@ -143,6 +143,7 @@ class Controller(QObject):
         self._model_name = ""
         self._status = "idle"
         self._connection_label = "Starting Ava…"
+        self._conversation_visible = True
         self._connected = False
         self._busy = False
         self._error = ""
@@ -165,6 +166,7 @@ class Controller(QObject):
         self._terminals: set[TerminalSession] = set()
         self._closed_emitted = False
         self._epoch = 0
+        self._auto_reviewing: set[str] = set()
         self._quitting = False
         self._retry = QTimer(self)
         self._retry.setSingleShot(True)
@@ -250,6 +252,25 @@ class Controller(QObject):
             if not error:
                 self._chat_metadata(payload, "")
             self._board.reviewed(identity, error)
+
+        machine.connection.call("POST", f"/api/chats/{identity}/review", {"through": through}, finished)
+
+    def _auto_review_result(self, identity: str, through: int) -> None:
+        """Acknowledge a result the user is already looking at in the conversation."""
+        if through < 0 or identity in self._auto_reviewing:
+            return
+        chat = next((c for project in self._projects for c in project["chats"] if c["id"] == identity), None)
+        if chat is None or through <= chat.get("reviewed_through", -1):
+            return
+        machine = self._machine_for(identity)
+        if not machine.connection:
+            return
+        self._auto_reviewing.add(identity)
+
+        def finished(payload: Any, error: str) -> None:
+            self._auto_reviewing.discard(identity)
+            if not error:
+                self._chat_metadata(payload, "")
 
         machine.connection.call("POST", f"/api/chats/{identity}/review", {"through": through}, finished)
 
@@ -864,6 +885,23 @@ class Controller(QObject):
     @Property(bool, notify=changed)
     def connected(self) -> bool:
         return self._connected
+
+    def _get_conversation_visible(self) -> bool:
+        return self._conversation_visible
+
+    def _set_conversation_visible(self, value: bool) -> None:
+        if value != self._conversation_visible:
+            self._conversation_visible = value
+            self.changed.emit()
+
+    conversationVisible = Property(bool, _get_conversation_visible, _set_conversation_visible, notify=changed)
+
+    @Slot()
+    def reviewCurrentChat(self) -> None:
+        if self._conversation_visible and self._chat_id:
+            chat = next((c for project in self._projects for c in project["chats"] if c["id"] == self._chat_id), None)
+            if chat is not None:
+                self._auto_review_result(self._chat_id, chat.get("completion_seq", -1))
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:
@@ -1896,7 +1934,10 @@ class Controller(QObject):
     @Slot(str)
     def openChat(self, identity: str) -> None:
         machine = self._machine_for(identity)
-        if not machine.connection or identity == self._chat_id:
+        if not machine.connection:
+            return
+        if identity == self._chat_id:
+            self.reviewCurrentChat()
             return
         self._discard_current_empty_chat()
         self._activate_machine(machine)
@@ -1922,6 +1963,9 @@ class Controller(QObject):
                 self._chat_branch = payload.get("worktree", "")
                 self._chat_title = payload["title"] or "New conversation"
                 self._status = payload["status"]
+                chat = next((c for project in self._projects for c in project["chats"] if c["id"] == identity), None)
+                if self._conversation_visible and chat is not None:
+                    self._auto_review_result(identity, chat.get("completion_seq", -1))
                 self.settings.setValue(f"chat/{self._project_id}", identity)
                 self._connection.stream(identity, -1)
 
@@ -1940,6 +1984,8 @@ class Controller(QObject):
             self._transcript.apply(event)
             if event["kind"] == "selection":
                 self._update_selection(event)
+            if self._conversation_visible and self._chat_id and event["kind"] in {"turn/end", "drive/error"}:
+                self._auto_review_result(self._chat_id, int(event["seq"]))
         except (KeyError, ValueError, TypeError):
             self._error = "Ava sent an unsupported event. Reopen this conversation to retry."
             self._connected = False

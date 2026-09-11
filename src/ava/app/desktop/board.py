@@ -204,6 +204,8 @@ class SessionBoard(QObject):
                 failed = outcome in {"error", "provider_error", "tool_error", "blocked", "interrupted", "shutdown"}
                 if self._outcome == "attention" and not (failed or outcome in {"paused", "user_pause"}):
                     continue
+                # The conversation page advances reviewed_through when the user sees a result;
+                # Mark reviewed advances it from the board as well.
                 column = 0 if active else 1 if complete > chat.get("reviewed_through", -1) else 2
                 columns[column].append({**chat, "project": project["name"], "project_id": project["id"],
                     "machine": machine["name"], "online": machine["online"], "saving": chat["id"] in self._saving,
