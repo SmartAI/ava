@@ -78,6 +78,13 @@ export default function App() {
   const followRef = useRef(true)
   const forceFollowRef = useRef(false)
   const pastedSequenceRef = useRef(0)
+  const streamEpochRef = useRef(0)
+  const streamReadyRef = useRef(false)
+  const streamHydratedRef = useRef(false)
+  const streamStatusCountRef = useRef(0)
+  const streamReplayBufferRef = useRef([])
+  const streamLiveQueueRef = useRef([])
+  const streamLiveFlushEpochRef = useRef(null)
 
   currentRef.current = current
   projectsRef.current = projects
@@ -89,8 +96,14 @@ export default function App() {
   stagedRef.current = staged
   modelSelectionRef.current = modelSelection
 
-  const currentProject = projects.find(project => project.id === projectId) || null
-  const currentChat = projects.flatMap(project => project.chats).find(chat => chat.id === current) || null
+  const currentProject = useMemo(
+    () => projects.find(project => project.id === projectId) || null,
+    [projects, projectId],
+  )
+  const currentChat = useMemo(
+    () => projects.flatMap(project => project.chats).find(chat => chat.id === current) || null,
+    [projects, current],
+  )
   const archived = Boolean(currentChat?.archived)
   const unavailable = archived || submitting || status === 'aborting'
 
@@ -147,25 +160,42 @@ export default function App() {
   const applyEvent = event => {
     if (event.kind === 'inbox/spliced') {
       setPending(items => applyPendingEvent(items, event))
-      return
+      return false
     }
     if (event.kind === 'step/claimed') {
+      let rendered = false
       for (const message of event.messages || []) {
-        if (!message.id || !displayedInputsRef.current.has(message.id)) addUser(message.blocks)
+        if (!message.id || !displayedInputsRef.current.has(message.id)) {
+          addUser(message.blocks)
+          rendered = true
+        }
         if (message.id) displayedInputsRef.current.add(message.id)
       }
       setPending(items => applyPendingEvent(items, event))
-      return
+      return rendered
     }
-    if (event.kind === 'user/message') addUser(event.blocks)
-    else if (event.kind === 'selection') {
+    if (event.kind === 'user/message') {
+      addUser(event.blocks)
+      return true
+    }
+    if (event.kind === 'selection') {
       setModelSelection({ provider: event.provider, model: event.model, effort: event.effort ?? null })
-      if (event.warning) addError(event.warning)
-    } else if (event.kind === 'assistant/chunk') appendDelta(event.delta)
-    else if (event.kind === 'assistant/message') {
+      if (event.warning) {
+        addError(event.warning)
+        return true
+      }
+      return false
+    }
+    if (event.kind === 'assistant/chunk') {
+      appendDelta(event.delta)
+      return true
+    }
+    if (event.kind === 'assistant/message') {
       const blocks = event.blocks || []
+      let rendered = false
       for (const block of blocks.filter(block => block.kind === 'reasoning' && block.summary)) {
         addAside(transcriptRow('reasoning', { text: block.summary }))
+        rendered = true
       }
       const text = blocks.filter(block => block.kind === 'text').map(block => block.text).join('')
       if (text) {
@@ -175,6 +205,7 @@ export default function App() {
           setTranscript(items => items.map(item => item.id === id ? { ...item, text } : item))
         }
         lastAssistantRef.current = text
+        rendered = true
       }
       for (const block of blocks.filter(block => block.kind === 'tool_call')) {
         closeTail()
@@ -187,39 +218,122 @@ export default function App() {
           isError: false,
           elapsed: null,
         }))
+        rendered = true
       }
-    } else if (event.kind === 'tool/result') {
+      return rendered
+    }
+    if (event.kind === 'tool/result') {
       const durations = new Map((event.durations || []).map(item => [item.call_id, item.elapsed_ms]))
       setTranscript(items => items.map(item => {
         const block = (event.blocks || []).find(value => value.kind === 'tool_result' && value.call_id === item.callId)
         return block ? { ...item, text: block.text || '(no output)', isError: Boolean(block.is_error), elapsed: durations.get(block.call_id),
           images: (block.attachments || []).filter(image => /^images\/\d+\/\d+\/\d+$/.test(image.path || '')).map(image => ({ ...image, url: `/api/chats/${currentRef.current}/${image.path}` })) } : item
       }))
-    } else if (event.kind === 'step/end') closeTail()
-    else if (event.kind === 'turn/end') {
+      return false
+    }
+    if (event.kind === 'step/end') {
       closeTail()
-      if (event.reason === 'user_pause') addNotice('Paused after a completed step')
-      else if (event.reason === 'user_abort') {
+      return false
+    }
+    if (event.kind === 'turn/end') {
+      closeTail()
+      if (event.reason === 'user_pause') {
+        addNotice('Paused after a completed step')
+        return true
+      }
+      if (event.reason === 'user_abort') {
         setPending(items => applyPendingEvent(items, event))
         addNotice('Aborted; history repaired')
-      } else if (event.reason === 'interrupted') addNotice('The previous run was interrupted; the session was repaired')
-    } else if (event.kind === 'compaction/seed') addNotice('Context compacted')
-    else if (event.kind === 'compaction/failed' || event.kind === 'drive/error') addError(event.message)
+        return true
+      }
+      if (event.reason === 'interrupted') {
+        addNotice('The previous run was interrupted; the session was repaired')
+        return true
+      }
+      return false
+    }
+    if (event.kind === 'compaction/seed') {
+      addNotice('Context compacted')
+      return true
+    }
+    if (event.kind === 'compaction/failed' || event.kind === 'drive/error') {
+      addError(event.message)
+      return true
+    }
+    return false
+  }
+
+  const streamIsCurrent = (epoch, id, selection) =>
+    epoch === streamEpochRef.current && currentRef.current === id && selectionRef.current === selection
+
+  const flushLiveEvents = (epoch, id, selection) => {
+    if (!streamIsCurrent(epoch, id, selection)) return
+    if (streamLiveFlushEpochRef.current === epoch) streamLiveFlushEpochRef.current = null
+    const events = streamLiveQueueRef.current
+    streamLiveQueueRef.current = []
+    for (const event of events) applyEvent(event)
+  }
+
+  const flushReplayEvents = (epoch, id, selection) => {
+    if (!streamIsCurrent(epoch, id, selection)) return
+    const firstHydration = !streamHydratedRef.current
+    streamHydratedRef.current = true
+    streamReadyRef.current = true
+    const events = streamReplayBufferRef.current
+    streamReplayBufferRef.current = []
+    let rendered = false
+    for (const event of events) rendered = applyEvent(event) || rendered
+    if (firstHydration && !rendered) setEmpty(true)
   }
 
   const openStream = (id, selection) => {
     streamRef.current?.close()
+    const epoch = ++streamEpochRef.current
+    streamReadyRef.current = false
+    streamHydratedRef.current = false
+    streamStatusCountRef.current = 0
+    streamReplayBufferRef.current = []
+    streamLiveQueueRef.current = []
+    streamLiveFlushEpochRef.current = null
+
     const stream = new EventSource(`/api/chats/${id}/events`)
+    stream.onopen = () => {
+      // EventSource reconnects create a fresh server stream, which always sends a
+      // status snapshot before and after the durable replay. Reset the preamble
+      // counters so a reconnect cannot mistake a live status for replay complete.
+      if (epoch !== streamEpochRef.current) return
+      if (streamReadyRef.current) flushLiveEvents(epoch, id, selection)
+      streamReadyRef.current = false
+      streamStatusCountRef.current = 0
+      streamReplayBufferRef.current = []
+      streamLiveQueueRef.current = []
+      streamLiveFlushEpochRef.current = null
+    }
     stream.onmessage = message => {
-      if (currentRef.current !== id || selectionRef.current !== selection) return
-      applyEvent(JSON.parse(message.data))
+      if (!streamIsCurrent(epoch, id, selection)) return
+      const event = JSON.parse(message.data)
+      if (streamReadyRef.current) {
+        streamLiveQueueRef.current.push(event)
+        if (streamLiveFlushEpochRef.current === null) {
+          streamLiveFlushEpochRef.current = epoch
+          window.requestAnimationFrame(() => flushLiveEvents(epoch, id, selection))
+        }
+      } else {
+        // Buffer the durable replay. The server emits a status snapshot after
+        // subscribing, so the second status is the replay-complete marker.
+        streamReplayBufferRef.current.push(event)
+      }
     }
     stream.addEventListener('status', message => {
-      if (currentRef.current !== id || selectionRef.current !== selection) return
+      if (!streamIsCurrent(epoch, id, selection)) return
       const info = JSON.parse(message.data)
+      streamStatusCountRef.current += 1
       setStatus(info.status)
       setStatusInfo(info)
       setModelSelection({ provider: info.provider, model: info.model, effort: info.effort ?? null })
+      if (streamStatusCountRef.current === 2 && !streamReadyRef.current) {
+        flushReplayEvents(epoch, id, selection)
+      }
     })
     streamRef.current = stream
   }
@@ -267,7 +381,6 @@ export default function App() {
       setOpenProjects(items => new Set(items).add(chat.project_id))
       updateChat({ id: chat.id, title: chat.title, status: chat.status, archived: chat.archived })
       for (const event of chat.events || []) applyEvent(event)
-      setEmpty(!(chat.events || []).length)
       setStatus(chat.status)
       saveLocal('ava-current-chat', id)
       openStream(id, selection)

@@ -58,6 +58,10 @@ async def event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
     def on_status(*_: object) -> None:
         queue.put_nowait(("status", status_payload(chat)))
 
+    # The status snapshot is queued before and after the synchronous replay in
+    # ``agent.subscribe``. The frontend uses that pair as the replay boundary:
+    # durable events are buffered until the second snapshot, then applied as one
+    # React batch instead of one render per replayed event.
     queue.put_nowait(("status", status_payload(chat)))
     subscription = agent.subscribe(emit)
     unwatch = agent.watch_status(on_status)

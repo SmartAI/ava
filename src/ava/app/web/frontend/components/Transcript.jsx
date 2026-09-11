@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { memo, useEffect, useMemo, useState } from 'react'
 
 import { activityLabel, groupTranscriptEntries } from '../activity'
 import { STATUS_LABELS } from '../constants'
@@ -22,7 +22,10 @@ const durationLabel = elapsed => {
     : `${(Math.floor(elapsed / 100) / 10).toFixed(1)}s`
 }
 
-function ToolResult({ entry }) {
+const sameEntries = (left, right) =>
+  left.length === right.length && left.every((entry, index) => entry === right[index])
+
+const ToolResult = memo(function ToolResult({ entry }) {
   const summary = summarize(entry.tool, entry.args)
   const duration = durationLabel(entry.elapsed)
   return <div className={toolCard}>
@@ -39,9 +42,9 @@ function ToolResult({ entry }) {
       {entry.images.map(image => <a key={image.path} className="rounded-lg border border-line-strong px-3 py-2 text-sm text-muted transition-[background-color,border-color] duration-150 hover:bg-hover" href={image.url} target="_blank" rel="noreferrer">View image · {image.display_path}</a>)}
     </div>}
   </div>
-}
+})
 
-function ActivityDisclosure({ entries }) {
+const ActivityDisclosure = memo(function ActivityDisclosure({ entries }) {
   const hasError = entries.some(entry => entry.isError)
   const [open, setOpen] = useState(hasError)
   useEffect(() => {
@@ -58,9 +61,9 @@ function ActivityDisclosure({ entries }) {
       {entries.map(entry => <ToolResult entry={entry} key={entry.id} />)}
     </div>}
   </div>
-}
+}, (previous, next) => sameEntries(previous.entries, next.entries))
 
-function ReasoningDisclosure({ entries }) {
+const ReasoningDisclosure = memo(function ReasoningDisclosure({ entries }) {
   const [open, setOpen] = useState(false)
   const panelId = `reasoning-details-${entries[0].id}`
   const html = entries.map(entry => renderMarkdown(entry.text)).join('')
@@ -71,9 +74,9 @@ function ReasoningDisclosure({ entries }) {
     </button>
     {open && <div className="markdown mt-2 mr-0 mb-1 ml-5.5 border-l border-line-strong pl-3 text-sm leading-6 text-muted" id={panelId} dangerouslySetInnerHTML={{ __html: html }} />}
   </div>
-}
+}, (previous, next) => sameEntries(previous.entries, next.entries))
 
-function MessageRow({ entry }) {
+const MessageRow = memo(function MessageRow({ entry }) {
   if (entry.type === 'user') {
     const blocks = entry.blocks || []
     const text = blocks.filter(block => block.kind === 'text').map(block => block.text).join('\n')
@@ -92,9 +95,16 @@ function MessageRow({ entry }) {
     return <div className="flex items-start gap-2 text-[13px] leading-5"><span className="mt-1.75 h-1.5 w-1.5 shrink-0 rounded-full bg-danger" /><div><span className="mr-1.5 font-semibold text-danger">Error</span><span className="text-muted">{entry.text}</span></div></div>
   }
   return <div className="self-center text-xs text-faint">{entry.text}</div>
-}
+}, (previous, next) => {
+  if (previous.entry === next.entry) return true
+  if (previous.entry.type !== next.entry.type || previous.entry.id !== next.entry.id) return false
+  if (previous.entry.type === 'activity' || previous.entry.type === 'reasoning-group') {
+    return sameEntries(previous.entry.entries, next.entry.entries)
+  }
+  return false
+})
 
-function WorkingStatus({ status }) {
+const WorkingStatus = memo(function WorkingStatus({ status }) {
   const [seconds, setSeconds] = useState(0)
   useEffect(() => {
     setSeconds(0)
@@ -105,17 +115,17 @@ function WorkingStatus({ status }) {
   }, [status])
   if (!(status in STATUS_LABELS)) return null
   return <div className="working-status inline-flex h-6.5 self-start text-sm font-medium" data-state={status}><span>{STATUS_LABELS[status]}</span><span className="ml-2 font-mono text-[13px] font-normal text-faint [font-variant-numeric:tabular-nums]">{seconds}s</span></div>
-}
+})
 
-function EmptyState({ project }) {
+const EmptyState = memo(function EmptyState({ project }) {
   return <div className={emptyState}>
     <div className="mb-1.5 text-xl font-medium text-ink">{project ? project.name : 'New chat'}</div>
     <div>{project ? `ava will work in ${project.path}` : 'Pick a project directory to start.'}</div>
   </div>
-}
+})
 
 export function Transcript({ entries, empty, project, status }) {
-  const rows = groupTranscriptEntries(entries)
+  const rows = useMemo(() => groupTranscriptEntries(entries), [entries])
   return <div className="flex-1 shrink-0 px-4 py-4 min-[701px]:px-8">
     <div className="mx-auto flex w-full max-w-[748px] flex-col gap-4">
       {rows.map(entry => <MessageRow entry={entry} key={entry.id} />)}
