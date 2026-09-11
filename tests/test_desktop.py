@@ -3780,10 +3780,9 @@ def test_desktop_activity_is_lazy_and_preserves_reading_position(desktop, model_
     save_screenshot(window, "activity")
 
 
-@pytest.mark.parametrize("interval", [5, 25])
-def test_desktop_switch_to_running_session_keeps_rendered_frames_stable(
-    desktop, model_server, home, project, interval
-):
+@pytest.fixture
+def streaming_history(home, project, model_server):
+    """Replay realistic mixed-height history before driving the local SSE provider."""
     from ava.llm.types import Item, Role, make_reasoning_block, make_text_block
     from ava.session import (
         AssistantMessage,
@@ -3820,6 +3819,13 @@ def test_desktop_switch_to_running_session_keeps_rendered_frames_stable(
             ])
     finally:
         log.close()
+
+
+@pytest.mark.usefixtures("streaming_history")
+@pytest.mark.parametrize("interval", [5, 25])
+def test_desktop_switch_to_running_session_keeps_rendered_frames_stable(
+    desktop, model_server, interval
+):
     controller, window = desktop
     controller.start()
     until(lambda: controller.connected and bool(controller.transcript.rows), controller.changed)
@@ -3947,6 +3953,76 @@ def test_desktop_switch_to_running_session_keeps_rendered_frames_stable(
     assert document.find("Split bold").charFormat().fontWeight() >= 600
     assert "```" not in document.toPlainText()
     save_screenshot(window, f"stable-session-switch-{interval}ms")
+
+
+@pytest.mark.usefixtures("streaming_history")
+@pytest.mark.parametrize("paragraphs", [60, 600])
+def test_desktop_jump_to_latest_renders_message_pixels(desktop, model_server, paragraphs):
+    controller, window = desktop
+    window.setProperty("dark", False)
+    controller.start()
+    until(lambda: controller.connected and bool(controller.transcript.rows), controller.changed)
+    type_message(window, "Show the latest message")
+    click(window, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
+    body = "## A long response\n\n" + "Completed paragraph with readable content.\n\n" * paragraphs + "LATEST MESSAGE VISIBLE"
+    model_server[0].chunks.put(body)
+    until(lambda: bool(controller.transcript.rows) and controller.transcript.rows[-1]["body"] == body, controller.changed)
+    view = find_item(window, "transcriptView")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    QTest.qWait(150)
+
+    def latest_pixels():
+        output = find_item(window, "assistantMarkdown")
+        assert output is not None and output.isVisible()
+        quick_document = output.property("textDocument")
+        document = quick_document.textDocument()
+        marker = document.find("LATEST MESSAGE VISIBLE")
+        assert not marker.isNull()
+        rect = output.mapRectToScene(document.documentLayout().blockBoundingRect(document.lastBlock()))
+        assert visible_rect(window, view).contains(rect.center()), (
+            rect, view.property("contentY"), view.property("originY"),
+            view.property("contentHeight"), view.property("atYEnd"),
+        )
+        frame = window.grabWindow()
+        scale = frame.width() / window.width()
+        region = frame.copy(int(rect.x() * scale), int(rect.y() * scale),
+                            int(min(rect.width(), 300) * scale), int(rect.height() * scale))
+        ink = sum(region.pixelColor(x, y).lightnessF() < 0.45
+                  for y in range(region.height()) for x in range(region.width()))
+        assert ink > 50, f"Latest-message geometry is visible, but its glyphs are missing ({ink} ink pixels)"
+        return ink
+
+    before = latest_pixels()
+    original_tail = view.property("currentItem")
+    # Drag to the beginning so the latest delegate leaves the viewport/cache,
+    # unlike a short wheel scroll within the same long Markdown message.
+    scrollbar = next(item for item in view.childItems() if item.inherits("QQuickScrollBar"))
+    thumb = scrollbar.property("contentItem")
+    start = thumb.mapToScene(QPointF(thumb.width() / 2, thumb.height() / 2)).toPoint()
+    end = scrollbar.mapToScene(QPointF(scrollbar.width() / 2, 2)).toPoint()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(window, end, 20)
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=end)
+    until(lambda: not view.property("moving"), view.movingChanged)
+    assert not view.property("follow")
+    assert find_item(window, "jumpToLatest").isVisible()
+    QTest.qWait(150)
+    assert view.property("atYBeginning")
+    assert not isValid(original_tail) or visible_rect(window, original_tail).isEmpty()
+    reading_y = view.property("contentY")
+    extra = "\n\n" + "New output while reading older messages.\n\n" * 200 + "LATEST MESSAGE VISIBLE"
+    model_server[0].chunks.put(extra)
+    until(lambda: controller.transcript.rows[-1]["body"] == body + extra, controller.changed)
+    QTest.qWait(150)
+    assert abs(view.property("contentY") - reading_y) <= 1
+    click(window, "jumpToLatest")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    QTest.qWait(150)
+    assert view.property("follow")
+    after = latest_pixels()
+    assert abs(after - before) <= before * 0.1, (before, after)
+    save_screenshot(window, f"jump-latest-{paragraphs}")
 
 
 def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server):

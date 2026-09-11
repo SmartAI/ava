@@ -78,7 +78,11 @@ The `switch_to_running_session` acceptance scenario replays durable mixed-height
 history through the real backend, switches via the sidebar, holds the provider open,
 then streams at 5/25 ms intervals. It checks per-frame tail/paragraph stability
 within one logical pixel, delegate identity, Markdown formatting, and reading
-position. Run it on both the native and offscreen renderers described below.
+position. The `jump_to_latest_renders_message_pixels` scenario drags back to the
+beginning, receives more output while the latest message is offscreen, then clicks
+the down arrow. It checks actual glyph pixels at the destination: `atYEnd` alone
+can briefly report success even when the message is outside the viewport. Run both
+scenarios on the native and offscreen renderers described below.
 
 ## Evaluation
 
