@@ -86,6 +86,7 @@ class Machine:
     status: str = "Connecting…"
     error: str = ""
     reconnect: bool = False
+    restarting: bool = False
 
 
 class Controller(QObject):
@@ -317,9 +318,12 @@ class Controller(QObject):
     @Property(list, notify=machinesChanged)
     def machines(self) -> list:
         return [{"id": m.id, "name": m.name, "host": m.runtime.host, "online": m.connection is not None,
-                 "status": m.status, "error": m.error, "active": m.id == self._active_machine,
+                 "status": "Restarting backend…" if m.restarting else m.status,
+                 "state": "connecting" if m.restarting else "online" if m.connection else "offline" if m.error else "connecting",
+                 "error": m.error, "active": m.id == self._active_machine,
+                 "restarting": m.restarting,
                  "update_pending": bool(m.runtime.info.get("service", {}).get("update_pending")),
-                 "busy": m.runtime.process.state() != QProcess.ProcessState.NotRunning and not m.connection}
+                 "busy": m.restarting or (m.runtime.process.state() != QProcess.ProcessState.NotRunning and not m.connection)}
                 for m in self._machines.values()]
 
     @Property(str, notify=changed)
@@ -351,7 +355,7 @@ class Controller(QObject):
 
     @Slot(str)
     def reconnectMachine(self, identity: str) -> None:
-        if (machine := self._machines.get(identity)) and not machine.connection:
+        if (machine := self._machines.get(identity)) and not machine.connection and not machine.restarting:
             machine.error = ""
             machine.status = "Connecting…"
             self.machinesChanged.emit()
@@ -372,7 +376,7 @@ class Controller(QObject):
 
     @Slot(str)
     def removeMachine(self, identity: str) -> None:
-        if identity == "local" or identity not in self._machines:
+        if identity == "local" or identity not in self._machines or self._machines[identity].restarting:
             return
         machine = self._machines[identity]
         machine.reconnect = False
@@ -455,12 +459,23 @@ class Controller(QObject):
     def configureStartup(self, enabled: bool) -> None:
         self._service_command("service-install" if enabled else "service-uninstall")
 
-    def _service_command(self, action: str) -> None:
+    @Slot(str)
+    def restartMachine(self, identity: str) -> None:
+        machine = self._machines.get(identity)
+        if machine is not None and not machine.restarting:
+            self._service_command("service-restart", machine)
+
+    def _service_command(self, action: str, machine: Machine | None = None) -> None:
         if self._service_process is not None or self._quitting or not self._service_state["supported"]:
             return
         process = QProcess(self)
         self._service_process = process
-        machine = self._machines[self._active_machine]
+        machine = machine or self._machines[self._active_machine]
+        restarting = action == "service-restart"
+        if restarting:
+            machine.restarting = True
+            machine.error = ""
+            self.machinesChanged.emit()
         changing = action != "service-status"
         self._service_state.update(loading=True, busy=changing, error="")
         self.serviceStateChanged.emit()
@@ -486,7 +501,7 @@ class Controller(QObject):
             try:
                 if code:
                     detail = errors.decode("utf-8", "replace").strip().removeprefix("ava-backend: ")
-                    detail = detail.replace("Stop them first or use --force.", "Stop them from their conversations before changing background startup.")
+                    detail = detail.replace("Stop them first or use --force.", "Stop them from their conversations before restarting or changing background startup.")
                     raise ValueError(detail or "Background operation did not finish. Refresh to check its status.")
                 payload = json.loads(output)
                 if not isinstance(payload, dict) or not isinstance(payload.get("installed"), bool):
@@ -494,6 +509,10 @@ class Controller(QObject):
                 self._service_state.update(payload)
             except ValueError as error:
                 self._service_state["error"] = str(error)
+            if restarting:
+                machine.restarting = False
+                machine.error = self._service_state["error"]
+                self.machinesChanged.emit()
             self.serviceStateChanged.emit()
             process.deleteLater()
             if changing and not self._service_state["error"] and not self._quitting:
@@ -511,13 +530,16 @@ class Controller(QObject):
             python = machine.runtime.info.get("python")
             if not python:
                 self._service_process = None
-                self._service_state.update(loading=False, busy=False, error="Connect to this machine first.")
+                machine.restarting = False
+                machine.error = "Connect to this machine first."
+                self.machinesChanged.emit()
+                self._service_state.update(loading=False, busy=False, error=machine.error)
                 self.serviceStateChanged.emit()
                 process.deleteLater()
                 return
             args = ssh_arguments(machine.runtime.host)
             process.setProgram(args[0])
-            process.setArguments([*args[1:], machine.runtime.host, shlex.join([python, "-m", "ava.app.backend", action])])
+            process.setArguments([*args[1:], machine.runtime.host, shlex.join([python, "-m", "ava.app.backend", action, *(["--machine-id", machine.machine_id] if restarting else [])])])
         else:
             process.setProgram(sys.executable)
             process.setArguments(["-m", "ava.app.backend", action])
@@ -2069,7 +2091,7 @@ class Controller(QObject):
 
     def _check_machine(self, machine: Machine, replay: bool = False) -> None:
         connection = machine.connection
-        if connection is None or machine.checking or self._quitting:
+        if connection is None or machine.checking or machine.restarting or self._quitting:
             return
         machine.checking = True
 
@@ -2077,6 +2099,8 @@ class Controller(QObject):
             if connection is not machine.connection:
                 return
             machine.checking = False
+            if machine.restarting:
+                return
             identity = machine.runtime.info
             if error or not isinstance(payload, dict) or any(
                 payload.get(key) != identity.get(key)

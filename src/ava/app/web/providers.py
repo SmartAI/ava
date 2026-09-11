@@ -8,7 +8,12 @@ from dataclasses import asdict
 from typing import Any
 
 from ava.base import AvaError, ErrorKind
-from ava.llm.configuration import BUILTIN_PROVIDERS, load_provider_settings, read_configuration
+from ava.llm.configuration import (
+    BUILTIN_PROVIDERS,
+    load_provider_settings,
+    load_saved_provider_settings,
+    read_configuration,
+)
 from ava.llm.credentials import stored_api_key
 from ava.llm.provider import Provider, Selection, SelectionOverride, sort_model_ids
 from ava.llm.registry import provider_from_environment
@@ -106,9 +111,20 @@ async def provider_catalog(name: str) -> dict[str, Any]:
 async def settings_payload() -> dict[str, Any]:
     entries = await asyncio.gather(*(provider_catalog(name) for name in provider_names()))
     entries.sort(key=lambda entry: (not entry["valid"], not entry["configured"]))
-    return {"providers": entries, "built_in_providers": [
-        {"id": name, "label": PROVIDER_LABELS[name]} for name in BUILTIN_PROVIDERS
-    ]}
+    try:
+        default_selection = asdict(load_saved_provider_settings().selection)
+    except AvaError:
+        # The provider cards still render with their own diagnostics.
+        default_selection = {}
+    for entry in entries:
+        entry["is_default"] = bool(default_selection) and entry["id"] == default_selection.get("provider")
+    return {
+        "providers": entries,
+        "default_selection": default_selection,
+        "built_in_providers": [
+            {"id": name, "label": PROVIDER_LABELS[name]} for name in BUILTIN_PROVIDERS
+        ],
+    }
 
 
 async def conversation_catalog(selection: Selection) -> dict[str, Any]:

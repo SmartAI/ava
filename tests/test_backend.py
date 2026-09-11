@@ -54,6 +54,11 @@ def test_user_service_restarts_without_clients_and_uninstalls(home, project, mon
         connected = connect(home)
         assert connected is not None
         assert connected["instance_id"] == restarted["instance_id"]
+        explicit = command(project, "service-restart")
+        assert explicit.returncode == 0, explicit.stderr
+        connected = connect(home)
+        assert connected is not None and connected["instance_id"] != restarted["instance_id"]
+        assert json.loads(explicit.stdout)["autostart"]
         assert command(project, "stop").returncode == 0
         # A deliberate successful shutdown must not be treated as a crash.
         time.sleep(4)

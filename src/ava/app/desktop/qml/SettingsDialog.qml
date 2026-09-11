@@ -16,6 +16,7 @@ NativeDialog {
     property bool custom: false
     property var connections: []
     property string selectedProvider: ""
+    property string defaultSummary: ""
     readonly property var connection: connections.find(item => item.id === selectedProvider) || ({})
     readonly property var state: backend.providerSettingsState
     readonly property var startup: backend.serviceState
@@ -32,7 +33,14 @@ NativeDialog {
     closePolicy: state.saving ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
     title: "Settings"
     function load(values) {
-        connections = (values.providers || []).map(item => Object.assign({}, item, {display: item.label + " · " + item.status}));
+        connections = (values.providers || []).map(item => Object.assign({}, item, {display: item.label + " · " + item.status + (item.is_default ? " · Default" : "")}));
+        const defaults = values.default_selection || {};
+        const defaultEntry = connections.find(item => item.id === defaults.provider);
+        defaultSummary = defaults.provider
+            ? (defaultEntry ? defaultEntry.label : defaults.provider)
+              + (defaults.model ? " · " + defaults.model : "")
+              + (defaults.effort ? " · " + defaults.effort : "")
+            : "";
         const preferred = values.saved_provider || selectedProvider || backend.selection.provider;
         const index = Math.max(0, connections.findIndex(item => item.id === preferred));
         providerPicker.currentIndex = index;
@@ -319,7 +327,16 @@ NativeDialog {
                     Label { text: "Provider connections"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
                     Label {
                         Layout.fillWidth: true
-                        text: "Manage credentials here. Choose a model and reasoning effort from the model name in each conversation."
+                        text: "Saved defaults apply to new conversations unless overridden by environment variables or launch options. Choose a conversation’s model from its model name."
+                        font.pixelSize: 12
+                        color: palette.placeholderText
+                        wrapMode: Text.WordWrap
+                    }
+                    Label {
+                        objectName: "providerDefaultSummary"
+                        visible: dialog.ready
+                        Layout.fillWidth: true
+                        text: dialog.defaultSummary ? "Saved default: " + dialog.defaultSummary : "Saved default unavailable."
                         font.pixelSize: 12
                         color: palette.placeholderText
                         wrapMode: Text.WordWrap

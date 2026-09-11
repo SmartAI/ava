@@ -14,6 +14,8 @@ export function SettingsModal({ settings, fontSize, loadError, onClose, onRetry,
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const entries = settings?.providers || []
+  const defaultSelection = settings?.default_selection || {}
+  const defaultEntry = defaultSelection.provider ? entries.find(item => item.id === defaultSelection.provider) : null
   const current = entries.find(item => item.id === form?.provider)
   const custom = form?.provider_type === 'custom'
   const storesKey = custom || !['codex', 'llamacpp'].includes(form?.provider)
@@ -57,15 +59,16 @@ export function SettingsModal({ settings, fontSize, loadError, onClose, onRetry,
   return <div className={`${modalBackdrop} px-4 py-8`} onMouseDown={event => { if (event.target === event.currentTarget && !saving) onClose() }}>
     <div className={`${modalCard} max-h-full w-full max-w-[600px]`} ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="settings-title" onKeyDown={event => { if (saving && event.key === 'Escape') event.stopPropagation() }}>
       <div className={modalHeader}>
-        <div className="flex-1"><h2 className={modalTitle} id="settings-title">Settings</h2><p className="mt-1 text-xs text-muted">Manage provider credentials here. Choose model and effort in each conversation.</p></div>
+        <div className="flex-1"><h2 className={modalTitle} id="settings-title">Settings</h2><p className="mt-1 text-xs text-muted">Saved defaults apply to new conversations unless overridden by environment variables or launch options. Choose model and effort in each conversation.</p></div>
         <button className={iconButton} aria-label="Close settings" disabled={saving} onClick={onClose}><CloseIcon /></button>
       </div>
       <div className={`${modalBody} px-5 pb-5`}>
         {!settings ? <div className="py-8 text-sm text-muted">{loadError || 'Checking provider connections…'}{loadError && <button className={`${secondaryButton} ml-3`} onClick={onRetry}>Try again</button>}</div> : <>
           <div className="my-3 flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Provider connections</h3><button className={secondaryButton} disabled={saving} onClick={onRetry}>Refresh status</button></div>
+          <p className="mb-3 -mt-1 break-words text-xs text-muted">{defaultSelection.provider ? <>Saved default: <span className="text-ink">{defaultEntry?.label || defaultSelection.provider} · {defaultSelection.model}{defaultSelection.effort ? ` · ${defaultSelection.effort}` : ''}</span></> : 'Saved default unavailable.'}</p>
           <div className="grid gap-2 min-[520px]:grid-cols-2">
             {entries.map(entry => <button key={entry.id} disabled={saving} aria-pressed={form?.provider === entry.id} className={`rounded-xl border p-3 text-left transition-[border-color,background-color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ava-accent)_20%,transparent)] active:scale-[0.99] ${form?.provider === entry.id ? 'border-accent bg-selected' : 'border-line-strong hover:bg-hover'}`} onClick={() => choose(entry)}>
-              <span className="block text-[13px] font-medium">{entry.label}</span>
+              <span className="flex items-center gap-1.5 text-[13px] font-medium">{entry.label}{entry.is_default && <span className="rounded-full bg-selected px-1.5 py-px text-[10px] font-semibold text-accent">Default</span>}</span>
               <span className={`mt-1 block text-xs ${entry.valid ? 'text-accent' : 'text-muted'}`}>{entry.valid ? '✓ ' : ''}{entry.status}</span>
               {entry.credential_source && <span className="mt-1 block text-[11px] text-faint">{entry.credential_source}</span>}
             </button>)}

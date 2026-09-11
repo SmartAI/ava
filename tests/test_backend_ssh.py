@@ -64,6 +64,11 @@ def test_ssh_service_survives_disconnect_and_tunnel_keeps_host_fence():
         again = json.loads(remote(*backend, "connect", "--project", "/home/ava-test/remote project"))
         assert again["instance_id"] == info["instance_id"]
         assert json.loads(remote(*backend, "service-status"))["active"]
+        state = json.loads(remote(*backend, "service-restart", "--machine-id", info["machine_id"]))
+        assert state["active"] and state["autostart"]
+        restarted = json.loads(remote(*backend, "connect", "--no-project"))
+        assert restarted["machine_id"] == info["machine_id"]
+        assert restarted["instance_id"] != info["instance_id"]
         if container := os.environ.get("AVA_SSH_TEST_CONTAINER"):
             restarted = subprocess.run(["docker", "restart", "-t", "10", container], capture_output=True, timeout=40)
             assert restarted.returncode == 0, restarted.stderr

@@ -63,6 +63,10 @@ async def test_provider_readiness_and_credentials_are_separate_from_defaults(hom
     async with _running_client(create_app(project)) as client:
         settings = (await client.get("/api/settings")).json()
         entries = {entry["id"]: entry for entry in settings["providers"]}
+        assert settings["default_selection"] == {
+            "provider": "gateway", "model": "fixture-reasoning", "effort": "high"
+        }
+        assert entries["gateway"]["is_default"] and not entries["shell"]["is_default"]
         assert entries["gateway"]["valid"] and entries["gateway"]["has_stored_key"]
         assert entries["shell"]["credential_source"] == "Environment"
         assert entries["invalid"]["configured"] and not entries["invalid"]["valid"]
@@ -79,6 +83,9 @@ async def test_provider_readiness_and_credentials_are_separate_from_defaults(hom
             "chat_id": "c1", "model": "fixture", "effort": None,
         })
         assert saved.status_code == 200, saved.text
+        assert saved.json()["default_selection"] == {
+            "provider": "gateway", "model": "fixture-reasoning", "effort": "high"
+        }
         assert json.loads((home / "settings.json").read_text()) == configuration
         assert next(entry for entry in saved.json()["providers"] if entry["id"] == "invalid")["valid"]
         chat = (await client.get("/api/chats/c1/models")).json()

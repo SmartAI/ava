@@ -218,12 +218,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Persistent Ava backend")
     parser.add_argument(
         "action",
-        choices=("start", "connect", "serve", "status", "stop", "service-install", "service-status", "service-uninstall"),
+        choices=("start", "connect", "serve", "status", "stop", "service-install", "service-status", "service-uninstall", "service-restart"),
         nargs="?",
         default="start",
     )
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--no-project", action="store_true", help="Use existing projects without adding the working directory")
+    parser.add_argument("--machine-id", help="Refuse operations on a different Ava data store")
     parser.add_argument("--provider")
     parser.add_argument("--model")
     parser.add_argument("--effort")
@@ -241,10 +242,20 @@ def main() -> int:
     if args.action in ("start", "connect", "serve") and not args.no_project and not cwd.is_dir():
         parser.error("--project must name an existing directory")
     try:
+        if args.machine_id:
+            from ava.app.backend_state import read_endpoint
+            endpoint = read_endpoint(ava_home())
+            if endpoint is None or endpoint.get("machine_id") != args.machine_id:
+                raise AvaError(ErrorKind.invalid_argument, "Machine identity changed or cannot be verified.")
         if args.action.startswith("service-"):
             from ava.app.backend_service import install_service, service_status, uninstall_service
 
-            if args.action == "service-install":
+            if args.action == "service-restart":
+                with startup_lock(ava_home()):
+                    stop(ava_home(), force=args.force)
+                ensure_running(None)
+                result = service_status(ava_home())
+            elif args.action == "service-install":
                 result = install_service(ava_home(), force=args.force, defer_if_busy=args.defer_if_busy)
             elif args.action == "service-uninstall":
                 result = uninstall_service(ava_home(), force=args.force)

@@ -187,6 +187,8 @@ async def test_settings_route_saves_custom_provider_configuration(
 ):
     initial = (await client.get("/api/settings")).json()
     assert "model" not in initial and "effort" not in initial
+    assert initial["default_selection"] == {"provider": "anthropic", "model": "claude-sonnet-5", "effort": None}
+    assert [entry["id"] for entry in initial["providers"] if entry["is_default"]] == ["anthropic"]
     assert all(not entry["valid"] for entry in initial["providers"])
     assert {item["id"] for item in initial["built_in_providers"]} == {
         "anthropic",
@@ -214,6 +216,7 @@ async def test_settings_route_saves_custom_provider_configuration(
     assert entry["base_url"] == "https://gateway.example.com/v1"
     assert entry["status"] == "Not configured" and not entry["valid"]
     assert saved.json()["saved_provider"] == "company-gateway"
+    assert saved.json()["default_selection"] == {"provider": "anthropic", "model": "claude-sonnet-5", "effort": None}
     settings_text = (home / "settings.json").read_text()
     document = json.loads(settings_text)
     assert document["providers"]["company-gateway"] == {

@@ -50,7 +50,8 @@ NativeDialog {
                             implicitWidth: 6
                             implicitHeight: 6
                             radius: 3
-                            color: machine.modelData.online ? Theme.success : Theme.warning
+                            objectName: "backendStatus_" + machine.modelData.id
+                            color: machine.modelData.state === "online" ? Theme.success : machine.modelData.state === "offline" ? Theme.danger : Theme.warning
                         }
                         Label {
                             Layout.fillWidth: true
@@ -58,6 +59,15 @@ NativeDialog {
                             font.pixelSize: 13
                             font.weight: Font.Medium
                             elide: Text.ElideRight
+                        }
+                        NativeButton {
+                            objectName: "restartMachine_" + machine.modelData.id
+                            icon.source: "icons/reload.svg"
+                            text: machine.modelData.restarting ? "Restarting…" : "Restart"
+                            implicitHeight: 30
+                            enabled: !machine.modelData.busy
+                            tip: "Restart backend; active tasks must be stopped first"
+                            onClicked: dialog.backend.restartMachine(machine.modelData.id)
                         }
                         NativeButton {
                             objectName: "updateMachine_" + machine.modelData.id
@@ -83,6 +93,7 @@ NativeDialog {
                         NativeButton {
                             objectName: "removeMachine_" + machine.modelData.id
                             visible: !!machine.modelData.host
+                            enabled: !machine.modelData.restarting
                             icon.source: "icons/close.svg"
                             quiet: true
                             tip: "Remove connection; remote tasks keep running"
@@ -93,7 +104,7 @@ NativeDialog {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: (machine.modelData.host ? machine.modelData.host + " · " : "") + machine.modelData.status
+                        text: (machine.modelData.host ? "SSH · " + machine.modelData.host : "Local") + " · " + machine.modelData.status
                         font.pixelSize: 11
                         color: palette.placeholderText
                         elide: Text.ElideMiddle

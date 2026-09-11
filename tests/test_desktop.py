@@ -716,6 +716,26 @@ def test_desktop_background_startup_can_be_enabled_and_disabled(desktop, model_s
         uninstall_service(home, force=True)
 
 
+def test_desktop_backend_restart_protects_active_tasks(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    type_message(window, "Keep this task running")
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: any(row["body"] == "Hello " for row in controller._transcript.rows), controller.changed)
+    before = controller.runtime.info["instance_id"]
+    click(window, "machinesButton")
+    click(window, "restartMachine_local")
+    until(lambda: not controller.machines[0]["restarting"], controller.machinesChanged)
+    assert "Tasks are active" in controller.machines[0]["error"]
+    assert controller.runtime.info["instance_id"] == before
+    assert controller.online and controller.status == "running"
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+
+
 def test_desktop_controller_is_released_after_shutdown(qt_app, home, project):
     controller = Controller(project, [], QSettings(str(home / "lifetime.ini"), QSettings.Format.IniFormat))
     reference = weakref.ref(controller)
@@ -735,6 +755,17 @@ def test_desktop_machine_management_shows_local_connection(desktop):
     assert find_item(window, "machineHostField") is not None
     assert controller.machines[0]["name"] == ("This Mac" if sys.platform == "darwin" else "This computer")
     assert controller.machines[0]["online"]
+    assert controller.machines[0]["state"] == "online"
+    assert find_item(window, "backendIndicator_local") is not None
+    before = controller.runtime.info["instance_id"]
+    projects = [p["id"] for p in controller.projects]
+    click(window, "restartMachine_local")
+    assert controller.machines[0]["restarting"]
+    until(lambda: controller.runtime.info["instance_id"] != before and controller.online,
+          controller.changed, controller.machinesChanged, timeout=40_000)
+    until(lambda: [p["id"] for p in controller.projects] == projects, controller.changed)
+    assert controller.machines[0]["state"] == "online"
+    assert not controller.machines[0]["error"]
     save_screenshot(window, "machines-local")
     QTest.keyClick(window, Qt.Key.Key_Escape)
     window.setProperty("dark", True)
@@ -3879,6 +3910,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     assert find_item(window, "settingsModel") is None
     assert find_item(window, "settingsEffort") is None
     assert find_item(window, "applySettingsToChat") is None
+    assert find_item(window, "providerDefaultSummary").property("text") == "Saved default: desktop-test · fixture"
     url = find_item(window, "settingsBaseUrl")
     key = find_item(window, "settingsApiKey")
     original = (home / "settings.json").read_text()
