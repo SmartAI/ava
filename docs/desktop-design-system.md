@@ -80,6 +80,35 @@ use the existing Label rather than a new badge wrapper unless a badge is needed.
   and separators must also have zero layout height. Editable fields retain their full
   menu, selection, clipboard behavior, and focus restoration.
 
+## Streaming transcripts
+
+Keep Qt's native Markdown renderer, but apply paragraph styling synchronously when
+text changes, before the next ListView layout/paint. Qt's
+[`setMarkdown()`](https://doc.qt.io/qt-6/qtextdocument.html#setMarkdown) replaces the
+whole document; deferring our styling with
+[`Qt.callLater()`](https://doc.qt.io/qt-6/qml-qtqml-qt.html#callLater-method) can expose
+unstyled paragraph heights for a frame on every SSE update. Keep accumulating the
+Markdown source: [`TextEdit.append()`](https://doc.qt.io/qt-6/qml-qtquick-textedit.html#append-method)
+adds a paragraph, and parsing each arbitrary SSE fragment separately breaks syntax
+split across chunks (for example, bold delimiters or code fences).
+
+Qt documents that [variable-height ListView delegates](https://doc.qt.io/qt-6/qml-qtquick-listview.html#variable-delegate-size-and-section-labels)
+make its content-size estimate unstable. Follow the measured last row plus the
+running-status height, not the estimated footer position. Geometry callbacks must
+not re-enter layout with `forceLayout()`. Transcript delegates remain virtualized,
+but are not pooled: unloading their lazy content while pooled exposes zero/stale
+heights when reused. Scrolling up opts out of following; Jump to latest resumes it.
+
+The `switch_to_running_session` acceptance scenario replays durable mixed-height
+history through the real backend, switches via the sidebar, holds the provider open,
+then streams at 5/25 ms intervals. It checks per-frame tail/paragraph stability
+within one logical pixel, delegate identity, Markdown formatting, and reading
+position. The `jump_to_latest_renders_message_pixels` scenario drags back to the
+beginning, receives more output while the latest message is offscreen, then clicks
+the down arrow. It checks actual glyph pixels at the destination: `atYEnd` alone
+can briefly report success even when the message is outside the viewport. Run both
+scenarios on the native and offscreen renderers described below.
+
 ## Evaluation
 
 Use the current implementation as the baseline, with the deterministic acceptance

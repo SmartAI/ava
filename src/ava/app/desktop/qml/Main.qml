@@ -529,11 +529,10 @@ ApplicationWindow {
                         anchors.margins: 24
                         spacing: 22
                         clip: true
-                        // Delegates own lazy, variable-height Loaders. Reusing their shells
-                        // exposes stale/zero heights to ListView while the content is rebuilt.
-                        // Keep virtualization, but let offscreen delegates be destroyed.
+                        // Pooling unloads the variable-height Loaders, feeding zero/stale
+                        // heights back into ListView. Destroy offscreen delegates instead.
                         reuseItems: false
-                        // Follow the measured tail, not ListView's estimated contentHeight.
+                        // Follow the measured last row, not the estimated footer position.
                         currentIndex: follow ? count - 1 : -1
                         model: window.backend.transcript
                         footer: Item {
@@ -656,8 +655,6 @@ ApplicationWindow {
                             }
                         }
                         property bool follow: true
-                        // Geometry changes arrive during polish: follow in the same frame,
-                        // without forceLayout() re-entering the layout that emitted them.
                         function alignTail() {
                             if (!follow || !currentItem)
                                 return;
@@ -669,6 +666,8 @@ ApplicationWindow {
                             forceLayout();
                             alignTail();
                         }
+                        // Geometry changes during polish must align in the same frame,
+                        // without forceLayout() re-entering the layout that emitted them.
                         Connections {
                             target: conversation.currentItem
                             function onHeightChanged() { conversation.alignTail(); }

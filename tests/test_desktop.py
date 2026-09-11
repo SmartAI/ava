@@ -2139,13 +2139,14 @@ def save_screenshot(window, suffix):
     if QGuiApplication.focusWindow() != window:
         window.raise_()
         window.requestActivate()
+    assert QTest.qWaitForWindowExposed(window, 2000), "screenshot window was not exposed"
     # Deliver pending native resize events before waiting for the next rendered
     # frame. A frame already queued at the old size is not a layout checkpoint.
     QCoreApplication.processEvents()
     window.contentItem().ensurePolished()
     presented = QSignalSpy(window.frameSwapped)
     window.update()
-    assert presented.wait(2000), (
+    assert presented.count() or presented.wait(2000), (
         f"screenshot frame was not presented: exposed={window.isExposed()}, "
         f"active={window.isActive()}, app={QGuiApplication.applicationState()}"
     )
@@ -3990,27 +3991,58 @@ def test_desktop_activity_is_lazy_and_preserves_reading_position(desktop, model_
     save_screenshot(window, "activity")
 
 
-@pytest.mark.parametrize("interval", [5, 25])
-def test_desktop_sse_frames_keep_markdown_and_reading_position_stable(
-    desktop, model_server, home, interval
-):
-    # Exercise provider HTTP -> durable events -> Qt SSE -> the actual QML window.
-    # Inspect rendered frames, not just the position after the stream has stopped.
+@pytest.fixture
+def streaming_history(home, project, model_server):
+    """Replay realistic mixed-height history before driving the local SSE provider."""
+    from ava.llm.types import Item, Role, make_reasoning_block, make_text_block
+    from ava.session import (
+        AssistantMessage,
+        Log,
+        StepEnd,
+        StepEndReason,
+        StepStart,
+        TurnEnd,
+        TurnEndReason,
+        TurnStart,
+        UserMessage,
+    )
+
+    # Durable mixed-height history must be replayed through the real backend/SSE,
+    # not injected into the view model after switching sessions.
     settings_path = home / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["model"] = "fixture-stream"
+    settings["providers"]["desktop-test"]["models"]["fixture-stream"] = {"context_window": 200000}
     settings_path.write_text(json.dumps(settings))
+    log = Log.create_default(project, "desktop-test", "fixture-stream")
+    try:
+        for index in range(12):
+            body = "## Completed work\n\n" + "Completed 中文段落。\n\n" * (70 if index in (0, 11) else index % 3 + 1)
+            log.append_batch([
+                TurnStart(index + 1), StepStart(index + 1, 1),
+                UserMessage(Item(role=Role.user, blocks=[make_text_block(f"Check step {index}")])),
+                AssistantMessage(str(index), Item(role=Role.assistant, blocks=[
+                    make_text_block(body),
+                    *[make_reasoning_block("{}", "Checked the configuration") for _ in range(3)],
+                ])),
+                StepEnd(index + 1, 1, StepEndReason.completed),
+                TurnEnd(index + 1, TurnEndReason.completed),
+            ])
+    finally:
+        log.close()
+
+
+@pytest.mark.usefixtures("streaming_history")
+@pytest.mark.parametrize("interval", [5, 25])
+def test_desktop_switch_to_running_session_keeps_rendered_frames_stable(
+    desktop, model_server, interval
+):
     controller, window = desktop
     controller.start()
-    until(lambda: bool(controller.projects), controller.changed)
-    controller.newChat()
-    until(lambda: controller.connected, controller.changed)
-    model = controller.transcript
-    view = find_item(window, "transcriptView")
-    for index in range(12):
-        model.append("assistant", "Ava", "## History\n\n" + "Completed 中文段落。\n\n" * (70 if index == 0 else 1))
-    type_message(window, "Stream a long response")
-    QTest.keyClick(window, Qt.Key.Key_Return)
+    until(lambda: controller.connected and bool(controller.transcript.rows), controller.changed)
+    identity = controller.chatId
+    type_message(window, "Check the existing MCP configuration")
+    click(window, "sendButton")
     until(lambda: bool(model_server), controller.changed)
     exchange = model_server[0]
     prefix = (
@@ -4021,37 +4053,64 @@ def test_desktop_sse_frames_keep_markdown_and_reading_position_stable(
         + "已经完成的段落，不应在后续输出时重新改变行高。\n\n" * 20
         + "Frozen anchor\n\n"
     )
-    exchange.chunks.put(prefix)
+    model = controller.transcript
+
+    # The reported gesture: leave a running session and click it in the sidebar.
+    click(window, "newChatButton")
+    until(lambda: controller.connected and controller.chatId != identity, controller.changed)
+    click(window, "session_" + identity)
     until(
-        lambda: model.rows[-1]["body"] == prefix and view.property("atYEnd")
-        and (item := find_item(window, "assistantMarkdown")) is not None
-        and "Frozen anchor" in item.property("text"),
-        window.frameSwapped,
+        lambda: controller.connected and controller.chatId == identity
+        and bool(model.rows) and model.rows[-1]["body"] == "Check the existing MCP configuration",
+        controller.changed,
     )
+    assert controller.status == "running"
+    view = find_item(window, "transcriptView")
+    QTest.qWait(150)
+    frames = []
+
+    def record():
+        tail = view.property("currentItem")
+        if tail is None:
+            frames.append((float("inf"), 0, 0))
+            return
+        bottom = tail.mapToScene(QPointF(0, tail.height())).y()
+        viewport_bottom = view.mapToScene(QPointF(0, view.height())).y()
+        frames.append((
+            bottom + find_item(window, "runStatus").height() - viewport_bottom,
+            bottom - tail.height(), getCppPointer(tail)[0],
+        ))
+
+    window.frameSwapped.connect(record)
+    try:
+        # Hold the provider open without tokens: layout must converge, not oscillate.
+        QTest.qWait(800)
+    finally:
+        window.frameSwapped.disconnect(record)
+    assert len(frames) >= 10
+    assert max(abs(frame[0]) for frame in frames) <= 1, frames
+    assert max(frame[1] for frame in frames) - min(frame[1] for frame in frames) <= 1, frames
+    assert len({frame[2] for frame in frames}) == 1
+
+    exchange.chunks.put(prefix)
+    until(lambda: model.rows[-1]["body"] == prefix, controller.changed)
+    QTest.qWait(150)
     output = find_item(window, "assistantMarkdown")
     quick_document = output.property("textDocument")
     document = quick_document.textDocument()
     assert document.begin().blockFormat().headingLevel() == 2
     assert document.find("粗体").charFormat().fontWeight() >= 600
     assert any(isinstance(frame, QTextTable) for frame in document.rootFrame().childFrames())
-    QTest.qWait(80)
     anchor_y = document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y()
-    tail = view.property("currentItem")
-    tail_id = getCppPointer(tail)[0]
+    anchors = []
     resets = QSignalSpy(model.modelReset)
     insertions = QSignalSpy(model.rowsInserted)
-    frames = []
+    tail_id = getCppPointer(view.property("currentItem"))[0]
+    frames.clear()
 
-    def record():
-        current = view.property("currentItem")
-        if current is None or not isValid(output):
-            frames.append((float("inf"), 0, 0, 0))
-            return
-        bottom = current.mapToScene(QPointF(0, current.height())).y()
-        footer = find_item(window, "runStatus")
-        viewport_bottom = view.mapToScene(QPointF(0, view.height())).y()
-        anchor = document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y()
-        frames.append((bottom + footer.height() - viewport_bottom, anchor, getCppPointer(current)[0], bottom - current.height()))
+    def record_stream():
+        record()
+        anchors.append(document.documentLayout().blockBoundingRect(document.find("Frozen anchor").block()).y())
 
     suffix = "".join(f"新内容 {index}：持续输出时保持视口稳定。\n\n" for index in range(45))
     chunks = iter(suffix[index:index + 18] for index in range(0, len(suffix), 18))
@@ -4066,29 +4125,31 @@ def test_desktop_sse_frames_keep_markdown_and_reading_position_stable(
             exchange.chunks.put(chunk)
 
     timer.timeout.connect(emit_chunk)
-    window.frameSwapped.connect(record)
+    window.frameSwapped.connect(record_stream)
     timer.start()
     try:
-        until(lambda: model.rows[-1]["body"] == prefix + suffix and not timer.isActive(), window.frameSwapped, timeout=10000)
+        until(lambda: model.rows[-1]["body"] == prefix + suffix and not timer.isActive(), window.frameSwapped)
         QTest.qWait(80)
     finally:
         timer.stop()
-        window.frameSwapped.disconnect(record)
+        window.frameSwapped.disconnect(record_stream)
     assert len(frames) >= 10
     assert max(abs(frame[0]) for frame in frames) <= 1, frames
-    assert max(abs(frame[1] - anchor_y) for frame in frames) <= 1, frames
+    assert max(abs(anchor - anchor_y) for anchor in anchors) <= 1, anchors
     assert {frame[2] for frame in frames} == {tail_id}, "Streaming must not rebuild the active delegate"
-    assert all(b[3] <= a[3] + 1 for a, b in zip(frames, frames[1:], strict=False)), "Append-only output must not bounce backwards"
+    assert all(b[1] <= a[1] + 1 for a, b in zip(frames, frames[1:], strict=False)), frames
     assert not resets.count() and not insertions.count()
 
-    # Wheel input opts out. More network chunks must leave the visible text alone.
+    # Reading older output must still opt out of following; jumping resumes it.
     position = view.mapToScene(QPointF(view.width() / 2, view.height() / 2))
     QTest.wheelEvent(window, position, QPoint(0, 1200))
     until(lambda: not view.property("moving"), view.movingChanged)
     assert not view.property("follow")
     reading_y = view.property("contentY")
-    extra = "后续输出，不打断阅读。\n\n" * 15
-    exchange.chunks.put(extra)
+    extra = "后续输出，不打断阅读。\n\n" * 15 + "**Split bold**\n\n```python\nprint('SSE')\n```\n"
+    # Transport fragments can split Markdown delimiters; they are not paragraphs.
+    for start in range(0, len(extra), 3):
+        exchange.chunks.put(extra[start:start + 3])
     exchange.chunks.put(None)
     until(lambda: controller.status == "idle", controller.changed)
     QTest.qWait(80)
@@ -4097,7 +4158,82 @@ def test_desktop_sse_frames_keep_markdown_and_reading_position_stable(
     click(window, "jumpToLatest")
     until(lambda: view.property("atYEnd"), window.frameSwapped)
     assert view.property("follow")
-    save_screenshot(window, f"stable-sse-{interval}ms")
+    output = find_item(window, "assistantMarkdown")
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert document.find("Split bold").charFormat().fontWeight() >= 600
+    assert "```" not in document.toPlainText()
+    save_screenshot(window, f"stable-session-switch-{interval}ms")
+
+
+@pytest.mark.usefixtures("streaming_history")
+@pytest.mark.parametrize("paragraphs", [60, 600])
+def test_desktop_jump_to_latest_renders_message_pixels(desktop, model_server, paragraphs):
+    controller, window = desktop
+    window.setProperty("dark", False)
+    controller.start()
+    until(lambda: controller.connected and bool(controller.transcript.rows), controller.changed)
+    type_message(window, "Show the latest message")
+    click(window, "sendButton")
+    until(lambda: bool(model_server), controller.changed)
+    body = "## A long response\n\n" + "Completed paragraph with readable content.\n\n" * paragraphs + "LATEST MESSAGE VISIBLE"
+    model_server[0].chunks.put(body)
+    until(lambda: bool(controller.transcript.rows) and controller.transcript.rows[-1]["body"] == body, controller.changed)
+    view = find_item(window, "transcriptView")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    QTest.qWait(150)
+
+    def latest_pixels():
+        output = find_item(window, "assistantMarkdown")
+        assert output is not None and output.isVisible()
+        quick_document = output.property("textDocument")
+        document = quick_document.textDocument()
+        marker = document.find("LATEST MESSAGE VISIBLE")
+        assert not marker.isNull()
+        rect = output.mapRectToScene(document.documentLayout().blockBoundingRect(document.lastBlock()))
+        assert visible_rect(window, view).contains(rect.center()), (
+            rect, view.property("contentY"), view.property("originY"),
+            view.property("contentHeight"), view.property("atYEnd"),
+        )
+        frame = window.grabWindow()
+        scale = frame.width() / window.width()
+        region = frame.copy(int(rect.x() * scale), int(rect.y() * scale),
+                            int(min(rect.width(), 300) * scale), int(rect.height() * scale))
+        ink = sum(region.pixelColor(x, y).lightnessF() < 0.45
+                  for y in range(region.height()) for x in range(region.width()))
+        assert ink > 50, f"Latest-message geometry is visible, but its glyphs are missing ({ink} ink pixels)"
+        return ink
+
+    before = latest_pixels()
+    original_tail = view.property("currentItem")
+    # Drag to the beginning so the latest delegate leaves the viewport/cache,
+    # unlike a short wheel scroll within the same long Markdown message.
+    scrollbar = next(item for item in view.childItems() if item.inherits("QQuickScrollBar"))
+    thumb = scrollbar.property("contentItem")
+    start = thumb.mapToScene(QPointF(thumb.width() / 2, thumb.height() / 2)).toPoint()
+    end = scrollbar.mapToScene(QPointF(scrollbar.width() / 2, 2)).toPoint()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(window, end, 20)
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=end)
+    until(lambda: not view.property("moving"), view.movingChanged)
+    assert not view.property("follow")
+    assert find_item(window, "jumpToLatest").isVisible()
+    QTest.qWait(150)
+    assert view.property("atYBeginning")
+    assert not isValid(original_tail) or visible_rect(window, original_tail).isEmpty()
+    reading_y = view.property("contentY")
+    extra = "\n\n" + "New output while reading older messages.\n\n" * 200 + "LATEST MESSAGE VISIBLE"
+    model_server[0].chunks.put(extra)
+    until(lambda: controller.transcript.rows[-1]["body"] == body + extra, controller.changed)
+    QTest.qWait(150)
+    assert abs(view.property("contentY") - reading_y) <= 1
+    click(window, "jumpToLatest")
+    until(lambda: view.property("atYEnd"), window.frameSwapped)
+    QTest.qWait(150)
+    assert view.property("follow")
+    after = latest_pixels()
+    assert abs(after - before) <= before * 0.1, (before, after)
+    save_screenshot(window, f"jump-latest-{paragraphs}")
 
 
 def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server):

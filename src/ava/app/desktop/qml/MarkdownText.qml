@@ -28,8 +28,8 @@ TextArea {
         decorations = backend.formatMarkdown(textDocument, linkColor, codeBackground, codeFont);
         formatting = false;
     }
-    // Apply paragraph metrics before ListView can lay out the new text. Deferring
-    // this exposes the unstyled height for a frame, then scrolls back after styling.
+    // Style before ListView measures this update, not a frame later: otherwise
+    // every streamed chunk briefly restores Qt's unstyled paragraph heights.
     onTextChanged: formatDocument()
     onTextFormatChanged: {
         decorations = [];
