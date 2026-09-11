@@ -4147,6 +4147,36 @@ def test_desktop_variable_message_heights_settle_at_latest(desktop, model_server
     save_screenshot(window, "stable-variable-history")
 
 
+def test_desktop_default_selection_applies_only_to_new_sessions(desktop, model_server, home):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    original = dict(controller.selection)
+    click(window, "settingsButton")
+    click(window, "settingsProvidersTab")
+    dialog = window.findChild(QObject, "settingsDialog")
+    until(lambda: dialog.property("ready"), controller.providerSettingsChanged)
+    assert find_item(window, "settingsDefaultProvider").property("currentValue") == "desktop-test"
+    click(window, "settingsDefaultModel")
+    QTest.keyClick(window, Qt.Key.Key_End)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert find_item(window, "settingsDefaultModel").property("currentValue") == "fixture-reasoning"
+    click(window, "saveDefaultSelection")
+    until(lambda: bool(controller.providerSettingsState["notice"]), controller.providerSettingsChanged)
+    assert controller.providerSettingsState["error"] == ""
+    assert json.loads((home / "settings.json").read_text())["model"] == "fixture-reasoning"
+    assert dict(controller.selection) == original
+    click(window, "closeSettingsButton")
+    click(window, "settingsButton")
+    until(lambda: dialog.property("ready"), controller.providerSettingsChanged)
+    assert find_item(window, "settingsDefaultModel").property("currentValue") == "fixture-reasoning"
+    click(window, "closeSettingsButton")
+    start_chat(window)
+    until(lambda: controller.selection.get("model") == "fixture-reasoning", controller.changed)
+
+
 def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_server, home):
     controller, window = desktop
     controller.start()
@@ -4171,6 +4201,9 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     assert find_item(window, "settingsProviderName").property("text") == "desktop-test"
     save_screenshot(window, "provider-settings")
     key.setProperty("text", "desktop-test-new-key")
+    scroll = find_item(window, "settingsProviderScroll")
+    scroll.setProperty("contentY", scroll.property("contentHeight") - scroll.height())
+    QTest.qWait(30)
     key.forceActiveFocus()
     QTest.keySequence(window, QKeySequence(QKeySequence.StandardKey.SelectAll))
     QGuiApplication.clipboard().setText("clipboard remains private")
@@ -4234,6 +4267,7 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     key.setProperty("text", "second-test-key")
 
     def reveal(name):
+        QTest.qWait(30)
         item = find_item(window, name)
         scroll = find_item(window, "settingsProviderScroll")
         offset = item.mapToItem(scroll, QPointF(0, 0)).y()
