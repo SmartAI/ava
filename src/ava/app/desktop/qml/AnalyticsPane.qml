@@ -75,7 +75,7 @@ Pane {
         contentItem: ColumnLayout {
             spacing: Theme.spaceSm
             Label { text: card.title; color: Theme.secondaryText; font.pixelSize: Theme.caption }
-            Label { text: card.value; color: Theme.text; font.pixelSize: 28; font.weight: Font.DemiBold }
+            Label { Layout.fillWidth: true; text: card.value; color: Theme.text; font.pixelSize: 28; font.weight: Font.DemiBold; fontSizeMode: Text.HorizontalFit; minimumPixelSize: Theme.body }
             Label {
                 Layout.fillWidth: true
                 text: pane.report.reports ? card.detail : pane.analytics.loading ? "Loading statistics…" : "No available statistics"
@@ -253,7 +253,7 @@ Pane {
                     uniformCellWidths: true
                     columnSpacing: Theme.spaceMd
                     rowSpacing: Theme.spaceMd
-                    Card { objectName: "analyticsTokens"; Layout.fillWidth: true; Layout.fillHeight: true; title: "Total tokens"; value: pane.report.reports ? pane.compact(pane.report.totals.tokens) : "—"; detail: pane.number(pane.report.totals.responses) + " model requests" }
+                    Card { objectName: "analyticsTokens"; Layout.fillWidth: true; Layout.fillHeight: true; title: "Total tokens"; value: pane.report.reports ? pane.number(pane.report.totals.tokens) : "—"; detail: pane.number(pane.report.totals.responses) + " model requests" }
                     Card { objectName: "analyticsTime"; Layout.fillWidth: true; Layout.fillHeight: true; title: "Active time"; value: pane.report.reports ? pane.duration(pane.report.totals.active_ms) : "—"; detail: "Overlapping sessions counted once" }
                     Card { Layout.fillWidth: true; Layout.fillHeight: true; title: "Tool calls"; value: pane.report.reports ? pane.compact(pane.report.totals.tools) : "—"; detail: pane.number(pane.report.totals.tool_errors) + " returned errors" }
                     Card { Layout.fillWidth: true; Layout.fillHeight: true; title: "Skills loaded"; value: pane.report.reports ? pane.number(pane.report.totals.skills) : "—"; detail: "Recorded instruction loads" }
@@ -409,7 +409,7 @@ Pane {
                         contentItem: ColumnLayout {
                             spacing: Theme.spaceLg
                             Label { text: "Token breakdown"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
-                            Label { text: "How reported tokens are used"; color: Theme.secondaryText; font.pixelSize: Theme.caption }
+                            Label { text: "Exact reported counts · sum to total tokens"; color: Theme.secondaryText; font.pixelSize: Theme.caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             Row {
                                 id: tokenStack
                                 Layout.fillWidth: true
@@ -432,6 +432,7 @@ Pane {
                                     id: token
                                     required property var modelData
                                     required property int index
+                                    readonly property bool unreported: modelData.key === "cache_write" && pane.report.totals.responses > 0 && !pane.report.totals.cache_write_reports && !pane.report.totals.cache_write
                                     Layout.fillWidth: true
                                     spacing: Theme.spaceXs
                                     RowLayout {
@@ -439,12 +440,12 @@ Pane {
                                         spacing: Theme.spaceSm
                                         Rectangle { implicitWidth: 8; implicitHeight: 8; radius: 2; color: pane.colors[token.index] }
                                         Label { Layout.fillWidth: true; text: token.modelData.name; font.pixelSize: Theme.body }
-                                        Label { text: pane.report.reports ? pane.compact(pane.report.totals[token.modelData.key]) : "—"; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
-                                        Label { text: pane.report.reports ? pane.percentage(pane.report.totals[token.modelData.key], pane.report.totals.tokens) : "—"; Layout.preferredWidth: 36; horizontalAlignment: Text.AlignRight; font.pixelSize: Theme.caption; color: Theme.secondaryText }
+                                        Label { objectName: "analyticsTokenValue_" + token.modelData.key; text: pane.report.reports && !token.unreported ? pane.number(pane.report.totals[token.modelData.key]) : "—"; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                        Label { text: pane.report.reports && !token.unreported ? pane.percentage(pane.report.totals[token.modelData.key], pane.report.totals.tokens) : "—"; Layout.preferredWidth: 36; horizontalAlignment: Text.AlignRight; font.pixelSize: Theme.caption; color: Theme.secondaryText }
                                     }
-                                    Label { text: token.modelData.detail; leftPadding: 16; color: Theme.secondaryText; font.pixelSize: Theme.captionSmall }
+                                    Label { text: token.unreported ? "Not reported by these providers" : token.modelData.key === "cache_write" && pane.report.totals.cache_write_reports > 0 ? "Reported on " + pane.number(pane.report.totals.cache_write_reports) + " of " + pane.number(pane.report.totals.responses) + " requests" : token.modelData.detail; Layout.fillWidth: true; wrapMode: Text.WordWrap; leftPadding: 16; color: Theme.secondaryText; font.pixelSize: Theme.captionSmall }
                                     HoverHandler { id: tokenHover }
-                                    NativeToolTip { visible: tokenHover.hovered && pane.report.reports > 0; text: pane.number(pane.report.totals[token.modelData.key]) + " " + token.modelData.name.toLowerCase() + " tokens" }
+                                    NativeToolTip { visible: tokenHover.hovered && pane.report.reports > 0 && !token.unreported; text: pane.number(pane.report.totals[token.modelData.key]) + " " + token.modelData.name.toLowerCase() + " tokens" }
                                 }
                             }
                             Item { Layout.fillHeight: true }

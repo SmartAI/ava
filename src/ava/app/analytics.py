@@ -30,7 +30,7 @@ def merge_intervals(intervals: list) -> list[list[int]]:
 
 
 def totals(days: list[dict]) -> dict:
-    names = (*TOKEN_FIELDS, "responses", "missing_usage", "tools", "tool_errors", "skills", "runs", "run_ms", "active_ms")
+    names = (*TOKEN_FIELDS, "cache_write_reports", "responses", "missing_usage", "tools", "tool_errors", "skills", "runs", "run_ms", "active_ms")
     result = {name: sum(day.get(name, 0) for day in days) for name in names}
     result["tokens"] = sum(result[key] for key in TOKEN_FIELDS if key != "reasoning")
     return result
@@ -45,7 +45,8 @@ class AnalyticsIndex:
         os.chmod(path, 0o600)
         self.db.row_factory = sqlite3.Row
         try:
-            if self.db.execute("PRAGMA user_version").fetchone()[0] not in (0, 1):
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, 1, 2):
                 raise sqlite3.DatabaseError("Analytics cache uses a different aggregation version.")
             self.db.executescript("""
             PRAGMA journal_mode=WAL;
@@ -78,8 +79,13 @@ class AnalyticsIndex:
             CREATE TABLE IF NOT EXISTS days (
                 zone TEXT, project TEXT, day TEXT, start INTEGER, end INTEGER, body TEXT,
                 PRIMARY KEY(zone,project,day));
-            PRAGMA user_version=1;
             """)
+            with self.db:
+                if version < 2:
+                    # Facts retain the original disjoint token categories. Only
+                    # derived days need rebuilding for inclusive output/reporting.
+                    self.db.execute("DELETE FROM days")
+                self.db.execute("PRAGMA user_version=2")
         except sqlite3.DatabaseError:
             self.db.close()
             raise
@@ -222,10 +228,15 @@ class AnalyticsIndex:
         end = int(datetime.combine(day + timedelta(days=1), datetime.min.time(), zone).timestamp() * 1000)
         where = "logs.visible=1 AND logs.error=''" + (" AND logs.project=?" if project else "")
         params = (project,) if project else ()
-        usage = self.db.execute(f"""SELECT COUNT(*) responses, SUM(input IS NULL OR output IS NULL) missing_usage,
+        usage = self.db.execute(f"""SELECT COUNT(*) responses, COUNT(cache_write) cache_write_reports,
+            SUM(input IS NULL OR output IS NULL) missing_usage,
             {','.join('SUM('+key+') '+key for key in TOKEN_FIELDS)} FROM attempts JOIN logs USING(path)
             WHERE {where} AND at>=? AND at<?""", (*params, start, end)).fetchone()
         body: dict[str, Any] = {key: usage[key] or 0 for key in usage.keys()}
+        # OpenAI-compatible and Codex logs split reasoning from output; Anthropic
+        # leaves it included in output and does not emit a separate reasoning count.
+        # Reports use inclusive output so the four displayed categories add up.
+        body["output"] += body["reasoning"]
         tools = self.db.execute(f"""SELECT name,COUNT(*) count,SUM(failed) errors,SUM(elapsed) elapsed_ms FROM calls JOIN logs USING(path)
             WHERE {where} AND finished=1 AND at>=? AND at<? GROUP BY name""", (*params, start, end)).fetchall()
         skills = self.db.execute(f"""SELECT name,COUNT(*) count FROM skills JOIN logs USING(path)
@@ -262,7 +273,7 @@ class AnalyticsIndex:
             day["run_ms"] += sum(b-a for a, b in live)
         condition = "visible=1" + (" AND project=?" if project else "")
         rows = self.db.execute(f"SELECT error,size,offset FROM logs WHERE {condition}", (project,) if project else ()).fetchall()
-        return {"days": days, "totals": totals(days), "timezone": timezone, "as_of": now.isoformat(),
+        return {"token_accounting_version": 2, "days": days, "totals": totals(days), "timezone": timezone, "as_of": now.isoformat(),
                 "indexing": any(r["size"] == -1 for r in rows) or any(path not in self.checked for path in self.sources),
                 "sessions": len(rows), "unavailable": sum(bool(r["error"]) for r in rows),
                 "incomplete": sum(r["size"] > r["offset"] for r in rows), "active_sessions": len(active)}

@@ -348,7 +348,7 @@ def model_server(home, monkeypatch):
                     chunk({"content": "世界"})
                     chunk({}, "stop")
                     if request.get("model") == "fixture-analytics":
-                        self.wfile.write(b'data: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":200}}}\n\n')
+                        self.wfile.write(b'data: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":200},"completion_tokens_details":{"reasoning_tokens":30}}}\n\n')
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
@@ -6890,7 +6890,17 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
     assert first_ms < 500 and gap < 150, (first_ms, gap)
     assert analytics.data['totals']['active_ms'] == 14*60000
     assert len(analytics.data['days']) == 7
-    assert find_item(window, 'analyticsTokens').property('value') == '349.6k'
+    def displayed_tokens(text):
+        return int(''.join(character for character in text if character.isdecimal()))
+
+    def assert_displayed_token_sum():
+        values = [find_item(window, 'analyticsTokenValue_' + key).property('text')
+                  for key in ('input', 'cached_read', 'cache_write', 'output')]
+        assert sum(displayed_tokens(value) for value in values) == displayed_tokens(
+            find_item(window, 'analyticsTokens').property('value'))
+
+    assert displayed_tokens(find_item(window, 'analyticsTokens').property('value')) == 349650
+    assert_displayed_token_sum()
     save_screenshot(window, 'analytics-week')
     assert find_item(window, 'pageHeader').property('title') == 'Session information'
     assert find_item(window, 'analytics7d').property('checked')
@@ -6932,6 +6942,7 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
     click(window, 'analytics30d')
     until(lambda: len(analytics.data['days']) == 30, analytics.changed)
     assert analytics.data['totals']['tokens'] == 860250
+    assert_displayed_token_sum()
     assert find_item(window, 'analytics30d').property('checked')
     assert not find_item(window, 'analytics7d').property('checked')
     switch_ms = (time.perf_counter()-started)*1000
@@ -6984,6 +6995,45 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
     assert analytics.data['totals']['tools'] == 1
     assert analytics.data['skills'][0]['name'] == 'review'
     assert analytics.data['totals']['missing_usage'] == 1
+    assert analytics.data['totals']['reasoning'] == 30
+    assert_displayed_token_sum()
+
+    # An older remote backend sends exclusive output. Normalize exactly once,
+    # without modifying its cached report on repeated assembly.
+    from copy import deepcopy
+
+    saved_cache = deepcopy(analytics._cache)
+    expected_totals = dict(analytics.data['totals'])
+    for report in analytics._cache.values():
+        report.pop('token_accounting_version', None)
+        for day in report['days']:
+            day['output'] -= day['reasoning']
+            day['tokens'] -= day['reasoning']
+            day.pop('cache_write_reports', None)
+    analytics._assemble()
+    assert analytics.data['totals']['tokens'] == expected_totals['tokens']
+    assert analytics.data['totals']['output'] == expected_totals['output']
+    assert 'Update the Ava backend' in analytics.data['notice']
+    analytics._assemble()
+    assert analytics.data['totals']['tokens'] == expected_totals['tokens']
+    assert_displayed_token_sum()
+
+    analytics._cache = deepcopy(saved_cache)
+    for report in analytics._cache.values():
+        for day in report['days']:
+            day['tokens'] -= day['cache_write']
+            day['cache_write'] = day['cache_write_reports'] = 0
+    analytics._assemble()
+    assert find_item(window, 'analyticsTokenValue_cache_write').property('text') == '—'
+    # A provider explicitly reporting zero is a different measurement.
+    for report in analytics._cache.values():
+        for day in report['days']:
+            day['cache_write_reports'] = day['responses']
+    analytics._assemble()
+    assert find_item(window, 'analyticsTokenValue_cache_write').property('text') == '0'
+    assert_displayed_token_sum()
+    analytics._cache = saved_cache
+    analytics._assemble()
     save_screenshot(window, 'analytics-live')
     for kind in ('tools', 'skills'):
         entry = find_item(window, f'analyticsRank_{kind}_0')
