@@ -115,21 +115,28 @@ Pane {
             }
             Label { Layout.fillWidth: true; visible: !!pane.fileState.notice; text: pane.fileState.notice || ""; wrapMode: Text.Wrap; font.pixelSize: 12; color: palette.placeholderText }
             ScrollView {
+                id: markdownScroll
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: pane.fileState.kind === "markdown" && (pane.fileState.text || "").length < 64000
                 clip: true
-                MarkdownText {
-                    objectName: "filePreview"
-                    backend: pane.backend
-                    codeFont: pane.codeFont
-                    text: pane.fileState.kind === "markdown" && (pane.fileState.text || "").length < 64000 ? pane.fileState.text : ""
-                    textFormat: TextEdit.MarkdownText
-                    font.pixelSize: 14
-                    readOnly: true
-                    selectByMouse: true
-                    wrapMode: TextEdit.Wrap
-                    onLinkActivated: function(link) { pane.backend.openLink(link) }
+                contentWidth: availableWidth
+                Loader {
+                    width: markdownScroll.availableWidth
+                    active: markdownScroll.visible
+                    asynchronous: true
+                    sourceComponent: MarkdownText {
+                        objectName: "filePreview"
+                        backend: pane.backend
+                        codeFont: pane.codeFont
+                        text: pane.fileState.kind === "markdown" ? pane.fileState.text || "" : ""
+                        textFormat: TextEdit.MarkdownText
+                        font.pixelSize: 14
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.Wrap
+                        onLinkActivated: function(link) { pane.backend.openLink(link) }
+                    }
                 }
             }
             CodePreview {
@@ -194,7 +201,7 @@ Pane {
                 }
             }
             Item { Layout.fillWidth: true; Layout.fillHeight: true; visible: !pane.fileState.kind || pane.fileState.kind === "unsupported" || pane.fileState.kind === "directory" || pane.fileState.kind === "loading"; Label { anchors.centerIn: parent; width: Math.max(0, parent.width - 20); text: pane.fileState.kind === "loading" ? "" : "Choose a file to preview"; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; font.pixelSize: 12; color: palette.placeholderText } }
-            NativeButton { objectName: "attachPreviewButton"; Layout.alignment: Qt.AlignRight; visible: ["text", "markdown", "html", "image"].includes(pane.fileState.kind); enabled: !!pane.backend && !!pane.backend.chatId; icon.source: "icons/plus.svg"; text: "Add to message"; onClicked: pane.backend.addPreviewAttachment(pane.fileState.attachmentPath || pane.fileState.path, pane.fileState.name) }
+            NativeButton { objectName: "attachPreviewButton"; Layout.alignment: Qt.AlignRight; visible: ["text", "markdown", "html", "image", "pdf"].includes(pane.fileState.kind); enabled: !!pane.backend && !!pane.backend.chatId; icon.source: "icons/plus.svg"; text: "Add to message"; onClicked: pane.backend.addPreviewAttachment(pane.fileState.attachmentPath || pane.fileState.path, pane.fileState.name) }
         }
     }
 }

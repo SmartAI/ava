@@ -58,9 +58,10 @@ test('attachment-only messages have a useful preview and remain revisable', () =
     blocks: [
       { kind: 'image', display_path: 'screen.png' },
       { kind: 'file_text', display_path: 'notes.txt' },
+      { kind: 'pdf', display_path: 'report.pdf' },
     ],
   }
-  assert.equal(pendingPreview(queued), 'screen.png, notes.txt')
+  assert.equal(pendingPreview(queued), 'screen.png, notes.txt, report.pdf')
   assert.equal(pendingText(queued), '')
-  assert.equal(pendingAttachments(queued).length, 2)
+  assert.equal(pendingAttachments(queued).length, 3)
 })

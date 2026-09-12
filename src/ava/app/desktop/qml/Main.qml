@@ -65,6 +65,7 @@ ApplicationWindow {
     }
     QuickChat {
         id: quickChat
+        quitting: window.closing
         appPalette: window.palette
         backend: window.backend
         codeFont: window.codeFont
@@ -248,7 +249,7 @@ ApplicationWindow {
     FileDialog {
         id: fileDialog
         objectName: "attachmentDialog"
-        title: "Add files or images"
+        title: "Add files, images, or PDFs"
         fileMode: FileDialog.OpenFiles
         onAccepted: window.backend.addAttachments(selectedFiles.map(url => url.toString()))
     }

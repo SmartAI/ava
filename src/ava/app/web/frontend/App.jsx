@@ -595,7 +595,6 @@ export default function App() {
           rows: [...report.sections].sort((a, b) => b.tokens - a.tokens).map(section => ({
             label: `${section.label} - ${tokens(section.tokens)} tokens · ${share(section.tokens)}`,
             detail: `${section.count} item${section.count === 1 ? '' : 's'} · ${formatBytes(section.bytes)}${section.kind === 'attachment_images' ? ' · images are priced at a fixed 1,200 tokens each' : ''}`,
-            run: () => {},
           })),
         })
       } else if (name === 'skills') {
@@ -604,7 +603,7 @@ export default function App() {
         showModal({
           title: 'Skills',
           note: skills.length ? 'The model reads a skill only when it decides it is relevant.' : 'No skills found in .agents/skills or ~/.codex/skills.',
-          rows: skills.map(skill => ({ label: `${skill.name} [${skill.scope}]`, detail: `${skill.description} - ${skill.path}`, run: () => {} })),
+          rows: skills.map(skill => ({ label: `${skill.name} [${skill.scope}]`, detail: `${skill.description} - ${skill.path}` })),
         })
       } else if (name === 'login') {
         const provider = argument || modelSelectionRef.current?.provider || ''

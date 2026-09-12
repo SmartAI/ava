@@ -277,16 +277,24 @@ async def test_cancelled_file_tool_does_not_execute(project: Path, factory):
 
 
 @pytest.mark.parametrize("active", [False, True])
-async def test_bash_waits_for_process_exit_then_output_idle(project: Path, active: bool):
+async def test_bash_waits_for_process_exit_then_output_idle(
+    project: Path, active: bool, monkeypatch: pytest.MonkeyPatch
+):
+    # macOS can coalesce a background child's 40 ms sleeps beyond the production
+    # 100 ms idle grace. Keep this real-process test's scheduling margin generous;
+    # the stream still outlasts the grace, so every chunk must reset the timer.
+    import importlib
+
+    monkeypatch.setattr(importlib.import_module("ava.proc.run"), "EXIT_STDIO_GRACE_SECONDS", 0.5)
     child = (
-        "import time; [(print('tick',flush=True),time.sleep(.04)) for _ in range(8)]; "
-        "print('FINAL',flush=True); time.sleep(2)"
+        "import time; [(print('tick',flush=True),time.sleep(.1)) for _ in range(8)]; "
+        "print('FINAL',flush=True); time.sleep(5)"
         if active
-        else "import time; time.sleep(2)"
+        else "import time; time.sleep(5)"
     )
     script = f'import subprocess,sys; subprocess.Popen([sys.executable,"-c",{child!r}]); print("parent",flush=True)'
     result = await make_bash_tool(project).run(
-        args(command=shlex.join([sys.executable, "-c", script]), timeout_seconds=1), CancelToken()
+        args(command=shlex.join([sys.executable, "-c", script]), timeout_seconds=3), CancelToken()
     )
     assert not result.is_error and "parent" in result.text
     if active:

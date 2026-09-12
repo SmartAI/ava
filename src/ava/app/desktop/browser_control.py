@@ -194,8 +194,14 @@ class BrowserControl(QObject):
                     takeover = view.parentItem().findChild(QQuickItem, "browserTakeOver")
                     if takeover is not None and takeover.isVisible() and takeover.boundingRect().contains(takeover.mapFromScene(position)):
                         continue  # Let the button finish its click before its visibility changes.
-                    composer = watched.findChild(QQuickItem, "chatComposerArea")
-                    if composer is None or not composer.isVisible() or not composer.boundingRect().contains(composer.mapFromScene(position)):
+                    # Quick Chat and the main window both own a composer. Only
+                    # hit-test visible composers belonging to this input window.
+                    in_composer = any(
+                        composer.window() is watched and composer.isVisible()
+                        and composer.boundingRect().contains(composer.mapFromScene(position))
+                        for composer in watched.findChildren(QQuickItem, "chatComposerArea")
+                    )
+                    if not in_composer:
                         self.release(identity, "You switched away from the shared tab.")
             elif event.type() in (QEvent.Type.KeyPress, QEvent.Type.InputMethod) and view.hasActiveFocus():
                 self.release(identity, "You took control of this tab.")

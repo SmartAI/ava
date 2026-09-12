@@ -17,7 +17,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ava.agent import CancelCause, CompactNowOutcome, Status
 from ava.agent.prompt import discover_skills
-from ava.app.attach import TEXT_LIMIT, decode_base64, sniff_image, valid_utf8_prefix
+from ava.app.attach import (
+    TEXT_LIMIT,
+    decode_base64,
+    is_pdf,
+    load_pdf,
+    sniff_image,
+    valid_utf8_prefix,
+)
 from ava.base import AvaError, ErrorKind
 from ava.base.images import IMAGE_BYTE_LIMIT
 from ava.llm import (
@@ -128,8 +135,6 @@ def decode_attachments(
         if not isinstance(data_base64, str):
             raise reject("attachment data_base64 must be a JSON string")
         remaining = ATTACHMENT_BYTE_LIMIT - current_bytes - result.decoded_bytes
-        if kind == "file" and len(data_base64) > (TEXT_LIMIT + 2) // 3 * 4:
-            raise reject("file attachments are limited to 50 KiB of text")
         if len(data_base64) > (remaining + 2) // 3 * 4:
             raise reject("chat attachments exceed the 8 MiB lifetime limit")
         try:
@@ -147,6 +152,8 @@ def decode_attachments(
                 raise reject("chat images exceed the 10-image lifetime limit")
             result.blocks.append(make_image_block(name, decoded, info.media_type))
             result.images += 1
+        elif is_pdf(name, decoded):
+            result.blocks.append(load_pdf(name, decoded))
         else:
             if len(decoded) > TEXT_LIMIT:
                 raise reject("file attachments are limited to 50 KiB of text")

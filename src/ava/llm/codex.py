@@ -175,6 +175,11 @@ def _user_item(item: Item, counter: list[int]) -> dict:
                 content.append(_text_content("input_text", block.text))
             case ContentBlockKind.file_text:
                 content.append(_text_content("input_text", request_file_text(block)))
+            case ContentBlockKind.pdf:
+                content.append({
+                    "type": "input_file", "filename": block.display_path,
+                    "file_data": f"data:application/pdf;base64,{encode_base64(block.bytes)}",
+                })
             case ContentBlockKind.image:
                 counter[0] += 1
                 content.append(

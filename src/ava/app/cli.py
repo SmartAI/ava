@@ -98,7 +98,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-compact", action="store_true")
     parser.add_argument("--compact-threshold", type=int, metavar="PCT")
     parser.add_argument(
-        "--file", action="append", default=[], metavar="PATH", help="attach a UTF-8 text file"
+        "--file", action="append", default=[], metavar="PATH", help="attach a UTF-8 text file or PDF"
     )
     parser.add_argument(
         "--image",

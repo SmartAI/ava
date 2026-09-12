@@ -127,7 +127,9 @@ def block_to_wire(block: ContentBlock) -> dict[str, Any]:
                 wire["display_path"] = block.display_path
             if _present(block.text):
                 wire["text"] = block.text
-        case ContentBlockKind.image:
+        case ContentBlockKind.image | ContentBlockKind.pdf:
+            if block.kind == ContentBlockKind.pdf:
+                wire["page_count"] = block.page_count
             if _present(block.display_path):
                 wire["display_path"] = block.display_path
             if _present(block.media_type):
@@ -204,8 +206,12 @@ def block_from_wire(wire: dict[str, Any]) -> ContentBlock:
             block = ContentBlock(
                 kind=kind, display_path=_string(wire, "display_path"), text=_string(wire, "text")
             )
-        case ContentBlockKind.image:
+        case ContentBlockKind.image | ContentBlockKind.pdf:
+            page_count = wire.get("page_count", 0)
+            if type(page_count) is not int or page_count < 0:
+                raise _fail("invalid JSONL record", "page_count must be a non-negative integer")
             block = ContentBlock(
+                page_count=page_count,
                 kind=kind,
                 display_path=_string(wire, "display_path"),
                 media_type=_string(wire, "media_type"),

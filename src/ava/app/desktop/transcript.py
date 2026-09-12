@@ -23,7 +23,7 @@ def block_text(blocks: list[dict[str, Any]]) -> str:
         if block["kind"] == "text"
         else f"[{block.get('display_path') or 'Attachment'}]"
         for block in blocks
-        if block["kind"] in ("text", "image", "file_text")
+        if block["kind"] in ("text", "image", "file_text", "pdf")
     )
 
 
@@ -215,7 +215,7 @@ class Transcript(QAbstractListModel):
         return row
 
     def append_user(self, blocks: list[dict[str, Any]]) -> None:
-        attachments = [block for block in blocks if block["kind"] in ("image", "file_text")]
+        attachments = [block for block in blocks if block["kind"] in ("image", "file_text", "pdf")]
         text = "\n".join(block.get("text", "") for block in blocks if block["kind"] == "text")
         self.append("user", "You", text, attachments=attachments)
 

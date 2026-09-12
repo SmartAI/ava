@@ -79,7 +79,7 @@ same project can hold multiple conversations.
 
 ### Files, images, and PDFs
 
-Drag in text files, paste images, or attach them from the composer. Type `/` to
+Drag in text files or PDFs, paste images, or attach them from the composer. Type `/` to
 find commands and discovered skills. Drafts and staged attachments stay with
 their conversation while the desktop is open.
 
@@ -91,8 +91,12 @@ Browse local or remote files and preview source, Markdown, images, and PDFs.
 
 PDF previews support page navigation, zoom, selectable text, internal links, and
 password-protected documents. Pages render on demand in a helper process, separate
-from the conversation UI. Previewing a PDF is separate from attaching one: direct
-PDF message attachments are not supported.
+from the conversation UI. Use **Add to message** from a PDF preview, or attach a
+PDF from the desktop or web composer. The CLI also accepts PDFs with `--file`.
+PDFs are sent intact to the provider, preserving scanned pages and diagrams;
+your selected model and endpoint must support PDF input. Attach unlocked PDFs
+with 1–100 pages, up to 8 MiB each. The existing 10-attachment message limit and
+8 MiB conversation lifetime limit still apply in the desktop and web UI.
 
 ![A multi-page research PDF open beside the conversation](assets/tour/desktop-pdf.png)
 

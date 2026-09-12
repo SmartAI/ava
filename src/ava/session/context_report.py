@@ -129,7 +129,7 @@ def _tool_schema_text(tool: ToolDef) -> str:
 
 def _block_kind(role: Role, kind: ContentBlockKind) -> str:
     match kind:
-        case ContentBlockKind.file_text:
+        case ContentBlockKind.file_text | ContentBlockKind.pdf:
             return "attachment_files"
         case ContentBlockKind.image:
             return "attachment_images"
@@ -144,7 +144,7 @@ def _block_kind(role: Role, kind: ContentBlockKind) -> str:
 
 
 def _block_bytes(block) -> int:
-    if block.kind == ContentBlockKind.image:
+    if block.kind in (ContentBlockKind.image, ContentBlockKind.pdf):
         return len(block.bytes)
     if block.kind == ContentBlockKind.reasoning:
         return len(block.opaque_json.encode("utf-8"))

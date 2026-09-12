@@ -248,11 +248,19 @@ def main() -> int:
             if endpoint is None or endpoint.get("machine_id") != args.machine_id:
                 raise AvaError(ErrorKind.invalid_argument, "Machine identity changed or cannot be verified.")
         if args.action.startswith("service-"):
-            from ava.app.backend_service import install_service, service_status, uninstall_service
+            from ava.app.backend_service import (
+                install_service,
+                service_status,
+                start_installed,
+                uninstall_service,
+            )
 
             if args.action == "service-restart":
                 with startup_lock(ava_home()):
                     stop(ava_home(), force=args.force)
+                    # Endpoint removal precedes process exit. A plain start can
+                    # be a no-op while the supervisor still considers it active.
+                    start_installed(ava_home(), restart=True)
                 ensure_running(None)
                 result = service_status(ava_home())
             elif args.action == "service-install":

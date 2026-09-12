@@ -17,7 +17,7 @@ function ChatRow({ chat, current, status, onSelect, onArchive }) {
 
 export function Sidebar({ projects, current, status, selection, open, archiveOpen, mobileOpen, onClose, onAddProject, onNew, onNewSession, onSettings, onToggleProject, onToggleArchive, onSelect, onArchive }) {
   return <>
-    <aside className={`fixed inset-y-0 left-0 z-30 flex w-[min(84vw,320px)] shrink-0 flex-col border-r border-line bg-sidebar shadow-float transition-transform duration-150 motion-reduce:transition-none min-[701px]:static min-[701px]:z-auto min-[701px]:w-[252px] min-[701px]:translate-x-0 min-[701px]:shadow-none ${mobileOpen ? 'translate-x-0' : '-translate-x-[102%]'}`}>
+    <aside className={`fixed inset-y-0 left-0 z-30 flex w-[min(84vw,320px)] shrink-0 flex-col border-r border-line bg-sidebar shadow-float transition-transform duration-150 motion-reduce:transition-none min-[701px]:visible min-[701px]:static min-[701px]:z-auto min-[701px]:w-[252px] min-[701px]:translate-x-0 min-[701px]:shadow-none ${mobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-[102%]'}`}>
       <div className="flex h-13 shrink-0 items-center gap-2 py-0 pr-3 pl-4">
         <span className="flex-1 text-[15px] font-semibold tracking-[0.01em]">ava</span>
         <button className={iconButton} type="button" title="Add project" aria-label="Add project" onClick={onAddProject}><PlusIcon /></button>

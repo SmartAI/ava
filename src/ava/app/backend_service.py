@@ -109,7 +109,7 @@ def service_definition(home: Path) -> bytes:
     return "\n".join(lines).encode()
 
 
-def start_installed(home: Path) -> bool:
+def start_installed(home: Path, *, restart: bool = False) -> bool:
     name, path = service_location(home)
     if not path.is_file():
         return False
@@ -120,9 +120,9 @@ def start_installed(home: Path) -> bool:
             raise AvaError(ErrorKind.io, "Ava's startup service is disabled. Enable it in background settings.")
         if not state["loaded"]:
             run("/bin/launchctl", "bootstrap", domain, str(path))
-        run("/bin/launchctl", "kickstart", domain + "/" + name)
+        run("/bin/launchctl", "kickstart", *(["-k"] if restart else []), domain + "/" + name)
     else:
-        run("systemctl", "--user", "start", name)
+        run("systemctl", "--user", "restart" if restart else "start", name)
     return True
 
 

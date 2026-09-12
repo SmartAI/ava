@@ -47,6 +47,14 @@ def _user_message(item: Item, counter: list[int]) -> dict:
                 parts.append({"type": "text", "text": block.text})
             case ContentBlockKind.file_text:
                 parts.append({"type": "text", "text": request_file_text(block)})
+            case ContentBlockKind.pdf:
+                parts.append({
+                    "type": "file",
+                    "file": {
+                        "filename": block.display_path,
+                        "file_data": f"data:application/pdf;base64,{encode_base64(block.bytes)}",
+                    },
+                })
             case ContentBlockKind.image:
                 counter[0] += 1
                 parts.append(

@@ -80,7 +80,7 @@ const MessageRow = memo(function MessageRow({ entry }) {
   if (entry.type === 'user') {
     const blocks = entry.blocks || []
     const text = blocks.filter(block => block.kind === 'text').map(block => block.text).join('\n')
-    const attachments = blocks.filter(block => block.kind === 'image' || block.kind === 'file_text')
+    const attachments = blocks.filter(block => ['image', 'file_text', 'pdf'].includes(block.kind))
     return <div className="flex justify-end"><div className={transcriptUser}>
       {text}
       {attachments.length > 0 && <span className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-visible">{attachments.map((block, index) => <AttachmentChip key={`${block.display_path}-${index}`} name={block.display_path} kind={block.kind} size={block.byte_size} />)}</span>}

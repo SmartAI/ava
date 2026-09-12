@@ -153,7 +153,9 @@ def create_server(app: FastAPI, sock: socket.socket):
     import uvicorn
 
     app.state.bound_port = sock.getsockname()[1]
-    config = uvicorn.Config(app, log_level="warning", lifespan="on", access_log=False)
+    config = uvicorn.Config(
+        app, log_level="warning", lifespan="on", access_log=False, timeout_graceful_shutdown=3
+    )
     return uvicorn.Server(config)
 
 

@@ -118,6 +118,24 @@ Pane {
             }
             Item { Layout.fillWidth: true }
         }
+        TextEdit {
+            objectName: "sessionWorktreePath"
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            visible: !!setup.backend.chatId && setup.backend.sessionWorktree
+            text: !visible ? "" : setup.backend.workspaceBranch
+                ? setup.backend.workspacePath
+                : "Worktree path will be available after first send."
+            textFormat: TextEdit.PlainText
+            wrapMode: TextEdit.WrapAnywhere
+            readOnly: true
+            selectByMouse: true
+            font.pixelSize: Theme.caption
+            color: Theme.secondaryText
+            selectedTextColor: Theme.text
+            selectionColor: Theme.selection
+            Accessible.name: "Worktree path"
+        }
         RowLayout {
             Layout.fillWidth: true
             visible: setup.editingRemotePath && setup.backend.remoteMachine && setup.canChoose

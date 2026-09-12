@@ -33,7 +33,7 @@ export const pendingText = message => (message.blocks || [])
   .join('')
 
 export const pendingAttachments = message => (message.blocks || [])
-  .filter(block => block.kind === 'image' || block.kind === 'file_text')
+  .filter(block => ['image', 'file_text', 'pdf'].includes(block.kind))
 
 export const pendingPreview = message => {
   const text = pendingText(message).replace(/\s+/g, ' ').trim()

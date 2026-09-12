@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+from io import BytesIO
 from pathlib import Path
+
+from pypdf import PdfReader
+from pypdf.errors import PyPdfError
 
 from ava.base import AvaError, ErrorKind
 from ava.base.images import (
@@ -25,9 +29,36 @@ from ava.base.images import (
 from ava.base.images import (
     sniff_image as sniff_image,
 )
-from ava.llm import ContentBlock, make_file_text_block, make_image_block
+from ava.llm import ContentBlock, ContentBlockKind, make_file_text_block, make_image_block
 
 TEXT_LIMIT = 50 * 1024
+PDF_BYTE_LIMIT = 8 * 1024 * 1024
+PDF_PAGE_LIMIT = 100
+
+
+def is_pdf(name: str, data: bytes) -> bool:
+    return Path(name).suffix.lower() == ".pdf" or data.startswith(b"%PDF-")
+
+
+def load_pdf(name: str, data: bytes) -> ContentBlock:
+    """Validate a bounded PDF without extracting or losing page imagery."""
+    if len(data) > PDF_BYTE_LIMIT:
+        raise _invalid(f"PDF attachment '{name}' exceeds the 8 MiB limit")
+    if not data.startswith(b"%PDF-"):
+        raise _invalid(f"PDF attachment '{name}' is not a valid PDF")
+    try:
+        reader = PdfReader(BytesIO(data), strict=True)
+        if reader.is_encrypted:
+            raise _invalid(f"PDF attachment '{name}' is password protected; attach an unlocked copy")
+        pages = len(reader.pages)
+    except (PyPdfError, ValueError, OSError, RecursionError) as error:
+        raise _invalid(f"PDF attachment '{name}' is not a valid PDF") from error
+    if not 1 <= pages <= PDF_PAGE_LIMIT:
+        raise _invalid(f"PDF attachment '{name}' must contain 1–{PDF_PAGE_LIMIT} pages")
+    return ContentBlock(
+        kind=ContentBlockKind.pdf, display_path=name, bytes=data,
+        media_type="application/pdf", page_count=pages,
+    )
 
 
 def _invalid(message: str) -> AvaError:
@@ -95,8 +126,8 @@ def load_attachment(cwd: Path, raw_path: str, *, image: bool, root: Path) -> Con
         data = resolved.read_bytes()
     except OSError:
         raise _invalid(f"cannot read attachment '{raw_path}'") from None
-    if data.startswith(b"%PDF-"):
-        raise _invalid(f"attachment '{display_path}' is a PDF; PDF attachments are not supported")
+    if not image and is_pdf(display_path, data):
+        return load_pdf(display_path, data)
     if image:
         if len(data) > IMAGE_BYTE_LIMIT:
             raise _invalid(

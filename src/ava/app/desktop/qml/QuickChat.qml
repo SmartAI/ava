@@ -25,6 +25,7 @@ ApplicationWindow {
     property string sessionId: ""
     property bool freshRequested: false
     property bool needsFocus: false
+    property bool quitting: false
     function prepare() {
         needsFocus = true;
         if (!backend.online || backend.busy) return;
@@ -42,7 +43,10 @@ ApplicationWindow {
         }
     }
     onActiveChanged: { if (active) composer.focusInput(); }
-    onClosing: function(event) { event.accepted = false; hide(); }
+    onClosing: function(event) {
+        event.accepted = quitting;
+        if (!quitting) hide();
+    }
     Connections {
         target: panel.backend
         function onChanged() {
@@ -100,7 +104,6 @@ ApplicationWindow {
             }
         }
     }
-    Shortcut { sequence: "Escape"; onActivated: panel.hide() }
     FolderDialog {
         id: folder
         title: "Choose a project folder"
@@ -109,6 +112,7 @@ ApplicationWindow {
     Surface {
         id: surface
         objectName: "quickChatSurface"
+        Keys.onEscapePressed: panel.hide()
         elevation: 2
         anchors.fill: parent
         anchors.margins: 24

@@ -573,6 +573,26 @@ async def test_malformed_historical_chat_does_not_block_web_startup(
     assert all(provider.closed for provider in scripted)
 
 
+async def test_pdf_attachment_runs_and_replays(client, scripted):
+    data = (Path(__file__).parent / "fixtures/preview.pdf").read_bytes()
+    await client.post("/api/chats", json={"project_id": "workspace"})
+    response = await client.post("/api/chats/c1/messages", json={"attachments": [{
+        "kind": "file", "name": "report.pdf", "data_base64": base64.b64encode(data).decode(),
+    }]})
+    assert response.status_code == 202, response.text
+    events = await _events_until(client, "c1", "turn/end")
+    block = scripted[0].contexts[0].items[0].blocks[0]
+    assert block.kind.value == "pdf" and block.bytes == data
+    claimed = next(event for event in events if event["kind"] == "step/claimed")
+    assert claimed["messages"][0]["blocks"] == [{
+        "kind": "pdf", "display_path": "report.pdf", "media_type": "application/pdf",
+        "byte_size": len(data),
+    }]
+    assert "base64" not in json.dumps(events)
+    reopened = (await client.get("/api/chats/c1")).json()
+    assert reopened["title"] == "report.pdf"
+
+
 async def test_message_validation(client: httpx.AsyncClient):
     await client.post("/api/chats", json={"project_id": "workspace"})
     bad = await client.post(
@@ -794,6 +814,36 @@ async def test_pending_message_routes_revise_delete_and_send_now(
         (1, 1, "next_turn", "initial request"),
         (1, 2, "next_step", "revised for this turn"),
     ]
+
+
+def test_web_server_exits_with_an_open_browser_stream(home, project):
+    """Closing the server must not wait forever for a browser's SSE connection."""
+    import signal
+    import subprocess
+    import sys
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "ava.app.cli", "--serve=0"],
+        cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout is not None
+        url = process.stdout.readline().strip()
+        assert url.startswith("http://127.0.0.1:"), url
+        with httpx.Client(base_url=url, trust_env=False, timeout=5) as client:
+            assert client.get("/").status_code == 200
+            response = client.post("/api/chats", json={"project_id": "workspace"})
+            assert response.status_code == 201, response.text
+            with client.stream("GET", f"/api/chats/{response.json()['id']}/events") as stream:
+                assert stream.status_code == 200
+                lines = stream.iter_lines()
+                assert next(lines) == "event: status"
+                process.terminate()
+                assert process.wait(timeout=8) in (0, -signal.SIGTERM)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
 
 
 async def test_event_stream_disconnect_releases_the_subscription(

@@ -64,6 +64,15 @@ def request_body(context: Context, model: str, max_tokens: int) -> str:
                     content.append({"type": "text", "text": block.text})
                 case ContentBlockKind.file_text:
                     content.append({"type": "text", "text": request_file_text(block)})
+                case ContentBlockKind.pdf:
+                    content.append({
+                        "type": "document",
+                        "title": block.display_path,
+                        "source": {
+                            "type": "base64", "media_type": "application/pdf",
+                            "data": encode_base64(block.bytes),
+                        },
+                    })
                 case ContentBlockKind.image:
                     image_count += 1
                     content.append(

@@ -195,6 +195,10 @@ def estimate_block_tokens(block: ContentBlock) -> int:
     tokens += estimate_text_tokens(block.tool_name)
     if block.kind == ContentBlockKind.image:
         tokens += IMAGE_BLOCK_TOKENS
+    elif block.kind == ContentBlockKind.pdf:
+        # PDF input includes both extracted text and page images. Provider usage
+        # replaces this rough estimate after the first completed request.
+        tokens += max(1, block.page_count) * 2000
     tokens += sum(estimate_block_tokens(image) for image in block.attachments)
     return tokens
 

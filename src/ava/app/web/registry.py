@@ -198,7 +198,7 @@ def _item_title(item: Any) -> str:
         (
             block.display_path
             for block in item.blocks
-            if block.kind in (ContentBlockKind.file_text, ContentBlockKind.image)
+            if block.kind in (ContentBlockKind.file_text, ContentBlockKind.image, ContentBlockKind.pdf)
             and block.display_path
         ),
         "",
@@ -230,6 +230,8 @@ def _restored_chat_details(log: Log) -> tuple[str, int, int]:
             if block.kind == ContentBlockKind.image:
                 attachment_bytes += len(block.bytes)
                 image_attachments += 1
+            elif block.kind == ContentBlockKind.pdf:
+                attachment_bytes += len(block.bytes)
             elif block.kind == ContentBlockKind.file_text:
                 attachment_bytes += len(block.text.encode("utf-8"))
     return title, attachment_bytes, image_attachments

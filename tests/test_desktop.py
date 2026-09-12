@@ -276,6 +276,7 @@ def model_server(home, monkeypatch):
                     elif not results:
                         action = {"action": "navigate", "url": f"http://127.0.0.1:{self.server.server_port}/agent-browser"}
                     elif len(results) < 3:
+                        assert results[-1]["content"].lstrip().startswith("{"), results[-1]
                         page = json.loads(results[-1]["content"])
                         name = "Your name" if len(results) == 1 else "Submit"
                         ref = next((element["ref"] for element in page["elements"] if element["name"] == name), None)
@@ -505,7 +506,7 @@ def type_message(window, text, *, append=False):
     assert composer.property("text") == before + text
 
 
-@pytest.mark.parametrize("stage", ["idle", "streaming", "inspector", "terminal", "automation"])
+@pytest.mark.parametrize("stage", ["idle", "quick-chat", "streaming", "inspector", "terminal", "automation"])
 def test_desktop_entrypoint_exits_after_window_close(home, project, model_server, stage):
     # Exercise app.exec()/app.quit(), not just backend termination in a nested test loop.
     script = """
@@ -522,8 +523,12 @@ def close_when_ready(controller):
     engine = create_engine(controller)
     window = engine.rootObjects()[0]
     assert isinstance(window, QQuickWindow)
-    if stage == "idle":
-        controller.runtime.ready.connect(lambda *_: QTimer.singleShot(0, window.close))
+    if stage in ("idle", "quick-chat"):
+        def close_main(*_):
+            if stage == "quick-chat":
+                window.findChild(QQuickWindow, "quickChatWindow").show()
+            QTimer.singleShot(0, window.close)
+        controller.runtime.ready.connect(close_main)
     else:
         started = sent = False
         def advance():
@@ -837,6 +842,25 @@ def test_desktop_machine_management_shows_local_connection(desktop):
     save_screenshot(window, "native-tooltip-dark")
 
 
+@pytest.fixture
+def isolated_ssh_backend():
+    """Each scenario owns fresh state inside the opt-in disposable container."""
+    container = os.environ.get("AVA_SSH_TEST_CONTAINER")
+    if not container:
+        pytest.skip("Requires the isolated Fedora SSH fixture")
+    result = subprocess.run(
+        ["docker", "exec", "--user", "ava-test", "-e", "XDG_RUNTIME_DIR=/run/user/1000",
+         container, "/opt/ava/bin/python", "-c",
+         "import shutil; from ava.base import ava_home; "
+         "from ava.app.backend import stop; "
+         "from ava.app.backend_service import uninstall_service; "
+         "home=ava_home(); stop(home,force=True); uninstall_service(home,force=True); "
+         "shutil.rmtree(home,ignore_errors=True)"],
+        capture_output=True, text=True, timeout=45,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.skipif(os.environ.get("AVA_DESKTOP_SSH_TESTS") != "1" or not os.environ.get("AVA_SSH_TEST_CONTAINER"), reason="Requires the isolated Fedora SSH fixture")
 def test_desktop_remote_machine_host_trust(desktop, tmp_path, monkeypatch):
     # Use a separate trust store; the real user's known_hosts is never involved.
@@ -935,7 +959,7 @@ def test_desktop_remote_machine_host_trust(desktop, tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.environ.get("AVA_DESKTOP_SSH_TESTS") != "1" or not os.environ.get("AVA_SSH_TEST_CONTAINER"), reason="Requires the isolated Fedora SSH fixture")
-def test_desktop_remote_machine_defers_update_during_active_task(desktop, model_server, home):
+def test_desktop_remote_machine_defers_update_during_active_task(desktop, model_server, home, isolated_ssh_backend):
     from ava.app.desktop.ssh import ssh_arguments
 
     ssh = ssh_arguments("ava-test")
@@ -1026,15 +1050,15 @@ with httpx.Client(base_url=f"http://127.0.0.1:{info['port']}", headers={'Authori
         assert len(model_server) == 1 and remote(inventory_code) == inventory
         save_screenshot(window, "remote-update-complete")
         QTest.keyClick(window, Qt.Key.Key_Escape)
-        # The upgraded backend projects its historical result into the cross-machine board.
+        # This result was just viewed in the conversation. Read-on-open must
+        # survive the upgrade, rather than putting it back into Needs review.
         click(window, "sessionBoardButton")
         board = controller.board
-        until(lambda: any(row["id"] == chat_id for row in board.needsReview.rows), board.changed)
-        assert board.needsReview.rows[0]["machine"] == "Fedora development"
-        save_screenshot(window, "remote-board-needs-review")
-        click(window, "reviewBoardChat_" + chat_id)
         until(lambda: any(row["id"] == chat_id for row in board.reviewedSessions.rows), board.changed)
+        assert not any(row["id"] == chat_id for row in board.needsReview.rows)
+        assert next(row for row in board.reviewedSessions.rows if row["id"] == chat_id)["machine"] == "Fedora development"
         click(window, "boardColumnTab_2")
+        save_screenshot(window, "remote-board-reviewed")
         click(window, "openBoardChat_reviewed_" + chat_id)
         until(lambda: controller.connected and controller.chatId == chat_id, controller.changed)
         assert controller.draft == "Keep this draft through the update"
@@ -1176,6 +1200,7 @@ print(json.dumps({'python': python, 'script': str(script)}))
         assert machine.runtime.info["instance_id"] == upgraded_instance
         # A reconnect must also respect turning background startup off in Settings.
         click(window, "settingsButton")
+        click(window, "settingsGeneralTab")
         until(lambda: not controller.serviceState["loading"], controller.serviceStateChanged)
         assert controller.serviceState["installed"]
         scroll = find_item(window, "settingsGeneralScroll")
@@ -1198,7 +1223,7 @@ print(json.dumps({'python': python, 'script': str(script)}))
 
 
 @pytest.mark.skipif(os.environ.get("AVA_DESKTOP_SSH_TESTS") != "1" or not os.environ.get("AVA_SSH_CONFIG"), reason="Requires the isolated Fedora SSH fixture")
-def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, model_server, home):
+def test_desktop_remote_machine_sessions_are_isolated_and_reconnect(desktop, model_server, home, isolated_ssh_backend):
     import base64
 
     from ava.app.desktop.ssh import ssh_arguments
@@ -2144,27 +2169,21 @@ def save_screenshot(window, suffix):
     # frame. A frame already queued at the old size is not a layout checkpoint.
     QCoreApplication.processEvents()
     window.contentItem().ensurePolished()
-    presented = QSignalSpy(window.frameSwapped)
-    window.update()
-    assert presented.count() or presented.wait(2000), (
-        f"screenshot frame was not presented: exposed={window.isExposed()}, "
-        f"active={window.isActive()}, app={QGuiApplication.applicationState()}"
-    )
+    # Request an actual rendered image. An unchanged native scene need not swap
+    # its onscreen buffer, so frameSwapped alone is not a capture-ready signal.
+    capture = window.contentItem().grabToImage()
+    assert capture is not None
+    repaint = QTimer()
+    repaint.setInterval(16)
+    repaint.timeout.connect(window.update)
+    repaint.start()
+    try:
+        until(lambda: not capture.image().isNull(), capture.ready)
+    finally:
+        repaint.stop()
     output = os.environ.get("AVA_DESKTOP_SCREENSHOT")
     if output:
         target = Path(output)
-        # Use the same asynchronous capture path for every scene; avoid
-        # grabWindow's synchronous GPU readback on the GUI thread.
-        capture = window.contentItem().grabToImage()
-        assert capture is not None
-        repaint = QTimer()
-        repaint.setInterval(16)
-        repaint.timeout.connect(window.update)
-        repaint.start()
-        try:
-            until(lambda: not capture.image().isNull(), capture.ready)
-        finally:
-            repaint.stop()
         # The item capture is asynchronous; composite the actual window clear
         # color because it is not a node in the captured content item.
         from PySide6.QtGui import QPainter
@@ -2256,6 +2275,7 @@ def test_desktop_models_attachments_skills_markdown_and_files(
     until(lambda: bool(find_item(window, "file_notes.md")), window.frameSwapped)
     click(window, "file_notes.md")
     assert controller.fileState["kind"] == "markdown"
+    until(lambda: bool(find_item(window, "filePreview")), window.frameSwapped)
     preview = find_item(window, "filePreview")
     assert "Project notes" in preview.property("textDocument").textDocument().toPlainText()
     click(window, "attachPreviewButton")
@@ -2925,6 +2945,8 @@ def test_desktop_file_explorer_performance(desktop, model_server, project, tmp_p
     )
     start = perf_counter()
     controller.browseFiles(str(markdown_file))
+    until(lambda: (preview := find_item(window, "filePreview")) is not None
+          and preview.isVisible() and preview.property("length") > 0, window.frameSwapped)
     next_frame()
     markdown_ms = (perf_counter() - start) * 1000
     QTest.qWait(32)
@@ -2956,6 +2978,44 @@ def test_desktop_file_explorer_performance(desktop, model_server, project, tmp_p
     ), metrics
 
 
+def test_desktop_pdf_attachment_from_preview(desktop, model_server, project, home):
+    import base64
+
+    data = (Path(__file__).parent / "fixtures/preview.pdf").read_bytes()
+    (project / "report.pdf").write_bytes(data)
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    click(window, "toggleRightSidebar")
+    until(lambda: bool(find_item(window, "file_report.pdf")), window.frameSwapped)
+    click(window, "file_report.pdf")
+    until(lambda: bool(find_item(window, "attachPreviewButton")), window.frameSwapped)
+    click(window, "attachPreviewButton")
+    until(lambda: len(controller.attachments) == 1, controller.draftChanged)
+    assert controller.attachments[0]["name"] == "report.pdf"
+    click(window, "sendButton")
+    until(lambda: len(model_server) == 1 or bool(controller.error), controller.changed)
+    assert len(model_server) == 1, controller.error
+    parts = [part for message in model_server[0].request["messages"] if message["role"] == "user"
+             for part in message["content"] if part["type"] == "file"]
+    assert len(parts) == 1 and parts[0]["file"]["filename"] == "report.pdf"
+    assert base64.b64decode(parts[0]["file"]["file_data"].split(",", 1)[1]) == data
+    model_server[0].release.set()
+    until(lambda: controller.status == "idle", controller.changed)
+    until(lambda: bool(find_item(window, "transcriptAttachment_report.pdf")), window.frameSwapped)
+    assert not controller.attachments
+    save_screenshot(window, "pdf-attachment")
+    chat = controller.chatId
+    controller._detach()
+    stop_backend(home)
+    controller.start()
+    until(lambda: controller.connected and controller.chatId == chat, controller.changed, timeout=20000)
+    until(lambda: bool(find_item(window, "transcriptAttachment_report.pdf")), window.frameSwapped)
+    metadata = next(row for row in controller.transcript.rows if row["attachments"])["attachments"][0]
+    assert metadata["kind"] == "pdf" and metadata["byte_size"] == len(data)
+
+
 def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project):
     import shutil
 
@@ -2984,7 +3044,7 @@ def test_desktop_pdf_preview_pages_zoom_and_tabs(desktop, model_server, project)
         window.frameSwapped,
     )
     assert find_item(window, "pdfPageCount").property("text") == "/ 3"
-    assert not find_item(window, "attachPreviewButton").isVisible()
+    assert find_item(window, "attachPreviewButton").isVisible()
     save_screenshot(window, "pdf")
     image = next(image for image in pdf_page_images(view) if image.property("currentFrame") == 0)
     point = image.mapToScene(QPointF(image.width() / 2, image.height() * 0.75)).toPoint()
@@ -4324,6 +4384,9 @@ def test_desktop_default_selection_applies_only_to_new_sessions(desktop, model_s
     until(lambda: dialog.property("ready"), controller.providerSettingsChanged)
     assert find_item(window, "settingsDefaultModel").property("currentValue") == "fixture-reasoning"
     assert effort.property("currentValue") == "high"
+    # The settings response precedes the layout pass that expands the form.
+    # Scrolling while its loading placeholder is still laid out resets to zero.
+    until(lambda: scroll.property("contentHeight") > scroll.height(), window.frameSwapped)
     scroll.setProperty("contentY", scroll.property("contentHeight") - scroll.height())
     click(window, "settingsDefaultModel")
     QTest.keyClick(window, Qt.Key.Key_Home)
@@ -4515,6 +4578,33 @@ def test_desktop_provider_settings_save_validate_and_reopen(desktop, model_serve
     click(window, "darkThemeButton")
     click(window, "settingsProvidersTab")
     save_screenshot(window, "settings-provider-dark")
+
+
+@pytest.mark.parametrize("quick_chat", [False, True])
+def test_desktop_keyboard_search_escape(desktop, model_server, quick_chat):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    if quick_chat:
+        window.findChild(QQuickWindow, "quickChatWindow").show()
+    window.requestActivate()
+    assert QTest.qWaitForWindowActive(window)
+    QTest.keyClick(window, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
+    field = find_item(window, "chatSearchField")
+    assert field is not None and field.isVisible() and field.hasActiveFocus()
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    assert not field.isVisible(), "Escape must dismiss chat search"
+    if quick_chat:
+        panel = window.findChild(QQuickWindow, "quickChatWindow")
+        assert panel.isVisible(), "Main-window Escape must not hide Quick Chat"
+        until(lambda: controller.connected and not controller.busy, controller.changed)
+        panel.requestActivate()
+        until(lambda: QGuiApplication.focusWindow() == panel, QGuiApplication.instance().focusWindowChanged)
+        find_item(panel, "composer").forceActiveFocus()
+        QTest.keyClick(panel, Qt.Key.Key_Escape)
+        assert not panel.isVisible(), "Escape inside Quick Chat must still hide it"
 
 
 def test_desktop_settings_theme_and_keyboard_search(desktop, model_server):
@@ -4823,7 +4913,8 @@ def test_desktop_terminal_interactive_tabs_resize_and_interrupt(
         point - QPointF(0, 100).toPoint(),
     )
     until(lambda: find_item(window, "terminalDock").height() > 300, window.frameSwapped)
-    QTest.qWait(100)
+    # Chromium's ResizeObserver and animation frame run after the QML resize.
+    until(lambda: session._rows > old_size[1], window.frameSwapped)
     new_size = terminal_evaluate(pane, "window.avaTerminal.size()")
     assert new_size[1] > old_size[1]
     assert controller.terminalHeight > 300
@@ -5238,10 +5329,9 @@ def test_quick_chat_resize_and_reopen(desktop):
     toggle_quick_chat(panel)
     assert panel.size() == resized
     panel.resize(panel.minimumWidth(), panel.minimumHeight())
-    QTest.qWait(50)
     for name in ("chatComposerArea", "sendButton", "sessionProjectChoice"):
         item = find_item(panel, name)
-        assert visible_rect(panel, item).height() == item.height(), name
+        until(lambda item=item: visible_rect(panel, item).height() == item.height(), panel.frameSwapped)
     panel.hide()
 
 
@@ -5338,6 +5428,9 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     click(window, 'sessionWorktreeCheck')
     assert not controller.sessionWorktree and not (home / 'worktrees').exists()
     click(window, 'sessionWorktreeCheck')
+    path_display = find_item(window, 'sessionWorktreePath')
+    assert path_display is not None and path_display.isVisible()
+    assert path_display.property('text') == 'Worktree path will be available after first send.'
     type_message(window, 'Work independently in this worktree')
     save_screenshot(window, 'inline-worktree-checked')
     pulses = [time.perf_counter()]
@@ -5357,6 +5450,8 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     assert re.fullmatch(r'[0-9a-f]{32}', workspace.name)
     assert controller.workspaceBranch == 'ava/' + workspace.name
     assert workspace != project and controller.projectId == project_id
+    assert path_display.isVisible() and path_display.property('text') == str(workspace)
+    assert path_display.property('readOnly') and path_display.property('selectByMouse')
     assert len(controller.projects) == 1
     assert (workspace / 'answer.py').read_text() == 'answer = 1\n'
     assert (project / 'answer.py').read_text() == 'answer = 99\n'
@@ -5385,10 +5480,12 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     start_chat(window)
     until(lambda: controller.connected and controller.chatId != chat_id, controller.changed)
     assert controller.workspacePath == str(project)
+    assert not path_display.isVisible() and path_display.property('text') == ''
     assert any(chat['id'] == chat_id for chat in controller.projects[0]['chats'])
     controller.openChat(chat_id)
     until(lambda: controller.connected and controller.workspacePath == str(workspace), controller.changed)
     assert (workspace / 'remote-test-proof.txt').exists()
+    assert path_display.isVisible() and path_display.property('text') == str(workspace)
 
     click(window, "skillsButton")
     skills = controller.skillView
@@ -5414,6 +5511,7 @@ def test_desktop_worktree_chat_keeps_project_and_uses_its_workspace(desktop, mod
     until(lambda: len(model_server) == 4, controller.changed)
     second_workspace = Path(controller.workspacePath)
     assert second_workspace.parent == workspace.parent and second_workspace != workspace
+    assert path_display.isVisible() and path_display.property('text') == str(second_workspace)
     listing = git('worktree', 'list', '--porcelain')
     assert f'worktree {workspace}' in listing and f'worktree {second_workspace}' in listing
     model_server[-1].release.set()
@@ -6171,6 +6269,10 @@ def test_desktop_automation_model_options_use_connected_provider_catalog(desktop
 
     def reveal(name):
         for _ in range(40):
+            # Wait for the disclosure/catalog layout before measuring the field.
+            frame = QSignalSpy(window.frameSwapped)
+            window.update()
+            assert frame.count() or frame.wait(2000)
             scroll = find_item(window, "automationEditorScroll").property("contentItem")
             item = find_item(window, name)
             assert item is not None and scroll is not None
@@ -6627,7 +6729,8 @@ def test_desktop_agent_browser_handoff_and_takeover(desktop, model_server, home)
     timer.timeout.connect(lambda: ticks.append(time.perf_counter()))
     timer.start()
     type_message(window, 'Complete the form in the shared browser, then capture it.')
-    QTest.keyClick(window, Qt.Key.Key_Return)
+    click(window, 'sendButton')
+    assert control.tabs.get('1', {}).get('active'), 'Clicking Send must not revoke browser handoff'
     until(lambda: len(model_server) >= 13 or bool(controller.error), controller.changed, timeout=20000)
     timer.stop()
     assert len(model_server) == 13, controller.error
@@ -6922,7 +7025,7 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
 
 
 @pytest.mark.skipif(os.environ.get('AVA_DESKTOP_SSH_TESTS') != '1' or not os.environ.get('AVA_SSH_TEST_CONTAINER'), reason='Requires the isolated Fedora SSH fixture')
-def test_desktop_remote_analytics_and_browser_handoff(desktop, model_server, home, project):
+def test_desktop_remote_analytics_and_browser_handoff(desktop, model_server, home, project, isolated_ssh_backend):
     from ava.app.desktop.ssh import ssh_arguments
 
     ssh = ssh_arguments('ava-test')

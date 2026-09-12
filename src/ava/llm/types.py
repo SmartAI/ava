@@ -22,6 +22,7 @@ class ContentBlockKind(StrEnum):
     text = "text"
     file_text = "file_text"
     image = "image"
+    pdf = "pdf"
     reasoning = "reasoning"
     tool_call = "tool_call"
     tool_result = "tool_result"
@@ -49,6 +50,7 @@ class ContentBlock:
     # Images in tool output stay associated with their originating call.
     attachments: list[ContentBlock] = field(default_factory=list)
     tool_title: str = ""
+    page_count: int = 0
 
 
 def make_text_block(text: str) -> ContentBlock:

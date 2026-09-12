@@ -45,7 +45,7 @@ def blocks_json(item: Item) -> list[dict[str, Any]]:
             case ContentBlockKind.file_text:
                 block["display_path"] = source.display_path
                 block["byte_size"] = len(source.text.encode("utf-8"))
-            case ContentBlockKind.image:
+            case ContentBlockKind.image | ContentBlockKind.pdf:
                 block["display_path"] = source.display_path
                 block["media_type"] = source.media_type
                 block["byte_size"] = len(source.bytes)
