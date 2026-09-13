@@ -34,15 +34,19 @@ doesn't have to be a code repository.
 - **[Automate routines](docs/features.md#automations-and-background-work)** — schedule prompts and return to the results.
 - **[Build software](docs/features.md#git-and-terminals)** — edit code, run tests, and review changes.
 
-## Highlights
+## Feature highlights
 
-- **[Quick Chat](docs/features.md#quick-chat)** — press **⌘⌥Space** on macOS to bring up Ava from any app, ask a question or start a task, then get back to what you were doing.
-- **[Native desktop workbench](docs/features.md#desktop-workbench)** — conversations, files, images, and PDF previews together.
-- **[Skills and MCP](docs/features.md#skills-and-mcp)** — reusable instructions and connected tools.
-- **[Durable sessions and SSH](docs/features.md#sessions-and-remote-machines)** — pick up work locally or on another machine.
-- **[Session board and analytics](docs/features.md#session-board-and-analytics)** — track active work, results, and usage.
-- **[Your choice of model](docs/features.md#models-and-providers)** — Anthropic, OpenAI, DeepSeek, Codex, and custom endpoints.
-- **[Multiple interfaces](docs/features.md#interfaces)** — desktop, Web UI, CLI, and Python API.
+- **[Quick Chat](docs/features.md#quick-chat)** — press **⌘⌥Space** on macOS to start a task from any app, then continue in the workbench.
+- **[Desktop workbench](docs/features.md#desktop-workbench)** — conversations, file and image attachments, Markdown, and multi-page PDF previews together.
+- **[Browser handoff](docs/features.md#browser-handoff)** — share a visible tab with Ava to navigate and fill forms; take control back at any time.
+- **[Skills and MCP](docs/features.md#skills-and-mcp)** — reuse project instructions and connect external tools.
+- **[Automations](docs/features.md#automations-and-background-work)** — schedule recurring tasks and review each run as a conversation.
+- **[Sessions and SSH](docs/features.md#sessions-and-remote-machines)** — search and resume conversations; keep remote projects and execution on their machine.
+- **[Session board and analytics](docs/features.md#session-board-and-analytics)** — organize work by review status and inspect token and activity trends.
+- **[Git and terminals](docs/features.md#git-and-terminals)** — run interactive shells, review and stage diffs, commit changes, and work in isolated worktrees.
+- **[Models and providers](docs/features.md#models-and-providers)** — choose Anthropic, OpenAI, DeepSeek, Codex, or custom endpoints per conversation.
+- **[Context and activity](docs/features.md#context-and-activity)** — inspect tool calls and estimated context usage, with automatic compaction for long conversations.
+- **[Multiple interfaces](docs/features.md#interfaces)** — native desktop, Web UI, CLI, and Python API.
 
 [![Ava Quick Chat with a weekly project update conversation and a follow-up draft](docs/assets/tour/desktop-quick-chat.png)](docs/features.md#quick-chat)
 

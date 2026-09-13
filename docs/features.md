@@ -284,7 +284,8 @@ OpenAI-compatible or Anthropic-compatible endpoint. Configure connections in
 ![Desktop provider settings with a verified local demo connection](assets/demo/provider-settings.png)
 
 Choose a provider, model, and supported reasoning effort per conversation without
-changing other conversations. The screenshots use a scripted `demo` provider.
+changing other conversations. The screenshots use local, scripted test providers,
+not production credentials.
 
 ![Per-conversation model and reasoning-effort selection](assets/tour/desktop-models.png)
 
