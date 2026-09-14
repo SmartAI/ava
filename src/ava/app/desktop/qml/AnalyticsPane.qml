@@ -35,15 +35,21 @@ Pane {
 
     function number(value) { return Number(value || 0).toLocaleString(Qt.locale(), "f", 0); }
     function compact(value) {
-        if (value >= 1000000) return (value / 1000000).toFixed(1) + "M";
-        if (value >= 1000) return (value / 1000).toFixed(1) + "k";
+        // Promote rounded boundaries too, so 999,999 reads 1M, not 1000k.
+        const units = [{size: 1e9, suffix: "B"}, {size: 1e6, suffix: "M"}, {size: 1e3, suffix: "k"}];
+        for (const unit of units) {
+            if (value >= unit.size * 0.99995) {
+                const rounded = Number((value / unit.size).toFixed(1));
+                return rounded.toLocaleString(Qt.locale(), "f", rounded % 1 ? 1 : 0) + unit.suffix;
+            }
+        }
         return number(value);
     }
     function duration(value) {
         const minutes = Math.floor((value || 0) / 60000);
         return minutes >= 60 ? Math.floor(minutes / 60) + "h " + minutes % 60 + "m" : minutes ? minutes + "m" : value ? "< 1m" : "0m";
     }
-    function valueText(value) { return metric === "active_ms" ? duration(value) : number(value); }
+    function valueText(value) { return metric === "active_ms" ? duration(value) : metric === "tokens" ? compact(value) : number(value); }
     function tickText(value) {
         if (metric !== "active_ms") return compact(value);
         const seconds = Math.round(value / 1000);
@@ -253,7 +259,18 @@ Pane {
                     uniformCellWidths: true
                     columnSpacing: Theme.spaceMd
                     rowSpacing: Theme.spaceMd
-                    Card { objectName: "analyticsTokens"; Layout.fillWidth: true; Layout.fillHeight: true; title: "Total tokens"; value: pane.report.reports ? pane.number(pane.report.totals.tokens) : "—"; detail: pane.number(pane.report.totals.responses) + " model requests" }
+                    Card {
+                        objectName: "analyticsTokens"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        title: "Total tokens"
+                        readonly property string exactValue: pane.report.reports ? pane.number(pane.report.totals.tokens) : "—"
+                        value: pane.report.reports ? pane.compact(pane.report.totals.tokens) : "—"
+                        detail: pane.number(pane.report.totals.responses) + " model requests"
+                        Accessible.name: title + ": " + exactValue
+                        HoverHandler { id: totalTokensHover }
+                        NativeToolTip { visible: totalTokensHover.hovered && pane.report.reports > 0; text: pane.number(pane.report.totals.tokens) + " tokens" }
+                    }
                     Card { objectName: "analyticsTime"; Layout.fillWidth: true; Layout.fillHeight: true; title: "Active time"; value: pane.report.reports ? pane.duration(pane.report.totals.active_ms) : "—"; detail: "Overlapping sessions counted once" }
                     Card { Layout.fillWidth: true; Layout.fillHeight: true; title: "Tool calls"; value: pane.report.reports ? pane.compact(pane.report.totals.tools) : "—"; detail: pane.number(pane.report.totals.tool_errors) + " returned errors" }
                     Card { Layout.fillWidth: true; Layout.fillHeight: true; title: "Skills loaded"; value: pane.report.reports ? pane.number(pane.report.totals.skills) : "—"; detail: "Recorded instruction loads" }
@@ -295,6 +312,7 @@ Pane {
                             }
                             Label {
                                 Layout.fillWidth: true
+                                objectName: "analyticsActivitySummary"
                                 text: pane.report.reports ? pane.valueText(pane.report.totals[pane.metric]) + (pane.metric === "tokens" ? " tokens" : pane.metric === "active_ms" ? " of agent execution" : pane.metric === "tools" ? " completed calls" : " skill loads") + " in this period" : "Statistics are not available yet"
                                 color: Theme.secondaryText
                                 font.pixelSize: Theme.caption
@@ -337,7 +355,7 @@ Pane {
                                             readonly property var segments: pane.metric === "tokens" ? [modelData.output, modelData.cache_write, modelData.cached_read, modelData.input] : [modelData[pane.metric]]
                                             activeFocusOnTab: true
                                             Accessible.role: Accessible.StaticText
-                                            Accessible.name: pane.dayLabel(modelData.date) + ": " + pane.valueText(modelData[pane.metric]) + " " + pane.metrics.find(row => row.id === pane.metric).name
+                                            Accessible.name: pane.dayLabel(modelData.date) + ": " + (pane.metric === "tokens" ? pane.number(modelData.tokens) : pane.valueText(modelData[pane.metric])) + " " + pane.metrics.find(row => row.id === pane.metric).name
                                             Keys.onLeftPressed: { if (index > 0) barRepeater.itemAt(index - 1).forceActiveFocus(); }
                                             Keys.onRightPressed: { if (index + 1 < barRepeater.count) barRepeater.itemAt(index + 1).forceActiveFocus(); }
                                             Rectangle { anchors.fill: parent; color: Theme.selection; visible: hover.hovered || bar.activeFocus; radius: 3 }
@@ -409,7 +427,7 @@ Pane {
                         contentItem: ColumnLayout {
                             spacing: Theme.spaceLg
                             Label { text: "Token breakdown"; font.pixelSize: Theme.sectionTitle; font.weight: Font.DemiBold }
-                            Label { text: "Exact reported counts · sum to total tokens"; color: Theme.secondaryText; font.pixelSize: Theme.caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                            Label { text: "Rounded counts · hover for exact tokens"; color: Theme.secondaryText; font.pixelSize: Theme.caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                             Row {
                                 id: tokenStack
                                 Layout.fillWidth: true
@@ -440,7 +458,14 @@ Pane {
                                         spacing: Theme.spaceSm
                                         Rectangle { implicitWidth: 8; implicitHeight: 8; radius: 2; color: pane.colors[token.index] }
                                         Label { Layout.fillWidth: true; text: token.modelData.name; font.pixelSize: Theme.body }
-                                        Label { objectName: "analyticsTokenValue_" + token.modelData.key; text: pane.report.reports && !token.unreported ? pane.number(pane.report.totals[token.modelData.key]) : "—"; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                        Label {
+                                            objectName: "analyticsTokenValue_" + token.modelData.key
+                                            readonly property string exactValue: pane.report.reports && !token.unreported ? pane.number(pane.report.totals[token.modelData.key]) : "—"
+                                            text: pane.report.reports && !token.unreported ? pane.compact(pane.report.totals[token.modelData.key]) : "—"
+                                            Accessible.name: token.modelData.name + ": " + exactValue + " tokens"
+                                            font.pixelSize: Theme.body
+                                            font.weight: Font.DemiBold
+                                        }
                                         Label { text: pane.report.reports && !token.unreported ? pane.percentage(pane.report.totals[token.modelData.key], pane.report.totals.tokens) : "—"; Layout.preferredWidth: 36; horizontalAlignment: Text.AlignRight; font.pixelSize: Theme.caption; color: Theme.secondaryText }
                                     }
                                     Label { text: token.unreported ? "Not reported by these providers" : token.modelData.key === "cache_write" && pane.report.totals.cache_write_reports > 0 ? "Reported on " + pane.number(pane.report.totals.cache_write_reports) + " of " + pane.number(pane.report.totals.responses) + " requests" : token.modelData.detail; Layout.fillWidth: true; wrapMode: Text.WordWrap; leftPadding: 16; color: Theme.secondaryText; font.pixelSize: Theme.captionSmall }

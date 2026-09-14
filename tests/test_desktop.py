@@ -6894,12 +6894,28 @@ def test_desktop_analytics_history_filters_and_live_skill_usage(desktop, model_s
         return int(''.join(character for character in text if character.isdecimal()))
 
     def assert_displayed_token_sum():
-        values = [find_item(window, 'analyticsTokenValue_' + key).property('text')
+        # Rounded labels need not sum exactly; their accessible exact values do.
+        values = [find_item(window, 'analyticsTokenValue_' + key).property('exactValue')
                   for key in ('input', 'cached_read', 'cache_write', 'output')]
         assert sum(displayed_tokens(value) for value in values) == displayed_tokens(
-            find_item(window, 'analyticsTokens').property('value'))
+            find_item(window, 'analyticsTokens').property('exactValue'))
 
-    assert displayed_tokens(find_item(window, 'analyticsTokens').property('value')) == 349650
+    assert displayed_tokens(find_item(window, 'analyticsTokens').property('exactValue')) == 349650
+    assert find_item(window, 'analyticsTokens').property('value').endswith('k')
+    assert len(find_item(window, 'analyticsTokens').property('value')) <= 6
+    assert 'k tokens in this period' in find_item(window, 'analyticsActivitySummary').property('text')
+    for key in ('input', 'cached_read', 'cache_write', 'output'):
+        assert find_item(window, 'analyticsTokenValue_' + key).property('text').endswith('k')
+
+    from PySide6.QtQml import QQmlExpression, qmlContext
+
+    pane = find_item(window, 'analyticsPane')
+    for value, expected in [(0, '0'), (999, '999'), (1000, '1k'), (1200000, '1.2M'),
+                            (2400000000, '2.4B'), (999999, '1M'), (999999999, '1B')]:
+        expression = QQmlExpression(qmlContext(pane), pane, f'compact({value})')
+        actual, _ = expression.evaluate()
+        assert not expression.hasError(), expression.error().toString()
+        assert actual.replace(',', '.') == expected
     assert_displayed_token_sum()
     save_screenshot(window, 'analytics-week')
     assert find_item(window, 'pageHeader').property('title') == 'Session information'

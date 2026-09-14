@@ -230,8 +230,11 @@ skill loads, filtered by machine or project. Missing usage is identified rather
 than guessed. These are usage metrics, not a billing dashboard or a measurement
 of task correctness; the chart below uses sample history.
 
-The total and token breakdown show exact counts: uncached input + cache reads +
-cache writes + output (including reasoning). Usage is counted across all recorded
+Token counts use compact units such as **350k**, **1.2M**, and **2.4B** in the
+overview, breakdown, and daily activity summary. Hover over the total, breakdown
+rows, or daily bars for exact counts. The breakdown includes uncached input +
+cache reads + cache writes + output (including reasoning); rounded labels may not
+sum exactly to the displayed total. Usage is counted across all recorded
 providers and models in the selected projects and machines, not just the currently
 selected model. Anthropic, OpenAI, Codex, DeepSeek, and compatible/local endpoints
 use their reported usage; missing counts are never estimated from text.
