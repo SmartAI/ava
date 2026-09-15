@@ -15,13 +15,13 @@ Pane {
     signal machinesRequested
     signal boardRequested
     signal automationsRequested
-    signal skillsRequested
-    signal mcpRequested
+    signal extensionsRequested
     signal analyticsRequested
     signal conversationRequested
     property var selectedChat: ({})
     property var selectedProject: ({})
     padding: 12
+    font.pixelSize: 15
     background: Rectangle {
         color: Theme.sidebar
     }
@@ -59,7 +59,7 @@ Pane {
                 Layout.fillWidth: true
                 Layout.leftMargin: 10
                 text: "Ava"
-                font.pixelSize: 15
+                font.pixelSize: 17
                 font.weight: Font.DemiBold
             }
             NativeButton {
@@ -72,6 +72,7 @@ Pane {
         }
         NavigationItem {
             objectName: "newChatButton"
+            font.pixelSize: sidebar.font.pixelSize
             Layout.fillWidth: true
             text: "New chat"
             icon.source: "icons/new.svg"
@@ -79,18 +80,9 @@ Pane {
             onClicked: sidebar.newConversation()
         }
         NavigationItem {
-            objectName: "searchChatsButton"
-            text: "Search chats"
-            icon.source: "icons/search.svg"
-            Layout.fillWidth: true
-            accessory: Qt.platform.os === "osx" ? "⌘ K" : "Ctrl K"
-            tip: "Search conversations"
-            enabled: sidebar.backend.projects.length > 0
-            onClicked: sidebar.openSearch()
-        }
-        NavigationItem {
             objectName: "sessionBoardButton"
-            text: "Session board"
+            font.pixelSize: sidebar.font.pixelSize
+            text: "Board"
             icon.source: "icons/board.svg"
             selected: sidebar.currentPage === "board"
             tip: "Session board (" + (Qt.platform.os === "osx" ? "⌘ Shift B" : "Ctrl Shift B") + ")"
@@ -99,15 +91,8 @@ Pane {
             onClicked: sidebar.boardRequested()
         }
         NavigationItem {
-            objectName: "analyticsButton"
-            Layout.fillWidth: true
-            text: "Session information"
-            icon.source: "icons/analytics.svg"
-            selected: sidebar.currentPage === "analytics"
-            onClicked: sidebar.analyticsRequested()
-        }
-        NavigationItem {
             objectName: "automationsButton"
+            font.pixelSize: sidebar.font.pixelSize
             text: "Automations"
             icon.source: "icons/clock.svg"
             selected: sidebar.currentPage === "automations"
@@ -115,27 +100,149 @@ Pane {
             onClicked: sidebar.automationsRequested()
         }
         NavigationItem {
-            objectName: "skillsButton"
-            text: "Skills"
-            icon.source: "icons/skills.svg"
-            selected: sidebar.currentPage === "skills"
+            id: moreButton
+            objectName: "moreNavigationButton"
+            font.pixelSize: sidebar.font.pixelSize
+            text: "More"
+            icon.source: "icons/more.svg"
             Layout.fillWidth: true
-            onClicked: sidebar.skillsRequested()
+            checkable: true
+            rightPadding: Theme.spaceMd + Theme.iconSize + Theme.spaceSm
+            selected: !checked && ["skills", "mcp", "analytics"].includes(sidebar.currentPage)
+            Accessible.description: checked ? "Collapse more navigation" : "Expand more navigation"
+            Image {
+                anchors.right: parent.right
+                anchors.rightMargin: Theme.spaceMd
+                anchors.verticalCenter: parent.verticalCenter
+                width: Theme.iconSize
+                height: Theme.iconSize
+                source: "icons/chevron.svg"
+                rotation: moreButton.checked ? 90 : 0
+                Behavior on rotation { NumberAnimation { duration: Theme.motionDuration } }
+            }
         }
-        NavigationItem {
-            objectName: "mcpButton"
-            text: "MCP servers"
-            icon.source: "icons/plug.svg"
-            selected: sidebar.currentPage === "mcp"
+        ColumnLayout {
+            visible: moreButton.checked
             Layout.fillWidth: true
-            onClicked: sidebar.mcpRequested()
+            Layout.leftMargin: 12
+            spacing: 4
+            NavigationItem {
+                objectName: "searchChatsButton"
+                font.pixelSize: sidebar.font.pixelSize
+                text: "Search chats"
+                icon.source: "icons/search.svg"
+                Layout.fillWidth: true
+                accessory: Qt.platform.os === "osx" ? "⌘ K" : "Ctrl K"
+                tip: "Search conversations"
+                enabled: sidebar.backend.projects.length > 0
+                onClicked: sidebar.openSearch()
+            }
+            NavigationItem {
+                objectName: "extensionsButton"
+                font.pixelSize: sidebar.font.pixelSize
+                text: "Extensions"
+                icon.source: "icons/plug.svg"
+                selected: ["skills", "mcp"].includes(sidebar.currentPage)
+                Layout.fillWidth: true
+                tip: "Skills and MCP servers"
+                onClicked: sidebar.extensionsRequested()
+            }
+            NavigationItem {
+                objectName: "analyticsButton"
+                font.pixelSize: sidebar.font.pixelSize
+                Layout.fillWidth: true
+                text: "Session information"
+                icon.source: "icons/analytics.svg"
+                selected: sidebar.currentPage === "analytics"
+                onClicked: sidebar.analyticsRequested()
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.spaceLg
+            Layout.leftMargin: Theme.spaceMd
+            Label {
+                Layout.fillWidth: true
+                text: "Machines"
+                font.pixelSize: 14
+                color: Theme.secondaryText
+            }
+            NativeButton {
+                objectName: "addMachineButton"
+                icon.source: "icons/plus.svg"
+                quiet: true
+                tip: "Manage machines"
+                onClicked: sidebar.machinesRequested()
+            }
+        }
+        TabBar {
+            id: machineTabs
+            objectName: "machineTabs"
+            Layout.fillWidth: true
+            implicitHeight: Theme.controlHeight + 4
+            currentIndex: sidebar.backend.machines.findIndex(machine => machine.active)
+            background: Rectangle {
+                color: "transparent"
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.border }
+            }
+            Repeater {
+                model: sidebar.backend.machines
+                TabButton {
+                    id: machineTab
+                    required property var modelData
+                    objectName: "machineTab_" + modelData.id
+                    width: Math.min(160, Math.max(88, implicitWidth))
+                    height: machineTabs.height
+                    padding: Theme.spaceSm
+                    text: modelData.name
+                    Accessible.name: modelData.name
+                    Accessible.description: modelData.status
+                    onClicked: {
+                        if (!modelData.active) {
+                            sidebar.conversationRequested();
+                            sidebar.backend.selectMachine(modelData.id);
+                        }
+                    }
+                    contentItem: RowLayout {
+                        spacing: Theme.spaceSm
+                        Rectangle {
+                            implicitWidth: 5
+                            implicitHeight: 5
+                            radius: 3
+                            color: machineTab.modelData.online ? Theme.success : machineTab.modelData.state === "connecting" ? Theme.warning : Theme.secondaryText
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: machineTab.text
+                            elide: Text.ElideRight
+                            font.pixelSize: sidebar.font.pixelSize
+                            font.weight: machineTab.modelData.active ? Font.DemiBold : Font.Normal
+                            color: machineTab.modelData.active ? Theme.text : Theme.secondaryText
+                        }
+                    }
+                    background: Surface {
+                        radius: Theme.controlRadius
+                        border.width: 0
+                        focused: machineTab.visualFocus
+                        color: machineTab.hovered ? Theme.hover : "transparent"
+                        Rectangle {
+                            anchors.bottom: parent.bottom
+                            width: parent.width
+                            height: 2
+                            visible: machineTab.modelData.active
+                            color: Theme.accent
+                        }
+                    }
+                    NativeToolTip { visible: machineTab.hovered; text: machineTab.modelData.name + " · " + machineTab.modelData.status }
+                }
+            }
         }
         ListView {
             id: sessions
             objectName: "sessionList"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.topMargin: 16
+            Layout.topMargin: 4
             clip: true
             spacing: 2
             model: sidebar.backend.sessionRows
@@ -158,7 +265,7 @@ Pane {
                 readonly property bool more: modelData.kind === "more"
                 readonly property bool pinned: modelData.kind === "chat" && !!modelData.pinned
                 width: ListView.view.width
-                height: section ? 36 : machine ? 44 : project ? 34 : pinned ? 48 : 32
+                height: section ? 36 : machine ? 48 : project ? 38 : pinned ? 56 : 36
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 10
@@ -167,19 +274,19 @@ Pane {
                         objectName: row.section ? row.modelData.id + "Section" : ""
                         Layout.fillWidth: true
                         text: row.modelData.title
-                        font.pixelSize: 11
+                        font.pixelSize: 14
                         color: sidebar.palette.placeholderText
                     }
                     NativeButton {
-                        objectName: row.section && row.modelData.id === "projects" ? (sidebar.backend.machines.length > 1 ? "addMachineButton" : "addProjectButton") : ""
+                        objectName: row.section && row.modelData.id === "projects" ? "addProjectButton" : ""
                         visible: row.section && row.modelData.id === "projects"
                         implicitWidth: 28
                         implicitHeight: 28
                         icon.source: "icons/plus.svg"
                         quiet: true
-                        tip: sidebar.backend.machines.length > 1 ? "Add machine" : "Add project"
-                        enabled: sidebar.backend.machines.length > 1 || sidebar.backend.online
-                        onClicked: sidebar.backend.machines.length > 1 ? sidebar.machinesRequested() : sidebar.addProjectRequested()
+                        tip: "Add project"
+                        enabled: sidebar.backend.online
+                        onClicked: sidebar.addProjectRequested()
                     }
                 }
                 ItemDelegate {
@@ -187,14 +294,14 @@ Pane {
                     objectName: row.more ? "showMoreSessions_" + row.modelData.project_id : ""
                     visible: row.more
                     anchors.fill: parent
-                    leftPadding: 26 + (sidebar.backend.machines.length > 1 ? 12 : 0)
+                    leftPadding: 26
                     rightPadding: Theme.spaceSm
                     text: row.modelData.title || ""
                     Accessible.name: text
                     onClicked: sidebar.backend.toggleProjectSessions(row.modelData.project_id)
                     contentItem: Label {
                         text: showMore.text
-                        font.pixelSize: Theme.caption
+                        font.pixelSize: 14
                         color: Theme.secondaryText
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
@@ -213,7 +320,7 @@ Pane {
                     anchors.fill: parent
                     enabled: row.machine || row.project || !!row.modelData.online
                     highlighted: sidebar.currentPage === "chat" && !row.project && !row.machine && row.modelData.id === sidebar.backend.chatId
-                    leftPadding: row.machine || row.pinned ? 8 : (row.project ? 8 : 26) + (sidebar.backend.machines.length > 1 ? 12 : 0)
+                    leftPadding: row.pinned || row.project ? 8 : 26
                     rightPadding: row.project ? 56 : 30
                     Accessible.name: row.modelData.title || "New chat"
                     Accessible.description: row.machine ? (row.modelData.expanded ? "Collapse machine" : "Expand machine") : row.project ? (row.modelData.expanded ? "Collapse project" : "Expand project") : row.pinned ? "Pinned conversation in " + row.modelData.project : "Open conversation"
@@ -241,7 +348,7 @@ Pane {
                                 text: row.modelData.title || "New chat"
                                 elide: Text.ElideRight
                                 maximumLineCount: 1
-                                font.pixelSize: 12
+                                font.pixelSize: sidebar.font.pixelSize
                                 font.weight: row.project || row.machine ? Font.Medium : Font.Normal
                                 color: row.project ? sidebar.palette.placeholderText : sidebar.palette.text
                             }
@@ -251,7 +358,7 @@ Pane {
                                 visible: row.pinned || row.machine
                                 text: row.machine ? (row.modelData.online ? "Connected" : "Offline") : row.modelData.project || ""
                                 elide: Text.ElideRight
-                                font.pixelSize: 10
+                                font.pixelSize: 13
                                 color: sidebar.palette.placeholderText
                             }
                         }
@@ -327,17 +434,18 @@ Pane {
             }
             Label {
                 width: parent.width
-                visible: sidebar.backend.projects.length === 0
+                visible: !sidebar.backend.sessionRows.some(row => row.kind === "project")
                 y: 40
                 padding: 10
                 text: "Add a project to get started."
                 wrapMode: Text.WordWrap
                 color: palette.placeholderText
-                font.pixelSize: 12
+                font.pixelSize: 14
             }
         }
         NavigationItem {
             objectName: "settingsButton"
+            font.pixelSize: sidebar.font.pixelSize
             text: "Settings"
             icon.source: "icons/settings.svg"
             accessory: sidebar.backend.online ? "" : "Offline"
@@ -347,6 +455,7 @@ Pane {
         }
         NativeButton {
             objectName: "reconnectBackendButton"
+            font.pixelSize: sidebar.font.pixelSize
             text: "Reconnect"
             visible: !sidebar.backend.online && sidebar.backend.connectionLabel !== "Starting Ava…"
             onClicked: sidebar.backend.start()

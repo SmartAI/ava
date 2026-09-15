@@ -31,7 +31,7 @@ ItemDelegate {
         anchors.rightMargin: Theme.spaceMd
         anchors.verticalCenter: parent.verticalCenter
         text: control.accessory
-        font.pixelSize: Theme.captionSmall
+        font.pixelSize: control.font.pixelSize - 2
         color: Theme.secondaryText
     }
     NativeToolTip { visible: control.hovered && !!control.tip; text: control.tip }

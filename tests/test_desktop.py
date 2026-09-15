@@ -457,6 +457,14 @@ def find_item(window, name):
 
 
 def click(window, name):
+    # Follow the same disclosure and extension sub-navigation as a user.
+    if name in {"searchChatsButton", "extensionsButton", "analyticsButton", "skillsButton", "mcpButton"}:
+        if name in {"skillsButton", "mcpButton"} and window.property("workspacePage") not in {"skills", "mcp"}:
+            click(window, "extensionsButton")
+        elif name not in {"skillsButton", "mcpButton"}:
+            more = find_item(window, "moreNavigationButton")
+            if more is not None and not more.property("checked"):
+                click(window, "moreNavigationButton")
     # isActive() also includes a transient dialog; activate the actual target window.
     if QGuiApplication.focusWindow() != window:
         window.requestActivate()
@@ -2570,6 +2578,106 @@ def test_desktop_code_preview(desktop, model_server, project):
     controller.browseFiles(str(project / "plain.unknown"))
     until(lambda: document.count == 1, document.changed)
     assert document.selectedText(0, 0, 0, 1000) == "<b>not markup</b>"
+
+
+def test_desktop_compact_navigation(desktop):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    primary = ("newChatButton", "sessionBoardButton", "automationsButton", "moreNavigationButton")
+    secondary = ("searchChatsButton", "extensionsButton", "analyticsButton")
+    settings = find_item(window, "settingsButton")
+    assert settings.isVisible()
+    assert visible_rect(window, settings).bottom() >= window.height() - 20
+    assert all(find_item(window, name).isVisible() for name in primary)
+    assert find_item(window, "sessionBoardButton").property("text") == "Board"
+    assert all(not find_item(window, name).isVisible() for name in secondary)
+    click(window, "moreNavigationButton")
+    assert all(find_item(window, name).isVisible() for name in secondary)
+    click(window, "extensionsButton")
+    assert window.property("workspacePage") == "skills"
+    assert find_item(window, "newSkillButton").isVisible()
+    click(window, "mcpButton")
+    assert window.property("workspacePage") == "mcp"
+    assert find_item(window, "addMcpButton").isVisible()
+    click(window, "moreNavigationButton")
+    assert all(not find_item(window, name).isVisible() for name in secondary)
+    assert find_item(window, "moreNavigationButton").property("selected")
+    click(window, "sessionBoardButton")
+    assert window.property("workspacePage") == "board"
+    click(window, "automationsButton")
+    assert window.property("workspacePage") == "automations"
+
+
+@pytest.mark.parametrize("width,height", [(1280, 820), (800, 600)])
+def test_desktop_machine_tabs(desktop, project, width, height):
+    from ava.app.desktop.connection import Connection
+    from ava.app.desktop.controller import Machine
+    from ava.app.desktop.runtime import BackendProcess
+
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller._heartbeat.stop()
+    local = controller._connection
+    connection = Connection(int(local._base.rsplit(":", 1)[1]), local._token, controller, prefix="remote~")
+    projects = connection._identifiers("/api/projects", {"projects": controller.projects})["projects"]
+    for entry in projects:
+        entry.update(machine="remote", machine_name="Development machine with a long name")
+    remote = Machine("remote", "Development machine with a long name",
+                     BackendProcess(project, controller, host="fixture"),
+                     connection=connection, projects=projects, status="Connected")
+    controller._machines[remote.id] = remote
+    controller._rebuild_projects()
+    controller.machinesChanged.emit()
+    window.resize(width, height)
+    click(window, "machineTab_remote")
+    assert controller.remoteMachine
+    assert all(row.get("machine", "remote") == "remote" for row in controller.sessionRows)
+    assert not any(row["kind"] == "machine" for row in controller.sessionRows)
+    assert find_item(window, "projectsSection").property("text") == "Projects"
+    assert find_item(window, "addProjectButton").isVisible()
+    tabs = find_item(window, "machineTabs")
+    assert tabs.property("currentIndex") == 1
+    remote_tab = find_item(window, "machineTab_remote")
+    local_tab = find_item(window, "machineTab_local")
+    assert remote_tab.mapToScene(QPointF()).y() == local_tab.mapToScene(QPointF()).y()
+    assert tabs.width() <= find_item(window, "leftSidebar").width()
+    click(window, "machineTab_local")
+    assert not controller.remoteMachine
+    assert tabs.property("currentIndex") == 0
+    assert all(row.get("machine", "local") == "local" for row in controller.sessionRows)
+    assert find_item(window, "settingsButton").isVisible()
+    click(window, "settingsButton")
+    assert not find_item(window, "moreNavigationButton").property("checked")
+    click(window, "closeSettingsButton")
+
+
+@pytest.mark.parametrize("width,height", [(1280, 820), (800, 600)])
+def test_desktop_sidebar_typography(desktop, model_server, width, height):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    window.resize(width, height)
+    click(window, "moreNavigationButton")
+    for name in ("newChatButton", "sessionBoardButton", "automationsButton", "moreNavigationButton",
+                 "searchChatsButton", "extensionsButton", "analyticsButton", "settingsButton",
+                 "sessionTitle_" + controller.chatId, "projectsSection"):
+        item = find_item(window, name)
+        assert item is not None and item.isVisible(), name
+        assert item.property("font").pixelSize() >= 14, name
+        assert item.height() >= item.property("font").pixelSize() + 2, name
+        rect = visible_rect(window, item)
+        assert rect.height() >= item.height() - 1, name
+        # QQuickText.boundingRect covers painted glyphs, not its allocated width.
+        allocated = item.mapRectToScene(QRectF(0, 0, item.width(), item.height()))
+        assert visible_rect(window, find_item(window, "leftSidebar")).contains(allocated), name
+    title = find_item(window, "sessionTitle_" + controller.chatId)
+    menu = find_item(window, "sessionMenu_" + controller.chatId)
+    assert visible_rect(window, title).right() <= visible_rect(window, menu).left()
+    assert find_item(window, "sessionList").height() >= 100
 
 
 def test_desktop_resizable_sidebars(desktop):
@@ -4692,7 +4800,8 @@ def test_desktop_design_system_appearance_navigation_and_focus(desktop, dark, wi
         assert visible_rect(window, button).height() >= button.height() - 1
         assert header.height() > 0
         assert find_item(window, navigation).property("selected")
-        assert sum(bool(find_item(window, name).property("selected")) for _, name, _ in routes) == 1
+        assert sum(bool(item.property("selected")) for _, name, _ in routes
+                   if (item := find_item(window, name)) is not None and item.isVisible()) == 1
         save_screenshot(window, f"design-{page}-{'dark' if dark else 'light'}-{width}")
         assert window.property("dark") == dark, "Screenshot capture must preserve appearance"
 
@@ -5957,7 +6066,7 @@ def test_desktop_mcp_manage_and_call_tools(desktop, model_server, home, project)
     controller.start()
     until(lambda: bool(controller.projects), controller.changed)
     save_screenshot(window, "mcp-entry")
-    assert find_item(window, "mcpButton") is not None, "MCP servers need a discoverable management entry"
+    assert find_item(window, "extensionsButton") is not None, "Extensions must expose MCP management"
     click(window, "mcpButton")
     click(window, "addMcpButton")
     find_item(window, "mcpNameField").setProperty("text", "Workspace checks")
@@ -6116,7 +6225,7 @@ def test_desktop_skills_manage_and_affect_agent(desktop, model_server, project):
     controller.newChat()
     until(lambda: controller.connected, controller.changed)
     save_screenshot(window, "skills-entry")
-    assert find_item(window, "skillsButton") is not None, "Skills need a discoverable management entry"
+    assert find_item(window, "extensionsButton") is not None, "Extensions must expose skill management"
     click(window, "skillsButton")
     click(window, "newSkillButton")
     find_item(window, "skillNameField").setProperty("text", "review-changes")

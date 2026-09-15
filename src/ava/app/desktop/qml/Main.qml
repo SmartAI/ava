@@ -295,8 +295,7 @@ ApplicationWindow {
             onSettingsRequested: settingsDialog.open()
             onBoardRequested: window.workspacePage = "board"
             onAutomationsRequested: window.workspacePage = "automations"
-            onSkillsRequested: window.workspacePage = "skills"
-            onMcpRequested: window.workspacePage = "mcp"
+            onExtensionsRequested: { if (!["skills", "mcp"].includes(window.workspacePage)) window.workspacePage = "skills"; }
             onAnalyticsRequested: window.workspacePage = "analytics"
             onConversationRequested: window.workspacePage = "chat"
         }
@@ -306,7 +305,7 @@ ApplicationWindow {
             active: visible
             SplitView.fillWidth: true
             SplitView.minimumWidth: 330
-            sourceComponent: window.boardOpen ? boardComponent : window.workspacePage === "skills" ? skillsComponent : window.workspacePage === "mcp" ? mcpComponent : window.workspacePage === "analytics" ? analyticsComponent : automationsComponent
+            sourceComponent: window.boardOpen ? boardComponent : ["skills", "mcp"].includes(window.workspacePage) ? extensionsComponent : window.workspacePage === "analytics" ? analyticsComponent : automationsComponent
         }
         Component {
             id: analyticsComponent
@@ -334,6 +333,40 @@ ApplicationWindow {
                     window.backend.reviewCurrentChat();
                 }
                 onSidebarRequested: window.leftOpen = true
+            }
+        }
+        Component {
+            id: extensionsComponent
+            ColumnLayout {
+                spacing: 0
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.margins: Theme.spaceLg
+                    spacing: Theme.spaceSm
+                    Label {
+                        text: "Extensions"
+                        font.weight: Font.DemiBold
+                        Layout.rightMargin: Theme.spaceMd
+                    }
+                    NavigationItem {
+                        objectName: "skillsButton"
+                        text: "Skills"
+                        selected: window.workspacePage === "skills"
+                        onClicked: window.workspacePage = "skills"
+                    }
+                    NavigationItem {
+                        objectName: "mcpButton"
+                        text: "MCP servers"
+                        selected: window.workspacePage === "mcp"
+                        onClicked: window.workspacePage = "mcp"
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                Loader {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    sourceComponent: window.workspacePage === "mcp" ? mcpComponent : skillsComponent
+                }
             }
         }
         Component {

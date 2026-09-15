@@ -439,6 +439,7 @@ class Controller(QObject):
         self._provider_settings_state.update(loading=False, saving=False, error="", notice="")
         self.providerSettingsChanged.emit()
         self.machinesChanged.emit()
+        self.navigationChanged.emit()
         self.changed.emit()
 
     def _rebuild_projects(self) -> None:
@@ -707,23 +708,17 @@ class Controller(QObject):
     def sessionRows(self) -> list:
         rows: list[dict] = []
         pinned: list[dict] = []
-        multiple = len(self._machines) > 1
         for machine in self._machines.values():
-            expanded_machine = self.preference(f"machines/{machine.id}", True)
-            if multiple:
-                rows.append({"kind": "machine", "id": machine.id, "title": machine.name,
-                             "expanded": expanded_machine, "online": machine.connection is not None,
-                             "path": machine.runtime.host or "Local", "status": machine.status})
+            if machine.id != self._active_machine:
+                continue
             for project in machine.projects:
                 online = machine.connection is not None
                 chats = [{**chat, "kind": "chat", "project_id": project["id"],
-                          "project": project["name"] + (" · " + machine.name if multiple else ""),
+                          "project": project["name"],
                           "machine": machine.id, "online": online,
                           "pinned": self.preference(f"pinned/{chat['id']}", False)}
                          for chat in project["chats"] if not chat["archived"]]
                 pinned.extend(chat for chat in chats if chat["pinned"])
-                if multiple and not expanded_machine:
-                    continue
                 expanded = self.preference(f"groups/{project['id']}", True)
                 rows.append({"kind": "project", "id": project["id"], "title": project["name"],
                              "path": project["path"], "expanded": expanded, "count": len(chats),
@@ -737,7 +732,7 @@ class Controller(QObject):
                                      "project_id": project["id"], "expanded": show_all,
                                      "title": "Show fewer" if show_all else f"Show more ({len(unpinned) - 5})"})
         return ([{"kind": "section", "id": "pinned", "title": "Pinned"}, *pinned] if pinned else []) + [
-            {"kind": "section", "id": "projects", "title": "Machines" if multiple else "Projects"}
+            {"kind": "section", "id": "projects", "title": "Projects"}
         ] + rows
 
     @Slot(str)
