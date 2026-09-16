@@ -226,7 +226,11 @@ def model_server(home, monkeypatch):
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             exchange = Exchange(request)
-            exchanges.append(exchange)
+            title_request = request.get("messages", [{}])[0].get("content", "").startswith(
+                "Generate a concise task title from the user message."
+            )
+            if not title_request:
+                exchanges.append(exchange)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -237,6 +241,13 @@ def model_server(home, monkeypatch):
                 self.wfile.flush()
 
             try:
+                if title_request:
+                    # Metadata is not an agent turn. Keep the fallback title
+                    # stable; title generation is covered by the web tests.
+                    chunk({"content": '{"title":""}'}, "stop")
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
                 if request.get("model") == "fixture-stream":
                     while (delta := exchange.chunks.get()) is not None:
                         chunk({"content": delta})
@@ -514,7 +525,7 @@ def type_message(window, text, *, append=False):
     assert composer.property("text") == before + text
 
 
-@pytest.mark.parametrize("stage", ["idle", "quick-chat", "streaming", "inspector", "terminal", "automation"])
+@pytest.mark.parametrize("stage", ["idle", "quick-chat", "browser", "stale-browser", "streaming", "inspector", "terminal", "automation"])
 def test_desktop_entrypoint_exits_after_window_close(home, project, model_server, stage):
     # Exercise app.exec()/app.quit(), not just backend termination in a nested test loop.
     script = """
@@ -550,6 +561,23 @@ def close_when_ready(controller):
                         "project_id": controller.projectId,
                         "schedule": {"start_local": (datetime.now(UTC) + timedelta(seconds=2)).replace(tzinfo=None).isoformat(), "timezone": "UTC", "cadence": "once", "count": 1},
                     })
+                elif stage in ("browser", "stale-browser"):
+                    window.showPanel("browser")
+                    timer = QTimer(window)
+                    timer.setInterval(20)
+                    def close_browser_window():
+                        if controller.browserControl._windows:
+                            timer.stop()
+                            if stage == "stale-browser":
+                                # Reproduce the reported stale PySide handle without
+                                # depending on GC/destruction callback timing.
+                                from shiboken6 import delete
+                                stale = QQuickWindow()
+                                delete(stale)
+                                controller.browserControl._windows.add(stale)
+                            window.close()
+                    timer.timeout.connect(close_browser_window)
+                    timer.start()
                 elif stage == "inspector":
                     controller.browseFiles("")
                     QTimer.singleShot(0, window.close)
@@ -596,6 +624,7 @@ raise SystemExit(application.run())
             pytest.fail(f"Desktop did not exit after closing its window: {stderr}")
     assert process.returncode == 0, stderr
     assert "TypeError:" not in stderr and "Binding loop" not in stderr, stderr
+    assert "Internal C++ object" not in stderr and "Traceback" not in stderr, stderr
     if stage == "automation":
         import signal
         from uuid import uuid4
@@ -5412,6 +5441,31 @@ def test_new_chat_project_picker_switches_machines(desktop, project, quick):
     if quick:
         assert window.property("sessionId") == controller.chatId
         window.hide()
+
+
+def test_desktop_composers_sync_multiline_drafts(desktop):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    controller.newChat()
+    until(lambda: controller.connected, controller.changed)
+    panel = window.findChild(QQuickWindow, "quickChatWindow")
+    main_input = find_item(window, "composer")
+    quick_input = find_item(panel, "composer")
+    # Restored/externally supplied drafts can contain Windows line endings.
+    draft = "First line\r\nSecond line 中文"
+    controller.draft = draft
+    assert controller.draft == draft
+    for editor in (main_input, quick_input):
+        assert editor.property("text") == draft.replace("\r\n", "\n")
+    QMetaObject.invokeMethod(main_input, "selectAll")
+    type_message(window, "Updated from main")
+    assert quick_input.property("text") == controller.draft
+    QMetaObject.invokeMethod(quick_input, "selectAll")
+    type_message(panel, "Updated from quick chat")
+    assert main_input.property("text") == controller.draft
+    controller.draft = ""
+    assert main_input.property("text") == quick_input.property("text") == ""
 
 
 def test_quick_chat_resize_and_reopen(desktop):

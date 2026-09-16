@@ -18,7 +18,11 @@ ColumnLayout {
 
     Connections {
         target: composer.backend
-        function onDraftChanged() { composer.slashDismissed = false; commands.currentIndex = 0 }
+        function onDraftChanged() {
+            input.syncDraft();
+            composer.slashDismissed = false;
+            commands.currentIndex = 0;
+        }
     }
     Label {
         Layout.fillWidth: true
@@ -127,7 +131,14 @@ ColumnLayout {
                     id: input
                     objectName: "composer"
                     implicitWidth: 0
-                    text: composer.backend.draft
+                    property bool syncingDraft: false
+                    function syncDraft() {
+                        if (text === composer.backend.draft) return;
+                        syncingDraft = true;
+                        text = composer.backend.draft;
+                        syncingDraft = false;
+                    }
+                    Component.onCompleted: syncDraft()
                     placeholderText: !composer.backend.chatId ? "Create a conversation to begin"
                                      : composer.backend.status === "running" ? "Steer Ava, or queue a follow-up…" : "Ask Ava anything, / for commands…"
                     enabled: !!composer.backend.chatId
@@ -142,7 +153,9 @@ ColumnLayout {
                     padding: 5
                     background: null
                     Accessible.name: "Message Ava"
-                    onTextChanged: { if (composer.backend.draft !== text) composer.backend.draft = text }
+                    // TextEdit normalizes line endings. Do not feed that change
+                    // back into the draft while applying a backend update.
+                    onTextChanged: { if (!syncingDraft && composer.backend.draft !== text) composer.backend.draft = text }
                     Keys.onPressed: function(event) {
                         if (input.inputMethodComposing) {
                             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) event.accepted = true

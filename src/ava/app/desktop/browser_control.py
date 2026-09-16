@@ -32,6 +32,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtQuick import QQuickItem, QQuickItemGrabResult
+from shiboken6 import isValid
 
 from .connection import Connection
 
@@ -298,6 +299,9 @@ class BrowserControl(QObject):
         for identity in list(self._tabs):
             self.release(identity)
         self._closed = True
-        for window in self._windows:
-            window.removeEventFilter(self)
+        for window in list(self._windows):
+            # PySide can invalidate a retained wrapper before its destroyed
+            # callback removes it. Qt already removes filters on destruction.
+            if isValid(window):
+                window.removeEventFilter(self)
         self._windows.clear()
