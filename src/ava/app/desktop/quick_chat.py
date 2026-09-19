@@ -70,11 +70,79 @@ class QuickChatShortcut(QObject):
                 self._handler = ctypes.c_void_p()
 
 
-def toggle_quick_chat(window) -> None:
+def selected_text() -> str:
+    """Read the foreground selection without copying or prompting for permission."""
+    if sys.platform != "darwin":
+        return ""
+    ax = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    ax.AXIsProcessTrusted.restype = ctypes.c_bool
+    if not ax.AXIsProcessTrusted():
+        return ""
+    pointer = ctypes.c_void_p
+    ax.AXUIElementCreateSystemWide.restype = pointer
+    ax.AXUIElementSetMessagingTimeout.argtypes = [pointer, ctypes.c_float]
+    ax.AXUIElementCopyAttributeValue.argtypes = [pointer, pointer, ctypes.POINTER(pointer)]
+    ax.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
+    cf.CFStringCreateWithCString.argtypes = [pointer, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.restype = pointer
+    cf.CFRelease.argtypes = [pointer]
+    cf.CFGetTypeID.argtypes = [pointer]
+    cf.CFGetTypeID.restype = ctypes.c_ulong
+    cf.CFStringGetTypeID.restype = ctypes.c_ulong
+    cf.CFStringGetLength.argtypes = [pointer]
+    cf.CFStringGetLength.restype = ctypes.c_long
+    cf.CFStringGetMaximumSizeForEncoding.argtypes = [ctypes.c_long, ctypes.c_uint32]
+    cf.CFStringGetMaximumSizeForEncoding.restype = ctypes.c_long
+    cf.CFStringGetCString.argtypes = [pointer, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    cf.CFStringGetCString.restype = ctypes.c_bool
+    owned = []
+    utf8 = 0x08000100
+
+    def attribute(element, name):
+        key = cf.CFStringCreateWithCString(None, name, utf8)
+        owned.append(key)
+        value = pointer()
+        status = ax.AXUIElementCopyAttributeValue(element, key, ctypes.byref(value))
+        if value.value:
+            owned.append(value)
+        return value if status == 0 else None
+
+    try:
+        system = ax.AXUIElementCreateSystemWide()
+        owned.append(system)
+        # An unresponsive foreground app must not stall the shortcut indefinitely.
+        ax.AXUIElementSetMessagingTimeout(system, 0.2)
+        focused = attribute(system, b"AXFocusedUIElement")
+        if not focused:
+            return ""
+        ax.AXUIElementSetMessagingTimeout(focused, 0.2)
+        text = attribute(focused, b"AXSelectedText")
+        if not text or cf.CFGetTypeID(text) != cf.CFStringGetTypeID():
+            return ""
+        size = cf.CFStringGetMaximumSizeForEncoding(cf.CFStringGetLength(text), utf8) + 1
+        buffer = ctypes.create_string_buffer(size)
+        return buffer.value.decode("utf-8") if cf.CFStringGetCString(text, buffer, size, utf8) else ""
+    finally:
+        for value in reversed(owned):
+            if value:
+                cf.CFRelease(value)
+
+
+def quick_chat_text() -> str:
+    text = selected_text()
+    if not text.strip():
+        text = QGuiApplication.clipboard().text()
+    return text if text.strip() else ""
+
+
+def toggle_quick_chat(window, *, capture_text: bool = False) -> None:
     """Center on the pointer's display, including displays with negative origins."""
     if window.isVisible():
         window.hide()
         return
+    # Capture before showing the panel changes the foreground accessibility element.
+    window.setProperty("pendingText", quick_chat_text() if capture_text else "")
     screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
     if screen:
         window.setScreen(screen)

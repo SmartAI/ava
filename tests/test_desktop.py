@@ -3688,7 +3688,6 @@ def test_desktop_reasoning_expansion_keeps_heading_and_body(desktop, model_serve
     assert QGuiApplication.clipboard().text() == body
 
 
-
 def test_desktop_markdown_streaming_code_blocks_and_source_files(desktop, model_server):
     controller, window = desktop
     controller.start()
@@ -4750,7 +4749,11 @@ def test_desktop_keyboard_search_escape(desktop, model_server, quick_chat):
     start_chat(window)
     until(lambda: controller.connected, controller.changed)
     if quick_chat:
-        window.findChild(QQuickWindow, "quickChatWindow").show()
+        panel = window.findChild(QQuickWindow, "quickChatWindow")
+        panel.show()
+        # Let the new chat finish focusing its composer before switching back.
+        until(lambda: controller.connected and bool(panel.property("sessionId")), controller.changed)
+    window.raise_()
     window.requestActivate()
     assert QTest.qWaitForWindowActive(window)
     QTest.keyClick(window, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
@@ -5491,6 +5494,55 @@ def test_desktop_composers_sync_multiline_drafts(desktop):
     assert main_input.property("text") == controller.draft
     controller.draft = ""
     assert main_input.property("text") == quick_input.property("text") == ""
+
+
+@pytest.mark.parametrize("selection,copied,expected", [
+    ("Selected paragraph\n中文", "Older clipboard", "Selected paragraph\n中文"),
+    ("", "Copied paragraph\n中文", "Copied paragraph\n中文"),
+    ("", " \n", ""),
+])
+def test_quick_chat_captures_text_as_unsent_draft(desktop, monkeypatch, selection, copied, expected):
+    from PySide6.QtCore import QMimeData
+
+    from ava.app.desktop import quick_chat
+
+    controller, window = desktop
+    panel = window.findChild(QQuickWindow, "quickChatWindow")
+    # Keep native UI coverage without racing or replacing the user's clipboard.
+    clipboard = QMimeData()
+    clipboard.setText(copied)
+    monkeypatch.setattr(QGuiApplication, "clipboard", lambda: clipboard)
+    captures = []
+
+    def selected():
+        assert not panel.isVisible()
+        captures.append(True)
+        return selection
+
+    monkeypatch.setattr(quick_chat, "selected_text", selected)
+    try:
+        # Capture while the backend is still offline; seed only the new session.
+        quick_chat.toggle_quick_chat(panel, capture_text=True)
+        controller.start()
+        until(lambda: controller.connected and bool(panel.property("sessionId")), controller.changed)
+        assert controller.draft == expected
+        assert find_item(panel, "composer").property("text") == expected
+        assert find_item(panel, "quickChatTranscript").property("count") == 0
+        assert clipboard.text() == copied
+        controller.draft = "Keep my existing draft"
+        original = controller.chatId
+        quick_chat.toggle_quick_chat(panel, capture_text=True)
+        assert len(captures) == 1  # Dismissing never reads selection or clipboard.
+        quick_chat.toggle_quick_chat(panel, capture_text=True)
+        until(lambda: controller.connected and bool(panel.property("sessionId")), controller.changed)
+        assert controller.chatId != original
+        assert controller.draft == expected
+        assert panel.property("pendingText") == ""
+        controller.openChat(original)
+        until(lambda: controller.connected and controller.chatId == original, controller.changed)
+        assert controller.draft == "Keep my existing draft"
+    finally:
+        panel.hide()
 
 
 def test_quick_chat_resize_and_reopen(desktop):

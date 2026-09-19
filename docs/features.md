@@ -56,7 +56,9 @@ or give Ava a task.
 ![Quick Chat showing a weekly project update conversation, a follow-up draft, and the Open in Ava button](assets/tour/desktop-quick-chat.png)
 
 - **Start fresh on every opening:** each time you open Quick Chat, it creates a
-  new session with an empty composer. Use **+** to start another without closing it.
+  new session. The global shortcut prefills the composer with selected text from
+  the foreground app, or clipboard text if no selection is available. Nothing is
+  sent until you submit it. Use **+** to start an empty chat without closing it.
 - **Dismiss:** press **Esc**, click the close button, or press **⌘⌥Space** again
   to hide the panel. Previous conversations remain available in Ava, and unsent
   drafts stay with their sessions while the desktop is running.
@@ -65,7 +67,11 @@ or give Ava a task.
 
 The system-wide shortcut is **macOS-only** and requires Ava Desktop to remain
 running, not just the background backend. It needs no Accessibility or Input
-Monitoring permission. If another app already uses **⌘⌥Space**, registration may
+Monitoring permission. Reading selected text (without first copying it) does
+require Accessibility access for Ava Desktop in **System Settings → Privacy &
+Security → Accessibility**, and support from the foreground app. Without access,
+copy the text first; the shortcut uses the clipboard and never changes it.
+If another app already uses **⌘⌥Space**, registration may
 fail. On other platforms, **Ctrl+Alt+Space** toggles Quick Chat within Ava; it is
 not a global shortcut.
 

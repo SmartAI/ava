@@ -22,13 +22,15 @@ ApplicationWindow {
     title: "Quick Chat · Ava"
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    property string pendingText: ""
+    property string sourceSessionId: ""
     property string sessionId: ""
     property bool freshRequested: false
     property bool needsFocus: false
     property bool quitting: false
     function prepare() {
         needsFocus = true;
-        if (!backend.online || backend.busy) return;
+        if (!backend.online || backend.busy || !backend.projectId) return;
         if (freshRequested) {
             freshRequested = false;
             backend.newChat();
@@ -37,9 +39,12 @@ ApplicationWindow {
     }
     onVisibleChanged: {
         if (visible) {
+            sourceSessionId = backend.chatId;
             sessionId = "";
             freshRequested = true;
             prepare();
+        } else {
+            pendingText = "";
         }
     }
     onActiveChanged: { if (active) composer.focusInput(); }
@@ -55,6 +60,10 @@ ApplicationWindow {
                 panel.prepare();
             if (!panel.freshRequested && !panel.backend.busy && !panel.backend.error && panel.backend.chatId) {
                 panel.sessionId = panel.backend.chatId;
+                if (panel.pendingText && panel.backend.chatId !== panel.sourceSessionId) {
+                    if (!panel.backend.draft) panel.backend.draft = panel.pendingText;
+                    panel.pendingText = "";
+                }
                 if (panel.needsFocus) {
                     panel.needsFocus = false;
                     composer.focusInput();
@@ -130,7 +139,7 @@ ApplicationWindow {
                 NativeButton {
                     icon.source: "icons/plus.svg"; quiet: true; tip: "New quick chat"
                     enabled: panel.backend.online && !panel.backend.busy
-                    onClicked: { panel.sessionId = ""; panel.freshRequested = true; panel.prepare(); }
+                    onClicked: { panel.pendingText = ""; panel.sessionId = ""; panel.freshRequested = true; panel.prepare(); }
                 }
                 NativeButton {
                     text: "Open in Ava"; quiet: true

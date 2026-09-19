@@ -105,7 +105,7 @@ def run() -> int:
     window = engine.rootObjects()[0]
     panel = window.findChild(QQuickWindow, "quickChatWindow")
     if panel is not None:
-        shortcut.activated.connect(lambda: toggle_quick_chat(panel))
+        shortcut.activated.connect(lambda: toggle_quick_chat(panel, capture_text=True))
         if not shortcut.register():
             print(f"ava-desktop: {shortcut.error}", file=sys.stderr)
     try:
