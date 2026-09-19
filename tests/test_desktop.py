@@ -484,10 +484,9 @@ def click(window, name):
     # Hit-test the rendered layout, after asynchronous models and pane changes settle.
     frame = QSignalSpy(window.frameSwapped)
     window.update()
-    assert frame.count() or frame.wait(2000), (
-        f"target window did not render: exposed={window.isExposed()}, "
-        f"active={window.isActive()}, app={QGuiApplication.applicationState()}"
-    )
+    # QSignalSpy.wait() holds the GIL in PySide6. PDF image loading needs
+    # it on Qt's pixmap thread, while the GUI waits for that thread's mutex.
+    until(lambda: frame.count() > 0, window.frameSwapped, timeout=2000)
     until(
         lambda: (target := find_item(window, name)) is not None and target.isVisible()
         and target.property("enabled") and not visible_rect(window, target).isEmpty(),
