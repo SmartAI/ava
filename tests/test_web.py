@@ -20,6 +20,36 @@ from tests.conftest import ScriptedProvider, text_response, tool_call_response
 PNG_2X3 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD")
 
 
+@pytest.mark.parametrize("manual", [False, True])
+async def test_first_message_generates_isolated_title(client, scripted, monkeypatch, home, manual):
+    await client.post('/api/chats', json={'project_id': 'workspace'})
+    title_provider = ScriptedProvider([text_response('{"title":"修复登录超时"}')])
+    title_provider.gate = asyncio.Event()
+    scripted.append(title_provider)
+    monkeypatch.setattr(client.app.state.automations.state, 'provider_factory', lambda *args: title_provider)
+    response = await client.post('/api/chats/c1/messages', json={'text': '你好，请帮我修复登录时一直超时的问题'})
+    assert response.status_code == 202
+    fallback = response.json()['chat']['title']
+    await asyncio.wait_for(title_provider.started.wait(), 2)
+    assert (await client.get('/api/chats/c1')).json()['title'] == fallback
+    if manual:
+        # Even renaming to the same fallback must supersede the pending model result.
+        await client.patch('/api/chats/c1', json={'title': fallback})
+    else:
+        title_provider.gate.set()
+    chat = client.app.state.registry.find_chat('c1')[1]
+    await asyncio.gather(chat.title_task, return_exceptions=True)
+    expected = fallback if manual else '修复登录超时'
+    assert (await client.get('/api/chats/c1')).json()['title'] == expected
+    saved = json.loads((home / 'web.json').read_text())
+    assert saved['sessions'][chat.session_id]['title'] == expected
+    await client.post('/api/chats/c1/messages', json={'text': '再检查一下'})
+    assert title_provider.calls == 1
+    assert title_provider.closed
+    assert len(title_provider.contexts[0].items) == 1
+    assert not title_provider.contexts[0].tools
+
+
 async def test_analytics_dashboard_reports_durable_usage(client, scripted):
     from ava.llm import Usage
 

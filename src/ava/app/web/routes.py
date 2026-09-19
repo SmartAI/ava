@@ -398,6 +398,8 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         except AvaError as error:
             chat.title = previous
             return error_response(503, error.message)
+        if chat.title_task is not None:
+            chat.title_task.cancel()
         chat.notify_status()
         return JSONResponse(chat.summary())
 
@@ -537,6 +539,10 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
             except AvaError:
                 # The accepted input is already durable and can re-derive its title on restart.
                 pass
+            if chat.title_task is None:
+                chat.title_task = asyncio.create_task(state.generate_title(
+                    chat, text or attachments[0].get("name", ""), chat.title
+                ))
         if chat.drive.acknowledge(followed_running_drive, agent.status):
             begin_drive(chat)
         return JSONResponse({"accepted": True, "chat": chat.summary()}, status_code=202)
