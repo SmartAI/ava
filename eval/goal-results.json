@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "development_screen_not_promotion",
+  "date": "2026-09-14",
+  "model": "codex/gpt-6-astra",
+  "effort": "medium",
+  "compaction": false,
+  "repetitions_per_valid_pair": 1,
+  "timeout_seconds": 180,
+  "schedule_seed": 42,
+  "matched_aggregate_token_budget": false,
+  "harbor_version": "0.22.0",
+  "base_image": "python:3.12-slim",
+  "base_image_digest_pinned": false,
+  "task_set_sha256": "9d1d6a215c469f8486506027b42e566a8e65a95aaa511269ab35c868fd54cf5c",
+  "evaluator_sha256": "e948188daea4f13e507491752df8d456d86627c1694c08e0d0c4bc29a0ffcb6a",
+  "wheels": {
+    "ava-baseline": "20ef359bcf9e44aa9d6cb35a9679906f49c2c12d99953b9b4690b2ca7788be5b",
+    "ava-goal": "433618b54ed1ea3b0667fc781c73041661b1c02284e91c65f7d4cc1813fa9f71"
+  },
+  "task_hashes": {
+    "goal-migration": "581d14bafd1a6868401b8cb06060ef801f743b75deb5fdb5ad88ead07df25e86",
+    "goal-csv": "788b75cd75113de2fae28aa8004d270052a3563587f2b0a846550ca3f24132bf",
+    "goal-satisfied": "4160bc7691ee428a86e9c15cc4a0af1cf919c95ab24e06ca650a6811b1bbb3bd",
+    "goal-artifacts": "9abf5138c481c6e0845ce44ddaa0adc50277eeab2a38c81b5fd4382abcb60a6c"
+  },
+  "source_batches": {
+    "goal-final-screen": ["goal-migration", "goal-csv", "goal-satisfied"],
+    "goal-qualified-artifacts": ["goal-artifacts"]
+  },
+  "trials": [
+    {"task":"goal-migration","agent":"ava-baseline","correct":true,"agent_seconds":41.130562,"input_tokens":8503,"cached_input_tokens":5632,"output_tokens":877,"tool_calls":10,"model_attempts":5},
+    {"task":"goal-migration","agent":"ava-goal","correct":true,"agent_seconds":52.602474,"input_tokens":15059,"cached_input_tokens":8448,"output_tokens":1310,"tool_calls":11,"model_attempts":7,"goal_turns":1,"goal_status":"complete"},
+    {"task":"goal-csv","agent":"ava-baseline","correct":true,"agent_seconds":57.537458,"input_tokens":11177,"cached_input_tokens":7680,"output_tokens":1406,"tool_calls":6,"model_attempts":6},
+    {"task":"goal-csv","agent":"ava-goal","correct":true,"agent_seconds":67.482533,"input_tokens":18121,"cached_input_tokens":9472,"output_tokens":1468,"tool_calls":7,"model_attempts":8,"goal_turns":1,"goal_status":"complete"},
+    {"task":"goal-satisfied","agent":"ava-baseline","correct":true,"agent_seconds":25.753604,"input_tokens":5397,"cached_input_tokens":1024,"output_tokens":543,"tool_calls":3,"model_attempts":4},
+    {"task":"goal-satisfied","agent":"ava-goal","correct":true,"agent_seconds":59.130624,"input_tokens":16152,"cached_input_tokens":6144,"output_tokens":1120,"tool_calls":4,"model_attempts":8,"goal_turns":2,"goal_status":"complete"},
+    {"task":"goal-artifacts","agent":"ava-baseline","correct":true,"agent_seconds":67.123825,"input_tokens":10174,"cached_input_tokens":6400,"output_tokens":1802,"tool_calls":8,"model_attempts":5},
+    {"task":"goal-artifacts","agent":"ava-goal","correct":true,"agent_seconds":90.959356,"input_tokens":20798,"cached_input_tokens":10624,"output_tokens":2223,"tool_calls":8,"model_attempts":8,"goal_turns":1,"goal_status":"complete"}
+  ],
+  "totals": {
+    "ava-baseline": {"trials":4,"solved":4,"tokens":39879,"agent_seconds":191.545449,"tool_calls":27,"model_attempts":20,"cost_usd":null},
+    "ava-goal": {"trials":4,"solved":4,"tokens":76251,"agent_seconds":270.174987,"tool_calls":30,"model_attempts":31,"false_completions":0,"cost_usd":null}
+  },
+  "notes": [
+    "Inclusive input already includes cached input; inclusive output includes reasoning. Do not add cache tokens again.",
+    "G04 was rerun after its documentation-example oracle was repaired; original invalid grades remain in the raw evidence, not in these descriptive totals.",
+    "Every selected trial's task hash matches the qualified task set. This is a two-batch screen, not an untouched single experiment or a statistical comparison.",
+    "Setup failures, development pilots, invalid-oracle trials, and an interrupted pilot are excluded from these selected-trial totals; development spend is larger and not fully harvested.",
+    "The baseline wheel was frozen before implementation, but live model screening began afterward.",
+    "Both arms solved all four small tasks. No additional verified completion or general model-quality improvement was demonstrated. Goal mode remains opt-in and experimental."
+  ]
+}

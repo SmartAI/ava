@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "goal-long-v1",
+  "repository": "https://github.com/laude-institute/terminal-bench-2.git",
+  "revision": "2fd12b88aafdd04a52c298e3940bcb189f9766d6",
+  "license": "Apache-2.0",
+  "screen_timeout_seconds": 1800,
+  "tasks": [
+    {
+      "id": "schemelike-metacircular-eval",
+      "split": "development",
+      "image": "alexgshaw/schemelike-metacircular-eval@sha256:b485be38bf80d56c1a4cd9da95bbf7ec129dc03f6786b86c0525518a96f6d1db",
+      "workstreams": ["language semantics", "lexical scope and recursion", "input/output forwarding", "self-interpretation"],
+      "immutable": {"interp.py": "environment/tests/interp.py"}
+    },
+    {
+      "id": "llm-inference-batching-scheduler",
+      "split": "development",
+      "image": "alexgshaw/llm-inference-batching-scheduler@sha256:19e79aa49be4e55dccca1dde966515ebe6852314b6010bcb9230afb48b996774",
+      "workstreams": ["schema and exact coverage", "globally bounded shapes", "cost and padding thresholds", "latency thresholds across both buckets"],
+      "immutable": {}
+    },
+    {
+      "id": "make-mips-interpreter",
+      "split": "validation",
+      "image": "alexgshaw/make-mips-interpreter@sha256:082fc8821b317f30fdfbf8d08d528874ce331c03e8083aef0406d48cdd7132a2",
+      "workstreams": ["ELF loading and memory", "instruction execution", "system calls and file I/O", "Doom startup and frame rendering"],
+      "immutable": {}
+    }
+  ],
+  "selection_rule": "Select on published task requirements and operational suitability before model screening, not on observed goal wins. Complexity is a hypothesis until baseline trajectories demonstrate it.",
+  "excluded_candidates": {
+    "kv-store-grpc": "Small service plus process startup; not enough evidence of a long dependency chain.",
+    "modernize-scientific-stack": "Requirements reduce to a small script and dependency file.",
+    "multi-source-data-merger": "Useful data-correctness task, but probably too compact for the primary long-horizon set.",
+    "headless-terminal": "Narrow interface; retain as a possible focused lifecycle task, not primary long-horizon evidence.",
+    "cobol-modernization": "Small source baseline relative to the selected interpreter tasks.",
+    "financial-document-processor": "Would confound continuation with OCR/vision tool availability in the first screen."
+  }
+}

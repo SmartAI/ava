@@ -7,6 +7,24 @@ supplied locally; no particular dataset is selected by these instructions.
 Task evaluations run locally and explicitly. CI runs code checks and unit tests;
 it does not dispatch evaluations or upload evaluation artifacts.
 
+The [goal-mode evaluation cases](goal-cases.md) define the baseline, independent
+checks, lifecycle scenarios, and promotion gates for goal continuation. Materialize
+the golden suite with `uv run python -m eval.goal_tasks --output eval/cache/goal-tasks`.
+`tests/test_goal_tasks.py` qualifies graders; `tests/test_goal.py` checks the runtime.
+Set `"goal": true` on an Ava benchmark arm to use goal mode with the same task text.
+See [goal usage and limitations](../docs/goals.md) and the
+[initial live-screen results](../docs/goal-evaluation.md).
+
+For the long-horizon follow-up, see [the frozen task pool and protocol](goal-long-cases.md).
+`eval.goal_long` prepares three pinned upstream tasks, preserving graders and archiving
+workspaces. Qualify reference/no-op controls, then screen ordinary Ava before using
+[the three-arm experiment template](experiments/goal-long.example.json). Its
+`continuations: 2` arm gives ordinary Ava two fixed follow-ups within the same total
+time allowance; it is not goal mode or hidden-grader feedback. Replace the suite
+and wheel placeholders; use the same frozen wheel in all arms. The nine-trial
+screen can consume up to 4.5 agent-hours, excluding setup/verification; do not
+launch the full comparison implicitly when only a baseline screen is intended.
+
 ## Setup
 
 Run from the repository root. Task execution requires Docker; planning and the

@@ -24,12 +24,20 @@ class AvaAgent(BaseInstalledAgent):
     def __init__(
         self, *args: Any, effort: str = "off", compaction: bool = False,
         wheel_path: str | None = None, system_prompt_path: str | None = None,
-        record_io: bool = False, **kwargs: Any,
+        record_io: bool = False, goal: bool = False, continuations: int = 0, **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.provider, self.model = model_parts(self.model_name, effort, mock=True)
         if type(compaction) is not bool or type(record_io) is not bool:
             raise ValueError("compaction and record_io must be JSON booleans")
+        if type(goal) is not bool or (goal and record_io):
+            raise ValueError("goal must be a boolean and cannot be combined with record_io")
+        if type(continuations) is not int or not 0 <= continuations <= 10:
+            raise ValueError("continuations must be an integer from 0 to 10")
+        if continuations and (goal or record_io):
+            raise ValueError("generic continuations cannot be combined with goal or recording")
+        self.continuations = continuations
+        self.goal = goal
         self.effort, self.compaction, self.record_io = effort, compaction, record_io
         self.wheel = Path(
             wheel_path or os.environ.get("AVA_EVAL_WHEEL", "")
@@ -58,6 +66,9 @@ class AvaAgent(BaseInstalledAgent):
                 environment, content=content, remote_path="/tmp/ava-system-prompt.txt",
                 filename="system-prompt.txt",
             )
+        await environment.upload_file(ROOT / "integrations/process_guard.py", "/tmp/ava-process-guard.py")
+        if self.continuations:
+            await environment.upload_file(ROOT / "integrations/continuation.py", "/tmp/ava-continuation.py")
         await environment.upload_file(self.wheel, "/tmp/ava-0.1.0-py3-none-any.whl")
         await environment.upload_file(ROOT / "constraints.txt", "/tmp/ava-constraints.txt")
         await environment.upload_file(ROOT / "integrations/install.sh", "/tmp/ava-install.sh")
@@ -84,7 +95,7 @@ class AvaAgent(BaseInstalledAgent):
                     raise ValueError(f"{key} is required for a live benchmark run")
                 env[key] = os.environ[key]
             await self._upload_config_text(
-                environment, content=instruction, remote_path="/tmp/ava-instruction.txt",
+                environment, content=("/goal " if self.goal else "") + instruction, remote_path="/tmp/ava-instruction.txt",
                 filename="instruction.txt",
             )
             args = ava_arguments(
@@ -95,24 +106,57 @@ class AvaAgent(BaseInstalledAgent):
                 "wheel_sha256": self._wheel_sha256, "system_prompt_sha256": self._prompt_sha256,
                 "mode": "smoke" if self.provider == "mock" else "live",
                 "effort": self.effort, "compaction": self.compaction,
-                "record_io": self.record_io,
+                "record_io": self.record_io, "goal": self.goal,
+                "continuations": self.continuations, "continuations_sent": 0,
                 "authentication": "codex-oauth" if self.provider == "codex" else self.provider,
                 "project_instructions": True,
                 "agent_failed": False,
                 "provider_api": {"openai": "chat-completions", "anthropic": "messages", "codex": "codex-responses"}.get(self.provider),
                 "tools": ["read", "edit", "write", "bash"],
             }
+            await self.exec_as_root(environment, command=shlex.join([
+                "/opt/ava-venv/bin/python", "-I", "/tmp/ava-process-guard.py",
+                "record", "/tmp/ava-processes.json",
+            ]), timeout_sec=15)
             failure = None
             try:
+                # One CLI/Agent lifetime preserves prompt, scratch, provider and session.
+                # Harbor's outer timeout includes every turn and checkpoint.
+                if self.continuations:
+                    args = [args[0], "-I", "/tmp/ava-continuation.py",
+                            str(self.continuations), remote, *args[4:]]
                 await self.exec_as_agent(
                     environment, command=shlex.join(args) + " < /tmp/ava-instruction.txt", env=env,
                 )
             except BaseException as error:
                 failure = error
                 context.metadata["agent_failed"] = True
+                try:
+                    cleanup = await self.exec_as_root(environment, command=shlex.join([
+                        "/opt/ava-venv/bin/python", "-I", "/tmp/ava-process-guard.py",
+                        "stop", "/tmp/ava-processes.json",
+                    ]), timeout_sec=15)
+                    context.metadata["process_cleanup"] = json.loads(cleanup.stdout or "")
+                except Exception as cleanup_error:
+                    context.metadata["process_cleanup_error"] = str(cleanup_error)
                 raise
             finally:
                 try:
+                    if self.continuations:
+                        # Missing/partial receipts must not masquerade as zero follow-ups.
+                        context.metadata["continuations_sent"] = None
+                        receipt = await environment.exec(command=shlex.join([
+                            "/opt/ava-venv/bin/python", "-I", "-c",
+                            "from pathlib import Path; import sys; print(Path(sys.argv[1]).read_text())",
+                            f"{remote}/continuations.json",
+                        ]))
+                        try:
+                            sent = json.loads(receipt.stdout or "")["continuations_sent"]
+                            if receipt.return_code != 0 or type(sent) is not int or not 0 <= sent <= self.continuations:
+                                raise ValueError("Invalid continuation receipt")
+                            context.metadata["continuations_sent"] = sent
+                        except (ValueError, KeyError, TypeError) as error:
+                            context.metadata["continuation_harvest_error"] = str(error)
                     result = await environment.exec(command=shlex.join([
                         "/opt/ava-venv/bin/python", "-I", "-m", "ava.app.cli",
                         "session", "inspect", f"{remote}/session.jsonl.zst",
@@ -128,6 +172,8 @@ class AvaAgent(BaseInstalledAgent):
                     context.metadata["cache_write_tokens"] = (
                         0 if self.provider in {"openai", "codex"} else summary["tokens"].get("cache_write")
                     )
+                    if self.continuations and failure is None and context.metadata["continuations_sent"] != self.continuations:
+                        raise ValueError("Successful continuation run has an incomplete receipt")
                 except Exception as error:
                     context.metadata["harvest_error"] = str(error)
                     if failure is None:

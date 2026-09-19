@@ -40,9 +40,15 @@ class AgentSpec(StrictModel):
     wheel: str | None = None
     system_prompt: str | None = None
     version: str | None = None
+    goal: bool = False
+    continuations: int = Field(default=0, ge=0, le=10, strict=True)
 
     @model_validator(mode="after")
     def check_model(self) -> AgentSpec:
+        if self.continuations and (self.kind != "ava" or self.goal):
+            raise ValueError("generic continuations require ordinary Ava, not goal mode")
+        if self.goal and self.kind != "ava":
+            raise ValueError("goal mode is implemented only for the Ava adapter")
         if self.kind in ("ava", "pi"):
             if self.compaction is None:
                 self.compaction = False
@@ -209,6 +215,10 @@ def agent_config(spec: AgentSpec, inputs: Path, timeout: int) -> dict[str, Any]:
         module = "harbor_agent:AvaAgent" if spec.kind == "ava" else "pi_agent:PiAgent"
         value["import_path"] = f"eval.integrations.{module}"
         kwargs: dict[str, Any] = {"effort": spec.effort, "compaction": spec.compaction}
+        if spec.goal:
+            kwargs["goal"] = True
+        if spec.continuations:
+            kwargs["continuations"] = spec.continuations
         if spec.kind == "ava":
             kwargs["wheel_path"] = str(inputs / spec.id / "ava-0.1.0-py3-none-any.whl")
             if spec.system_prompt:
@@ -240,7 +250,9 @@ def normalize(
     context = raw.get("agent_result") or {}
     exception = raw.get("exception_info")
     reward = ((raw.get("verifier_result") or {}).get("rewards") or {}).get("reward")
-    if exception and exception["exception_type"] == "AgentTimeoutError":
+    if (context.get("metadata") or {}).get("process_cleanup_error"):
+        status, correct = "infrastructure_error", None
+    elif exception and exception["exception_type"] == "AgentTimeoutError":
         status, correct = "agent_timeout", False
     elif (context.get("metadata") or {}).get("agent_failed"):
         status, correct = "agent_error", False

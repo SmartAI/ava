@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "goal-long-three-arm-screen",
+  "suite": "/absolute/path/to/goal-long-tasks/suite.json",
+  "agents": [
+    {
+      "id": "ordinary",
+      "kind": "ava",
+      "model": "codex/gpt-6-astra",
+      "effort": "medium",
+      "compaction": true,
+      "wheel": "/absolute/path/to/ava-0.1.0-py3-none-any.whl"
+    },
+    {
+      "id": "generic-continuation",
+      "kind": "ava",
+      "model": "codex/gpt-6-astra",
+      "effort": "medium",
+      "compaction": true,
+      "continuations": 2,
+      "wheel": "/absolute/path/to/ava-0.1.0-py3-none-any.whl"
+    },
+    {
+      "id": "goal",
+      "kind": "ava",
+      "model": "codex/gpt-6-astra",
+      "effort": "medium",
+      "compaction": true,
+      "goal": true,
+      "wheel": "/absolute/path/to/ava-0.1.0-py3-none-any.whl"
+    }
+  ],
+  "repetitions": 1,
+  "timeout_seconds": 1800,
+  "schedule_seed": 42,
+  "max_trials": 9
+}
