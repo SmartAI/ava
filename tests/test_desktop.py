@@ -3663,6 +3663,32 @@ def test_desktop_transcript_renders_markdown_tools_and_expands_complete_output(
         )
 
 
+def test_desktop_reasoning_expansion_keeps_heading_and_body(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    body = "**检查 Reasoning 渲染**\n\n第一段正文：检查模型返回的摘要。\n\n第二段正文：确认展开后没有丢失。"
+    controller._transcript.apply({
+        "seq": controller._transcript.last_seq + 1,
+        "kind": "assistant/message",
+        "attempt_id": "reasoning-render",
+        "blocks": [{"kind": "reasoning", "summary": body}],
+    })
+    click(window, "expandMessage")
+    until(lambda: bool(find_item(window, "messageBody")), window.frameSwapped)
+    output = find_item(window, "messageBody")
+    quick_document = output.property("textDocument")
+    document = quick_document.textDocument()
+    assert "第一段正文" in document.toPlainText()
+    assert "第二段正文" in document.toPlainText()
+    until(lambda: output.height() >= output.property("contentHeight"), window.frameSwapped)
+    click(window, "copyActivityOutput")
+    assert QGuiApplication.clipboard().text() == body
+
+
+
 def test_desktop_markdown_streaming_code_blocks_and_source_files(desktop, model_server):
     controller, window = desktop
     controller.start()

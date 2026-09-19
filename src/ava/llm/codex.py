@@ -281,7 +281,7 @@ def codex_request_body(
     selected: Selection,
     *,
     prompt_cache_key: str | None = None,
-    reasoning_summary: str | None = "auto",
+    reasoning_summary: str | None = "detailed",
 ) -> str:
     """The stateless Responses request, assembled around the pre-encoded input array."""
     reasoning: dict = {"effort": selected.effort} if selected.effort is not None else {}
@@ -712,7 +712,7 @@ class CodexProvider(Provider):
             selected,
             prompt_cache_key=self._prompt_cache_key,
             reasoning_summary=(
-                "auto" if self._reasoning_summaries.get(selected.model, True) else None
+                "detailed" if self._reasoning_summaries.get(selected.model, True) else None
             ),
         )
         request = Request(

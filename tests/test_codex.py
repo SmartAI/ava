@@ -162,7 +162,7 @@ def test_request_body_replays_reasoning_only_for_the_same_model():
     body = json.loads(codex_request_body(context, selected))
     assert body["model"] == "gpt-default" and body["instructions"] == "sys"
     assert body["store"] is False and body["stream"] is True and body["parallel_tool_calls"] is True
-    assert body["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert body["reasoning"] == {"effort": "high", "summary": "detailed"}
     assert body["include"] == ["reasoning.encrypted_content"]
     without_summary = json.loads(codex_request_body(context, selected, reasoning_summary=None))
     assert without_summary["reasoning"] == {"effort": "high"}
@@ -590,7 +590,7 @@ async def test_codex_provider_streams_tools_reasoning_and_usage(codex_server: st
         and sent["headers"]["ChatGPT-Account-Id"] == "acct-test"
     )
     assert (
-        sent["body"]["reasoning"] == {"effort": "high", "summary": "auto"}
+        sent["body"]["reasoning"] == {"effort": "high", "summary": "detailed"}
         and sent["body"]["input"][0]["type"] == "message"
     )
 
