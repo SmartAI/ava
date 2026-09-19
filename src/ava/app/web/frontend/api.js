@@ -33,6 +33,7 @@ export const api = {
   resume: id => call('POST', `/api/chats/${id}/resume`),
   models: id => call('GET', `/api/chats/${id}/models`),
   selectModel: (id, body) => call('POST', `/api/chats/${id}/model`, body),
+  goal: (id, text = '') => call('POST', `/api/chats/${id}/goal`, { text }),
   compact: id => call('POST', `/api/chats/${id}/compact`),
   context: id => call('GET', `/api/chats/${id}/context`),
   skills: id => call('GET', `/api/chats/${id}/skills`).then(payload => payload.skills),

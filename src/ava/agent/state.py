@@ -339,6 +339,7 @@ class AgentState:
     mcp: MCPServers | None = None
     owns_mcp: bool = False
     mcp_tools: list[Tool] = field(default_factory=list)
+    goal_turn_id: str | None = None
 
     @classmethod
     def create(

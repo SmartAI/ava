@@ -50,6 +50,28 @@ async def test_first_message_generates_isolated_title(client, scripted, monkeypa
     assert not title_provider.contexts[0].tools
 
 
+async def test_goal_command_starts_work_and_status_is_read_only(client, scripted):
+    from tests.test_goal import verdict
+
+    await client.post('/api/chats', json={'project_id': 'workspace'})
+    scripted[0].scripts = [text_response('Verified.'), verdict(True)]
+    response = await client.post('/api/chats/c1/goal', json={'text': 'Verify the current state'})
+    assert response.status_code == 200, response.text
+    assert response.json()['start'] is True
+    assert response.json()['chat']['title'] == 'Verify the current state'
+    deadline = asyncio.get_running_loop().time() + 2
+    while True:
+        response = await client.post('/api/chats/c1/goal', json={'text': ''})
+        assert response.json()['start'] is False
+        if response.json()['goal']['status'] == 'complete':
+            break
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(.01)
+    assert scripted[0].calls == 2
+    assert (await client.post('/api/chats/c1/goal', json={'text': 'clear'})).json()['goal']['status'] == 'cleared'
+    assert (await client.post('/api/chats/c1/goal', json={'text': 'resume'})).status_code == 400
+
+
 async def test_analytics_dashboard_reports_durable_usage(client, scripted):
     from ava.llm import Usage
 

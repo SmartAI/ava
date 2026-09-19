@@ -9,6 +9,7 @@ from typing import Any
 
 from ava.base import AvaError
 from ava.session import Event
+from ava.session.event import GoalChanged, TurnEnd, TurnStart
 
 from .events import event_json
 from .registry import Chat
@@ -50,10 +51,16 @@ async def event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
     """Multiplex durable session events with unkeyed transient status snapshots."""
     queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
     agent = chat.agent
+    replaying = True
 
     def emit(event: Event) -> None:
         if last is None or event.seq > last:
             queue.put_nowait(("event", event))
+            if not replaying and (
+                isinstance(event.payload, GoalChanged)
+                or chat.agent.goal is not None and isinstance(event.payload, (TurnStart, TurnEnd))
+            ):
+                queue.put_nowait(("status", status_payload(chat)))
 
     def on_status(*_: object) -> None:
         queue.put_nowait(("status", status_payload(chat)))
@@ -64,6 +71,7 @@ async def event_stream(chat: Chat, last: int | None) -> AsyncIterator[bytes]:
     # React batch instead of one render per replayed event.
     queue.put_nowait(("status", status_payload(chat)))
     subscription = agent.subscribe(emit)
+    replaying = False
     unwatch = agent.watch_status(on_status)
     chat.status_watchers.append(on_status)
     queue.put_nowait(("status", status_payload(chat)))

@@ -8,6 +8,7 @@ boundary separately from the opaque state; the shell folds only this stream into
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any
 
 from ava.base import AvaError, ErrorKind
@@ -33,6 +34,7 @@ from ava.session import (
     Usage,
     UserMessage,
 )
+from ava.session.event import GoalChanged
 
 
 def blocks_json(item: Item) -> list[dict[str, Any]]:
@@ -87,6 +89,8 @@ def event_dict(event: Event) -> dict[str, Any]:
     payload = event.payload
     out: dict[str, Any] = {"seq": event.seq, "kind": payload.kind}
     match payload:
+        case GoalChanged():
+            out["goal"] = asdict(payload)
         case Selection():
             out["provider"] = payload.provider
             out["model"] = payload.model

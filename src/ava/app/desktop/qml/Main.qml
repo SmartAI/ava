@@ -859,6 +859,14 @@ ApplicationWindow {
                         }
                     }
                 }
+                GoalStatus {
+                    backend: window.backend
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: chatColumn.contentWidth
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                }
                 ChatComposer {
                     id: chatComposer
                     Layout.fillWidth: true

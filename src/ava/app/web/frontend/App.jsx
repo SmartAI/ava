@@ -3,6 +3,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { api } from './api'
 import { COMMAND_HINTS } from './constants'
 import { Composer } from './components/Composer'
+import { GoalStatus } from './components/GoalStatus'
 import { Header } from './components/Header'
 import { Modal } from './components/Modal'
 import { Sidebar } from './components/Sidebar'
@@ -43,6 +44,7 @@ export default function App() {
   const [archiveOpen, setArchiveOpen] = useState(() => savedSet('ava-open-archives'))
   const [status, setStatus] = useState('idle')
   const [statusInfo, setStatusInfo] = useState(null)
+  const [streamConnected, setStreamConnected] = useState(false)
   const [transcript, setTranscript] = useState([])
   const [empty, setEmpty] = useState(true)
   const [pending, setPending] = useState(emptyPending)
@@ -64,6 +66,7 @@ export default function App() {
   const selectionRef = useRef(0)
   const streamRef = useRef(null)
   const displayedInputsRef = useRef(new Set())
+  const goalNoticeRef = useRef('')
   const tailRef = useRef(null)
   const lastAssistantRef = useRef('')
   const modelSelectionRef = useRef(null)
@@ -158,6 +161,13 @@ export default function App() {
   }
 
   const applyEvent = event => {
+    if (event.kind === 'goal/changed') {
+      // The following status snapshot carries goal timing as well as configuration.
+      const notice = `${event.goal.id}:${event.goal.status}:${event.goal.reason}`
+      if (event.goal.reason && notice !== goalNoticeRef.current) addNotice(`Goal ${event.goal.status}: ${event.goal.reason}`)
+      goalNoticeRef.current = notice
+      return true
+    }
     if (event.kind === 'inbox/spliced') {
       setPending(items => applyPendingEvent(items, event))
       return false
@@ -309,6 +319,7 @@ export default function App() {
       streamLiveQueueRef.current = []
       streamLiveFlushEpochRef.current = null
     }
+    stream.onerror = () => { if (streamIsCurrent(epoch, id, selection)) setStreamConnected(false) }
     stream.onmessage = message => {
       if (!streamIsCurrent(epoch, id, selection)) return
       const event = JSON.parse(message.data)
@@ -337,6 +348,7 @@ export default function App() {
       // current conversation selection carried by this newer status snapshot.
       setStatus(info.status)
       setStatusInfo(info)
+      setStreamConnected(true)
       setModelSelection({ provider: info.provider, model: info.model, effort: info.effort ?? null })
     })
     streamRef.current = stream
@@ -374,6 +386,8 @@ export default function App() {
     setPending(emptyPending())
     setModelSelection(null)
     setStatusInfo(null)
+    setStreamConnected(false)
+    goalNoticeRef.current = ''
     setTranscript([])
     setEmpty(false)
 
@@ -555,7 +569,7 @@ export default function App() {
   }
 
   const runCommand = async line => {
-    const match = line.match(/^\/(\S+)\s*(.*)$/)
+    const match = line.match(/^\/(\S+)\s*([\s\S]*)$/)
     const name = match?.[1]
     const argument = match?.[2].trim() || ''
     if (!name || !(name in COMMAND_HINTS)) {
@@ -571,6 +585,11 @@ export default function App() {
         if (!currentRef.current) return
         if (argument) return await applySelection({ effort: argument === 'none' ? null : argument })
         await openModelSettings()
+      } else if (name === 'goal') {
+        if (!currentRef.current) return
+        const result = await api.goal(currentRef.current, argument)
+        if (result.chat) updateChat(result.chat)
+        addNotice(result.message)
       } else if (name === 'compact') {
         if (!currentRef.current) return
         addNotice((await api.compact(currentRef.current)).message)
@@ -947,6 +966,7 @@ export default function App() {
       >
         <Transcript entries={transcript} empty={empty} project={currentProject} status={status} />
         <div className="composer-seat sticky bottom-0 z-10 flex shrink-0 flex-col items-center px-2 pb-2 min-[701px]:px-4">
+          <GoalStatus goal={statusInfo?.goal} connected={streamConnected} />
           <Composer
             archived={archived}
             currentChat={currentChat}

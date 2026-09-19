@@ -54,6 +54,7 @@ COMMANDS = {
     "model": "Choose a model · /model [ID]",
     "effort": "Reasoning effort · /effort [LEVEL]",
     "skills": "Browse and use project and personal skills",
+    "goal": "Set or inspect a goal · /goal [objective|pause|resume|clear]",
     "compact": "Summarize older history now",
     "context": "Inspect what the model sees",
     "files": "Browse project files",
@@ -153,6 +154,7 @@ class Controller(QObject):
         self._model_revision = 0
         self._skills: list[dict] = []
         self._selection: dict[str, Any] = {}
+        self._goal: dict[str, Any] = {}
         self._provider_settings_state: dict[str, Any] = {
             "loading": False,
             "saving": False,
@@ -1012,6 +1014,10 @@ class Controller(QObject):
     def selection(self) -> dict:
         return self._selection
 
+    @Property("QVariantMap", notify=changed)  # type: ignore[arg-type]
+    def goal(self) -> dict:
+        return self._goal
+
     @Property(bool, notify=changed)
     def selecting(self) -> bool:
         return self._selecting
@@ -1597,6 +1603,8 @@ class Controller(QObject):
                 self.panelRequested.emit("browser")
         elif name == "theme":
             self.themeRequested.emit()
+        elif name == "goal":
+            self._chat_call("POST", "goal", {"text": argument}, lambda p: self._notice(p["message"]))
         elif name == "compact":
             self._chat_call("POST", "compact", None, lambda p: self._notice(p["message"]))
         elif name == "context":
@@ -1822,6 +1830,7 @@ class Controller(QObject):
         self._chat_title = "New conversation"
         self._model_name = ""
         self._selection = {}
+        self._goal = {}
         self._models = {}
         self._skills = []
         self._selecting = False
@@ -2054,6 +2063,7 @@ class Controller(QObject):
         self._connected = True
         self._connection_label = "Connected"
         self._status = payload.get("status", "idle")
+        self._goal = payload.get("goal") or {}
         self._update_selection(payload)
         self.changed.emit()
         after, self._chat_ready = self._chat_ready, None

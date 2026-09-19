@@ -210,6 +210,49 @@ class DriveError:
     recoverable: bool = False
 
 
+class GoalStatus(StrEnum):
+    active = "active"
+    paused = "paused"
+    blocked = "blocked"
+    budget_limited = "budget_limited"
+    complete = "complete"
+    cleared = "cleared"
+
+
+@dataclass(slots=True)
+class GoalChanged:
+    """A complete immutable-by-convention goal snapshot; latest event wins."""
+
+    kind: ClassVar[str] = "goal/changed"
+    id: str
+    objective: str
+    status: GoalStatus = GoalStatus.active
+    reason: str = ""
+    turns: int = 0
+    max_turns: int = 20
+    token_budget: int | None = None
+    tokens_used: int = 0
+    usage_complete: bool = True
+    no_progress: int = 0
+    check: str = ""
+
+
+@dataclass(slots=True)
+class GoalContinued:
+    kind: ClassVar[str] = "goal/continued"
+    item: Item
+
+
+@dataclass(slots=True)
+class GoalChecked:
+    kind: ClassVar[str] = "goal/checked"
+    id: str
+    command: str
+    output: str
+    is_error: bool
+    elapsed_ms: int
+
+
 @dataclass(slots=True)
 class Unknown:
     """A future event kind, preserved byte-identically so it survives a read-write cycle."""
@@ -243,6 +286,9 @@ EventPayload = (
     | StepEnd
     | TurnEnd
     | DriveError
+    | GoalChanged
+    | GoalChecked
+    | GoalContinued
     | Unknown
 )
 
@@ -267,6 +313,9 @@ KNOWN_PAYLOAD_TYPES: tuple[type, ...] = (
     StepEnd,
     TurnEnd,
     DriveError,
+    GoalChanged,
+    GoalChecked,
+    GoalContinued,
 )
 
 
@@ -286,7 +335,7 @@ class Event:
 
 def model_item(payload: EventPayload) -> Item | None:
     """The single model-visible item a payload carries, or None. Claims may carry several."""
-    if isinstance(payload, UserMessage | AssistantMessage | ToolResult | CompactionSeed):
+    if isinstance(payload, UserMessage | AssistantMessage | ToolResult | CompactionSeed | GoalContinued):
         return payload.item
     if isinstance(payload, StepClaimed):
         return payload.claimed[0].item if payload.claimed else None

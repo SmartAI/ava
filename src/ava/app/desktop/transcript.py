@@ -84,6 +84,7 @@ class Transcript(QAbstractListModel):
         self._inputs: set[str] = set()
         self._attempts: dict[str, int] = {}
         self._tools: dict[str, int] = {}
+        self._goal_notice = ""
         self._activity = ""
 
     @Property(str, notify=changed)
@@ -292,6 +293,12 @@ class Transcript(QAbstractListModel):
             self._activity = self._running_tool_activity() or "Thinking"
         elif kind in ("drive/error", "compaction/failed"):
             self.append("error", "Run failed", event["message"])
+        elif kind == "goal/changed":
+            goal = event["goal"]
+            notice = f"{goal['id']}:{goal['status']}:{goal.get('reason', '')}"
+            if goal.get("reason") and notice != self._goal_notice:
+                self.append("notice", "Goal " + goal["status"].replace("_", " "), goal["reason"])
+            self._goal_notice = notice
         elif kind == "turn/end":
             self._activity = ""
             reason = event["reason"]

@@ -19,6 +19,7 @@ from ava.session.event import (
     CompactionSeed,
     Event,
     EventPayload,
+    GoalContinued,
     InboxMessage,
     InboxSpliced,
     InboxTarget,
@@ -219,7 +220,7 @@ class Session:
             elif isinstance(payload, StepClaimed):
                 if visible(event.seq):
                     context.items.extend(message.item for message in payload.claimed)
-            elif isinstance(payload, UserMessage | AssistantMessage | ToolResult):
+            elif isinstance(payload, UserMessage | AssistantMessage | ToolResult | GoalContinued):
                 if not visible(event.seq):
                     continue
                 if isinstance(payload, AssistantMessage):

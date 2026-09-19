@@ -51,6 +51,7 @@ from ava.session import (
     Selection as SelectionEvent,
 )
 from ava.session.codec import encode_record
+from ava.session.event import GoalChanged, GoalStatus
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -228,7 +229,10 @@ def _one_shot_input(args: argparse.Namespace, cwd: Path, argv: list[str]) -> Ite
 
 def _render_one_shot(event: Event) -> None:
     payload = event.payload
-    if isinstance(payload, AssistantChunk):
+    if isinstance(payload, GoalChanged):
+        if payload.reason:
+            print(f"ava: goal {payload.status.value}: {payload.reason}", file=sys.stderr)
+    elif isinstance(payload, AssistantChunk):
         sys.stdout.write(payload.delta)
         sys.stdout.flush()
     elif isinstance(payload, SelectionEvent) and payload.warning:
@@ -242,7 +246,16 @@ async def _run_one_shot(agent: Agent, item: Item) -> int:
     with agent.subscribe(lambda event: None if replaying else _render_one_shot(event)):
         replaying = False
         try:
-            await agent.followup(item)
+            text = ''.join(block.text for block in item.blocks if block.kind.value == 'text')
+            if text == '/goal' or text.startswith('/goal '):
+                if len(item.blocks) != 1:
+                    raise AvaError(ErrorKind.invalid_argument, "Use file paths in a goal objective instead of attachments.")
+                result = await agent.goal_command(text[5:].strip())
+                print(result['message'], file=sys.stderr)
+                if not result['start']:
+                    return EXIT_OK
+            else:
+                await agent.followup(item)
             if agent.status == Status.paused:
                 agent.resume()
             await agent.drive()
@@ -250,6 +263,9 @@ async def _run_one_shot(agent: Agent, item: Item) -> int:
             _print_error(error)
             return EXIT_USAGE if error.kind == ErrorKind.invalid_argument else EXIT_ERROR
     print(flush=True)
+    goal = agent.goal
+    if goal and goal.status in (GoalStatus.blocked, GoalStatus.budget_limited):
+        return EXIT_ERROR
     return EXIT_OK
 
 
@@ -364,6 +380,9 @@ def run(argv: list[str]) -> int:
         _print_error(error)
         usage = args.session is None and error.kind == ErrorKind.invalid_argument
         return EXIT_USAGE if usage else EXIT_ERROR
+    if args.record and any(block.text.startswith('/goal') for block in item.blocks):
+        print("ava: goal recording is not supported yet; use the durable session log", file=sys.stderr)
+        return EXIT_USAGE
     if args.record and plan.resume is not None:
         print("ava: --record requires a new session", file=sys.stderr)
         return EXIT_USAGE

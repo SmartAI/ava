@@ -32,6 +32,7 @@ export const STATUS_LABELS = {
 export const COMMAND_HINTS = {
   model: '/model [ID]  choose the model; applies at the next step',
   effort: '/effort [LEVEL]  set reasoning effort; "none" clears it',
+  goal: '/goal [objective|pause|resume|clear]  work toward a verified end state',
   compact: '/compact  summarize older history now',
   context: '/context  what the model sees now, by kind and size',
   skills: '/skills  list the skills the model can load',

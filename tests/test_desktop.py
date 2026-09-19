@@ -3663,6 +3663,39 @@ def test_desktop_transcript_renders_markdown_tools_and_expands_complete_output(
         )
 
 
+def test_desktop_goal_panel_above_composer_updates_and_clears(desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: bool(controller.projects), controller.changed)
+    start_chat(window)
+    until(lambda: controller.connected, controller.changed)
+    goal = dict(id='goal-ui', objective='验证目标状态显示，支持较长的中文目标内容。' * 8,
+                status='active', turns=2, max_turns=20, tokens_used=1200,
+                token_budget=10000, usage_complete=True, elapsed_ms=65000,
+                timing_running=False, reason='Checking the result.')
+    controller._snapshot(dict(status='running', goal=goal))
+    panel = find_item(window, 'goalStatus')
+    until(lambda: panel.isVisible(), window.frameSwapped)
+    assert find_item(window, 'goalState').property('text') == 'Active'
+    assert find_item(window, 'goalElapsed').property('text') == '1m 5s'
+    assert find_item(window, 'goalObjective').property('text') == goal['objective']
+    assert panel.height() < 190
+    controller._snapshot(dict(status='running', goal={**goal, 'timing_running': True}))
+    until(lambda: find_item(window, 'goalElapsed').property('text') == '1m 6s', window.frameSwapped)
+    goal = {**goal, 'status': 'blocked', 'reason': 'Need credentials.', 'elapsed_ms': 66000}
+    controller._snapshot(dict(status='idle', goal=goal))
+    assert find_item(window, 'goalState').property('text') == 'Blocked'
+    assert find_item(window, 'goalReason').property('text') == 'Need credentials.'
+    save_screenshot(window, 'goal-status')
+    # Older or partial snapshots may omit the optional timer flag.
+    goal.pop('timing_running')
+    controller._snapshot(dict(status='idle', goal=goal))
+    assert panel.isVisible()
+    assert find_item(window, 'goalElapsed').property('text') == '1m 6s'
+    controller._snapshot(dict(status='idle'))
+    until(lambda: not panel.isVisible(), window.frameSwapped)
+
+
 def test_desktop_reasoning_expansion_keeps_heading_and_body(desktop, model_server):
     controller, window = desktop
     controller.start()

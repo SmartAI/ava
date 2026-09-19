@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from ava.agent import goal as goals
 from ava.agent.compaction import CompactionOutcome, compact, select_compaction_end
 from ava.agent.state import AgentState, TurnOutcome
 from ava.agent.step import StepResult, append_accounting, step
@@ -32,6 +33,7 @@ from ava.session import (
     TurnEndReason,
 )
 from ava.session import compaction as strategy
+from ava.session.event import GoalStatus
 from ava.tool import Output
 from ava.tool.api import parse_arguments, resolve_path
 
@@ -294,6 +296,14 @@ class _Turn:
         results = Item(role=Role.tool)
         durations: list[ToolDuration] = []
         for position, call_index in enumerate(calls):
+            if self.state.goal_turn_id and goals.active(self.state, self.state.goal_turn_id) is None:
+                for index in calls[position:]:
+                    results.blocks.append(make_tool_result_block(assistant.blocks[index].call_id,
+                        'Goal stopped or replaced before this tool started.', True))
+                self.state.append(ToolResult(item=results, durations=durations))
+                self.drive.tool_results_owed = False
+                self.end_step(StepEndReason.completed)
+                return TurnOutcome.completed
             if self.drive.abort_requested:
                 return await self.abort_tool_step(assistant, calls, position, False, results)
             call = assistant.blocks[call_index]
@@ -368,6 +378,13 @@ class _Turn:
     async def run(self) -> TurnOutcome:
         step_number = 0
         while True:
+            if self.state.goal_turn_id and step_number >= 50:
+                if goal := goals.active(self.state, self.state.goal_turn_id):
+                    goals.save(self.state, goal, status=GoalStatus.budget_limited,
+                               reason="Goal reached the 50-step per-turn safety limit.")
+            if self.state.goal_turn_id and goals.active(self.state, self.state.goal_turn_id) is None:
+                self.release_gate()
+                return TurnOutcome.completed
             step_number += 1
             self.step_scope = StepStart(turn=self.turn_number, step=step_number)
             self.state.append(self.step_scope)
@@ -386,8 +403,23 @@ class _Turn:
                 return await self.finish_aborted_step()
 
             attempt_id = f"turn-{self.turn_number}-step-{step_number}"
+            context = self.state.session.model_context()
+            if self.state.goal_turn_id:
+                goal = goals.active(self.state, self.state.goal_turn_id)
+                if goal is None:
+                    self.end_step(StepEndReason.completed)
+                    self.release_gate()
+                    return TurnOutcome.completed
+                # A continuation is one durable user instruction per turn, not a
+                # fresh instruction after every tool result (which can cause rechecks forever).
+                marker = f'[Active goal {goal.id}]'
+                if not any(item.role == Role.user and any(block.text.startswith(marker)
+                           for block in item.blocks) for item in context.items):
+                    # Compaction may have covered the original continuation. Restore
+                    # the objective before, never after, the retained tool-result tail.
+                    context.items.insert(0, goals.context_item(goal))
             result = await step(
-                self.state, self.state.session.model_context(), attempt_id, True, self.cancel
+                self.state, context, attempt_id, True, self.cancel
             )
             if self.drive.abort_requested:
                 return await self.abort_provider_step(attempt_id, result)

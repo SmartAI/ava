@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
+from uuid import uuid4
 
+from ava.agent import goal as goals
 from ava.agent.compaction import CompactionOutcome, compact, select_compaction_end
 from ava.agent.state import (
     AgentState,
@@ -54,6 +57,7 @@ from ava.session import (
 from ava.session.codec import validate_step_claimed_record
 from ava.session.compaction import estimate_context_tokens
 from ava.session.context_report import ContextReport, context_report
+from ava.session.event import GoalChanged, GoalContinued, GoalStatus
 from ava.session.log import Log, OpenMode
 from ava.tool import Tool
 
@@ -133,6 +137,17 @@ class Agent:
         agent = cls(provider, cwd, options, log)
         if paused:
             agent._state.drive_state.restore_paused()
+        if goal := goals.active(agent._state):
+            events = agent._state.session.events
+            created = next(event.seq for event in events
+                           if isinstance(event.payload, GoalChanged) and event.payload.id == goal.id)
+            interrupted = any(event.seq > created and isinstance(event.payload, TurnEnd)
+                              and event.payload.reason == TurnEndReason.interrupted for event in events)
+            if interrupted:
+                agent._state.initialize()
+                goals.save(agent._state, goal, usage_complete=False,
+                    status=GoalStatus.budget_limited if goal.token_budget is not None else GoalStatus.blocked,
+                    reason="Previous goal execution was interrupted; unreported usage is unknown. Inspect the workspace before continuing.")
         return agent
 
     async def aclose(self) -> None:
@@ -357,15 +372,102 @@ class Agent:
         finally:
             state.inbox_gate.release()
 
+    # ---- goals ---------------------------------------------------------------------------
+
+    @property
+    def goal(self) -> GoalChanged | None:
+        from dataclasses import replace
+        value = goals.current(self._state)
+        return replace(value) if value else None
+
+    async def goal_command(self, argument: str = "") -> dict[str, object]:
+        """Set/query/control a durable goal. The frontend starts drive after activation.
+
+        Options precede `--`: /goal --max-turns 20 --tokens 100000 --check 'python test.py' -- objective
+        Ordinary objective text is preserved verbatim, including quotes and newlines.
+        """
+        import shlex
+
+        state = self._state
+        argument = argument.strip()
+        max_turns, token_budget, check = 20, None, ""
+        controls = {"pause", "resume", "clear", "stop", "off", "cancel"}
+        objective = argument
+        if argument.startswith("--"):
+            options, delimiter, objective = argument.partition(" -- ")
+            if not delimiter:
+                raise AvaError(ErrorKind.invalid_argument, "Goal options require ' -- ' before the objective.")
+            try:
+                parts = shlex.split(options)
+                while parts:
+                    key = parts.pop(0)
+                    option = parts.pop(0)
+                    if key == "--max-turns":
+                        max_turns = int(option)
+                    elif key == "--tokens":
+                        token_budget = int(option)
+                    elif key == "--check":
+                        check = option
+                    else:
+                        raise ValueError(f"Unknown goal option: {key}")
+            except (ValueError, IndexError) as error:
+                raise AvaError(ErrorKind.invalid_argument, "Invalid goal options", str(error)) from error
+        if not 1 <= max_turns <= 1000 or (token_budget is not None and token_budget < 1):
+            raise AvaError(ErrorKind.invalid_argument, "Goal limits must be positive; max-turns cannot exceed 1000.")
+        if argument and argument not in controls and (not objective.strip() or len(objective) > 16000 or len(check) > 4000):
+            raise AvaError(ErrorKind.invalid_argument, "Goal must contain 1–16000 characters; check at most 4000.")
+        await state.inbox_gate.acquire()
+        try:
+            state.initialize()
+            current = goals.current(state)
+            if argument:
+                if self.session_path is None:
+                    raise AvaError(ErrorKind.invalid_argument, "Goals require a durable session.")
+                if argument in controls:
+                    if current is None or current.status == GoalStatus.cleared:
+                        raise AvaError(ErrorKind.invalid_argument, "No goal set.")
+                    if argument == "resume":
+                        if state.goal_turn_id is not None:
+                            raise AvaError(ErrorKind.invalid_argument, "Wait for in-flight goal work to stop before resuming.")
+                        if current.status not in (GoalStatus.active, GoalStatus.paused, GoalStatus.blocked):
+                            raise AvaError(ErrorKind.invalid_argument, "Only unfinished goals can resume; set a new goal to reset limits.")
+                        goals.save(state, current, status=GoalStatus.active, reason="Resumed by user.", no_progress=0)
+                        state.drive_state.request_resume()
+                    else:
+                        status = GoalStatus.paused if argument == "pause" else GoalStatus.cleared
+                        goals.save(state, current, status=status, reason="Stopped by user.")
+                        # The current tool may finish, but boundary checks prevent the next tool/request.
+                else:
+                    goals.save(state, GoalChanged(id=uuid4().hex, objective=objective.strip(),
+                        max_turns=max_turns, token_budget=token_budget, check=check))
+                    state.drive_state.request_resume()
+            value = goals.current(state)
+            message = "No goal set." if value is None or value.status == GoalStatus.cleared else (
+                f"Goal {value.status.value}: {value.objective}\n"
+                f"Turns: {value.turns}/{value.max_turns} · Tokens: {value.tokens_used}"
+                + (" (usage incomplete)" if not value.usage_complete else "")
+                + (f"/{value.token_budget}" if value.token_budget is not None else "")
+                + (f"\n{value.reason}" if value.reason else "")
+            )
+            return {"goal": asdict(value) if value else None, "message": message,
+                    "start": bool(argument and goals.active(state))}
+        finally:
+            state.inbox_gate.release()
+
     # ---- control -------------------------------------------------------------------------
 
     def cancel(self, cause: CancelCause) -> None:
+        if goal := goals.active(self._state):
+            goals.save(self._state, goal, status=GoalStatus.paused, reason="Paused by user.")
         if cause == CancelCause.user_pause:
             self._state.drive_state.request_pause()
         elif self._state.drive_state.request_abort():
             self._state.activity.cancel()
 
     def resume(self) -> None:
+        if goal := goals.current(self._state):
+            if goal.status == GoalStatus.paused:
+                goals.save(self._state, goal, status=GoalStatus.active, reason="Resumed by user.", no_progress=0)
         self._state.drive_state.request_resume()
 
     def watch_status(self, listener: Callable[[Status, bool], None]) -> Callable[[], None]:
@@ -471,6 +573,7 @@ class Agent:
             cached_read * 100 // input_tokens if cache_reported and input_tokens else None
         )
         return {
+            **({"goal": goals.snapshot(state)} if self.goal else {}),
             "status": self.status.value,
             "turn_open": self.turn_open,
             "cwd": str(self.cwd),
@@ -586,6 +689,7 @@ class Agent:
             )
         gate = state.inbox_gate
         owns = False
+        admitted = False
         continuation_turn = False
         try:
             while True:
@@ -594,7 +698,11 @@ class Agent:
                 try:
                     state.initialize()
                     inbox = state.session.inbox()
-                    has_pending = bool(inbox.next_turn or inbox.next_step)
+                    goal = goals.active(state)
+                    if owns and goal and goal.turns >= goal.max_turns:
+                        goals.save(state, goal, status=GoalStatus.budget_limited, reason="Goal turn limit reached.")
+                        goal = None
+                    has_pending = bool(inbox.next_turn or inbox.next_step or goal)
                     if not owns:
                         resuming = drive.resume_requested
                         continuation_turn = resuming and (
@@ -606,6 +714,7 @@ class Agent:
                                 "cannot start the driver without pending input or while it is already running",
                             )
                         owns = True
+                        admitted = True
                         state.activity = CancelToken()
                         gate.release()
                         holding = False
@@ -653,7 +762,12 @@ class Agent:
                     continuation_turn = False
                     turn_number = state.next_turn
                     state.next_turn += 1
+                    state.goal_turn_id = goal.id if goal else None
+                    if goal:
+                        goal = goals.save(state, goal, turns=goal.turns + 1)
                     state.append(TurnStart(turn=turn_number))
+                    if goal:
+                        state.append(GoalContinued(goals.context_item(goal)))
                     holding = False  # run_turn owns the gate from here and releases it at the first claim.
                     try:
                         outcome = await run_turn(
@@ -690,11 +804,18 @@ class Agent:
                         )
                     )
                     state.sync()
+                    if state.goal_turn_id:
+                        await goals.evaluate(state, state.goal_turn_id, turn_number)
+                    state.goal_turn_id = None
                 finally:
                     if holding:
                         gate.release()
         finally:
+            if admitted:
+                state.goal_turn_id = None
             if owns:
+                if goal := goals.active(state):
+                    goals.save(state, goal, status=GoalStatus.blocked, reason="Driver interrupted; resume explicitly after inspecting the workspace.")
                 drive.reset_after_error()
 
     async def _finish_failed_turn(
@@ -705,6 +826,8 @@ class Agent:
         await state.inbox_gate.acquire()
         try:
             state.drive_state.reset_after_error()
+            if goal := goals.active(state, state.goal_turn_id):
+                goals.save(state, goal, status=GoalStatus.blocked, reason=error.message[:4000])
             state.append(TurnEnd(turn=turn_number, reason=reason))
             state.append(
                 DriveError(

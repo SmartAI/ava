@@ -163,7 +163,7 @@ def _measured_input(session: Session) -> int | None:
             break
     for index in range(len(events) - 1, first - 1, -1):
         usage = events[index].payload
-        if isinstance(usage, Usage) and any(
+        if isinstance(usage, Usage) and not usage.attempt_id.startswith("goal-") and any(
             value is not None for value in (usage.input, usage.cached_read, usage.cache_write)
         ):
             return (usage.input or 0) + (usage.cached_read or 0) + (usage.cache_write or 0)

@@ -13,6 +13,8 @@ from ava.session.event import (
     AttemptTiming,
     CompactionSeed,
     DriveError,
+    GoalChanged,
+    GoalChecked,
     Selection,
     SessionStart,
     ToolResult,
@@ -70,6 +72,10 @@ def inspect_session(path: Path) -> dict[str, Any]:
                     for block in event.payload.item.blocks
                     if block.kind == ContentBlockKind.tool_call
                 )
+            elif isinstance(event.payload, GoalChecked):
+                calls['goal_check'] += 1
+                results += 1
+                errors += int(event.payload.is_error)
             elif isinstance(event.payload, ToolResult):
                 for block in event.payload.item.blocks:
                     if block.kind == ContentBlockKind.tool_result:
@@ -102,6 +108,8 @@ def inspect_session(path: Path) -> dict[str, Any]:
                 if values and all(value is not None for value in values):
                     inclusive[name] = sum(value for value in values if value is not None)
         return {
+            **({'goal': asdict(next(e.payload for e in reversed(events) if isinstance(e.payload, GoalChanged)))}
+               if any(isinstance(e.payload, GoalChanged) for e in events) else {}),
             "schema_version": 1,
             "session_id": header.id,
             "cwd": header.cwd,

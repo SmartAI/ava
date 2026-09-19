@@ -695,6 +695,31 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
                 await replacement.aclose()
         return JSONResponse(asdict(selection))
 
+    @app.post("/api/chats/{chat_id}/goal")
+    async def goal_command(chat_id: str, request: Request) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        chat = found[1]
+        if chat.archived:
+            return error_response(409, "chat is archived")
+        body = await parse_body(request, ReviseMessageBody)
+        if body is None:
+            return error_response(400, "goal command requires text")
+        followed_running_drive = chat.drive.running
+        try:
+            payload = await chat.agent.goal_command(body.text)
+        except AvaError as error:
+            return error_response(400, error.message)
+        if payload["start"]:
+            if not chat.title and chat.agent.goal:
+                chat.title = title_from_text(chat.agent.goal.objective)
+                registry.persist()
+            if chat.drive.acknowledge(followed_running_drive, chat.agent.status):
+                begin_drive(chat)
+        chat.notify_status()
+        return JSONResponse({**payload, "chat": chat.summary()})
+
     @app.post("/api/chats/{chat_id}/compact")
     async def compact(chat_id: str) -> Response:
         found = registry.find_chat(chat_id)

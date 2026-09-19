@@ -139,6 +139,9 @@ def append_accounting(
                 reasoning=usage.reasoning,
             )
         )
+    if state.goal_turn_id is not None:
+        from ava.agent.goal import account
+        account(state, usage)
     if timing.elapsed_ms is not None:
         state.append(
             AttemptTiming(

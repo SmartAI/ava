@@ -172,7 +172,7 @@ def test_provider_usage_survives_logging_and_analytics(home, project, tmp_path, 
         merge_usage(usage, event.usage)
     log = Log.create_default(project, provider, model)
     try:
-        state = SimpleNamespace(append=log.append)
+        state = SimpleNamespace(append=log.append, goal_turn_id=None)
         # Multiple turns with distinct attempts; timing must not double-count usage.
         for attempt in ('first', 'second'):
             append_accounting(state, attempt, usage, Timing(elapsed_ms=10))

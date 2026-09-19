@@ -228,7 +228,7 @@ def estimate_context_tokens(session: Session) -> int:
     first_post_seed = newest_seed + 1 if newest_seed is not None else 0
     for index in range(len(events) - 1, first_post_seed - 1, -1):
         usage = events[index].payload
-        if not isinstance(usage, Usage) or (
+        if not isinstance(usage, Usage) or usage.attempt_id.startswith("goal-") or (
             usage.input is None and usage.cached_read is None and usage.cache_write is None
         ):
             continue

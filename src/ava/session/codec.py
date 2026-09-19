@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,6 +35,10 @@ from ava.session.event import (
     DriveError,
     Event,
     EventPayload,
+    GoalChanged,
+    GoalChecked,
+    GoalContinued,
+    GoalStatus,
     InboxMessage,
     InboxSpliced,
     InboxTarget,
@@ -400,6 +405,13 @@ def payload_to_wire(payload: EventPayload) -> dict[str, Any]:
             wire.update(provider=payload.provider, model=payload.model)
             _optional(wire, "effort", payload.effort)
             _optional(wire, "warning", payload.warning)
+        case GoalContinued():
+            wire["item"] = item_to_wire(payload.item)
+        case GoalChecked():
+            wire.update(asdict(payload))
+        case GoalChanged():
+            wire.update(asdict(payload))
+            wire["status"] = payload.status.value
         case TurnStart():
             wire["turn"] = payload.turn
         case StepStart():
@@ -623,6 +635,30 @@ def decode_known(kind: str, wire: dict[str, Any]) -> EventPayload | None:
                     "invalid selection record", "provider, model, and any effort must be nonempty"
                 )
             return selection
+        case "goal/continued":
+            return GoalContinued(item=item_from_wire(wire.get("item", {})))
+        case "goal/checked":
+            if type(wire.get("is_error")) is not bool:
+                raise _fail("invalid goal check result")
+            return GoalChecked(id=_string(wire, "id"), command=_string(wire, "command"),
+                output=_string(wire, "output"), is_error=wire["is_error"],
+                elapsed_ms=_int(wire, "elapsed_ms", 0))
+        case "goal/changed":
+            goal = GoalChanged(
+                id=_string(wire, "id"), objective=_string(wire, "objective"),
+                status=_enum(GoalStatus, wire.get("status", "active"), "goal status"),
+                reason=_string(wire, "reason"), turns=_int(wire, "turns", 0),
+                max_turns=_int(wire, "max_turns", 20),
+                token_budget=_optional_int(wire, "token_budget"),
+                tokens_used=_int(wire, "tokens_used", 0),
+                no_progress=_int(wire, "no_progress", 0), check=_string(wire, "check"),
+                usage_complete=wire.get("usage_complete", True),
+            )
+            if (not goal.id or not goal.objective.strip() or not 1 <= goal.max_turns <= 1000
+                    or (goal.token_budget is not None and goal.token_budget < 1)
+                    or type(goal.usage_complete) is not bool):
+                raise _fail("invalid goal snapshot")
+            return goal
         case "turn/start":
             return TurnStart(turn=_int(wire, "turn", 0))
         case "step/start":
