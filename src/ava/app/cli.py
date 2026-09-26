@@ -39,6 +39,7 @@ from ava.session import (
     Event,
     Log,
     OpenMode,
+    RequestRetry,
     SessionCandidate,
     SessionStart,
     TurnEnd,
@@ -237,6 +238,10 @@ def _render_one_shot(event: Event) -> None:
         sys.stdout.flush()
     elif isinstance(payload, SelectionEvent) and payload.warning:
         print(f"ava: {payload.warning}", file=sys.stderr)
+    elif isinstance(payload, RequestRetry):
+        print(f"\nava: interrupted attempt; partial output is not used. {payload.message}\n"
+              f"Retrying request {payload.next_attempt}/3 in {payload.delay_ms / 1000:.1f}s; "
+              "completed tools will not be rerun. Unreported usage is unknown.", file=sys.stderr)
     elif isinstance(payload, CompactionFailed | DriveError):
         print(f"ava: {payload.message}", file=sys.stderr)
 

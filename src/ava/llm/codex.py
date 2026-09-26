@@ -686,6 +686,8 @@ def codex_default_model(catalog: list[CodexCatalogModel]) -> str:
 
 
 class CodexProvider(Provider):
+    request_retries_safe = True
+
     def __init__(self, selection: Selection, base_url: str, credential: CodexCredential) -> None:
         super().__init__(selection)
         self.id = selection.provider

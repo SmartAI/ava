@@ -259,6 +259,8 @@ class AnthropicSettings:
 
 
 class AnthropicProvider(Provider):
+    request_retries_safe = True
+
     def __init__(self, selection: Selection, settings: AnthropicSettings, api_key: str) -> None:
         super().__init__(selection)
         self.id = selection.provider

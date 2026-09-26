@@ -151,6 +151,8 @@ class Provider:
 
     id: str = ""
     display_name: str = ""
+    # Opt in only when stream() generates output without executing external tools.
+    request_retries_safe: bool = False
 
     def __init__(self, selection: Selection) -> None:
         self.selection = selection

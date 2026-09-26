@@ -1,7 +1,9 @@
-"""One streamed provider attempt: assembly, timing, and accounting."""
+"""Bounded model-request retries with fresh assembly and per-attempt accounting."""
 
 from __future__ import annotations
 
+import asyncio
+import random
 import time
 from dataclasses import dataclass, field
 
@@ -25,7 +27,7 @@ from ava.llm.types import (
     make_text_block,
     make_tool_call_block,
 )
-from ava.session import AssistantChunk, AttemptTiming
+from ava.session import AssistantChunk, AttemptTiming, RequestPrepared, RequestRetry
 from ava.session import Selection as SelectionEvent
 from ava.session import Usage as UsageEvent
 
@@ -40,6 +42,7 @@ class Timing:
 @dataclass(slots=True)
 class StepResult:
     assistant: Item
+    attempt_id: str = ""
     open_tool_call: int | None = None
     stop_reason: StopReason | None = None
     usage: Usage = field(default_factory=Usage)
@@ -175,8 +178,9 @@ def _record_selection(state: AgentState, selected: Selection) -> None:
     state.consumed_selection = Selection(selected.provider, selected.model, selected.effort)
 
 
-async def step(
-    state: AgentState, context: Context, attempt_id: str, append_chunks: bool, cancel: CancelToken
+async def _attempt(
+    state: AgentState, context: Context, attempt_id: str, append_chunks: bool, cancel: CancelToken,
+    timeout: float | None = None,
 ) -> StepResult:
     provider = state.provider
     selected = Selection(
@@ -212,9 +216,14 @@ async def step(
     error: AvaError | None = None
     stop_reason: StopReason | None = None
     try:
-        stop_reason = await provider.stream(context, selected, sink, cancel)
+        async with asyncio.timeout(timeout):
+            stop_reason = await provider.stream(context, selected, sink, cancel)
+    except TimeoutError:
+        error = AvaError(ErrorKind.timeout, "Automatic model-request retry exceeded its recovery time budget")
     except AvaError as failure:
         error = failure
+    if error is not None and assembly.error is not None:
+        error.retryable = False  # Do not hide a malformed response behind a later disconnect.
     timing.elapsed_ms = int((time.monotonic() - started) * 1000)
     state.drain()
     result = StepResult(
@@ -233,3 +242,65 @@ async def step(
         result.stop_reason = stop_reason
         result.open_tool_call = None
     return result
+
+
+RETRY_DELAYS = (1.0, 2.0)
+RETRY_WINDOW_SECONDS = 300.0
+
+
+async def step(
+    state: AgentState, context: Context, attempt_id: str, append_chunks: bool, cancel: CancelToken
+) -> StepResult:
+    """One logical request, at most three fresh attempts; never execute tools here.
+
+    The first healthy stream retains its normal idle timeout. A bounded recovery
+    window starts on failure, and includes all retry waits and subsequent streams.
+    Failed output is diagnostic evidence only, not an AssistantMessage in context.
+    """
+    original_id = attempt_id
+    deadline: float | None = None
+    boundary = next((e.payload for e in reversed(state.session.events)
+                     if isinstance(e.payload, RequestPrepared) and e.payload.attempt_id == original_id), None)
+    for number in range(1, len(RETRY_DELAYS) + 2):
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        result = await _attempt(state, context, attempt_id, append_chunks, cancel, remaining)
+        result.attempt_id = attempt_id
+        error = result.error
+        if (error is None or not error.retryable or not state.provider.request_retries_safe
+                or number > len(RETRY_DELAYS) or cancel.cancelled):
+            return result
+        if state.goal_turn_id is not None:
+            from ava.agent.goal import active
+            goal = active(state, state.goal_turn_id)
+            if goal is None:
+                return result
+            if goal.token_budget is not None:
+                usage = result.usage
+                tokens = sum(value or 0 for value in (usage.input, usage.cached_read, usage.cache_write, usage.output, usage.reasoning))
+                if (not goal.usage_complete or usage.input is None or usage.output is None
+                        or goal.tokens_used + tokens >= goal.token_budget):
+                    return result  # Caller accounts once and records the budget-limited goal.
+        if deadline is None:
+            deadline = time.monotonic() + RETRY_WINDOW_SECONDS
+        delay = random.uniform(0.5, 1.5) * RETRY_DELAYS[number - 1]
+        if error.retry_after is not None:
+            delay = max(delay, error.retry_after)
+        if delay >= deadline - time.monotonic():
+            return result
+        next_id = f"{original_id}-retry-{number + 1}"
+        append_accounting(state, attempt_id, result.usage, result.timing, append_empty_usage=True)
+        state.acknowledge(RequestRetry(
+            attempt_id, next_id, number + 1, int(delay * 1000), error.kind,
+            error.message, error.detail, result.assistant,
+        ))
+        try:
+            await cancel.guard(asyncio.sleep(delay))
+            cancel.raise_if_cancelled()
+        except AvaError as failure:
+            # The previous attempt was already accounted for. Do not bill it twice.
+            return StepResult(Item(role=Role.assistant), attempt_id=next_id, error=failure)
+        attempt_id = next_id
+        if boundary is not None:
+            state.acknowledge(RequestPrepared(attempt_id, boundary.provider, boundary.model,
+                                              boundary.effort, boundary.prefix_items))
+    raise AssertionError("unreachable")

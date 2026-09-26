@@ -334,6 +334,8 @@ def openai_idle_timeout(provider: str) -> float:
 
 
 class OpenAIProvider(Provider):
+    request_retries_safe = True
+
     def __init__(self, selection: Selection, base_url: str, api_key: str) -> None:
         super().__init__(selection)
         self.id = selection.provider

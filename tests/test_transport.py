@@ -1,10 +1,12 @@
 import asyncio
 import json
+import ssl
 from contextlib import asynccontextmanager
 
+import httpx
 import pytest
 
-from ava.base import AvaError, CancelToken, ErrorKind
+from ava.base import AvaError, ErrorKind
 from ava.transport import Client, Request, SseParser
 
 
@@ -46,53 +48,122 @@ async def chunked_peer(responses):
         await server.wait_closed()
 
 
-@pytest.mark.parametrize("mode", ["recover", "exhaust", "partial", "http_error", "terminal"])
-async def test_stream_disconnect_recovery_and_diagnostics(mode, monkeypatch, caplog):
-    monkeypatch.setattr("ava.transport.http.STREAM_RETRY_DELAYS", (0, 0))
+@pytest.mark.parametrize("mode", ["exhaust", "partial", "http_error", "terminal"])
+async def test_stream_disconnect_single_attempt_and_diagnostics(mode, caplog):
     payload = b'data: {"type":"response.created"}\n\n'
     first = {
-        "recover": (200, b": heartbeat\n\n", False),
         "exhaust": (200, b"", False),
         "partial": (200, payload, False),
         "http_error": (401, b"secret-response", False),
         "terminal": (200, b'data: {"type":"response.completed"}\n\n', False),
     }[mode]
-    responses = [first, (200, payload, True)] if mode == "recover" else [first]
-    async with chunked_peer(responses) as (client, request, requests):
+    async with chunked_peer([first]) as (client, request, requests):
         events = []
-        if mode == "recover":
-            assert (await client.post_sse(request, events.append)).status == 200
-            assert len(requests) == 2
-            assert len(events) == 1
-            assert requests == [b"secret-body"] * 2
-        else:
-            with pytest.raises(AvaError, match="incomplete chunked read") as caught:
-                await client.post_sse(request, events.append)
-            assert len(requests) == (3 if mode == "exhaust" else 1)
-            assert len(events) == (1 if mode in ("partial", "terminal") else 0)
-            detail = json.loads(caught.value.detail)
-            assert detail["request_id"] == "fixture-request"
-            assert detail["http_version"] == "HTTP/1.1"
-            assert detail["bytes_received"] == len(first[1])
-            assert detail["terminal_received"] == (mode == "terminal")
-            assert detail["elapsed_ms"] >= 0
+        with pytest.raises(AvaError, match="incomplete chunked read") as caught:
+            await client.post_sse(request, events.append)
+        assert len(requests) == 1, "The agent owns retries, not the HTTP layer"
+        assert caught.value.retryable == (mode in ("exhaust", "partial"))
+        assert len(events) == (1 if mode in ("partial", "terminal") else 0)
+        detail = json.loads(caught.value.detail)
+        assert detail["request_id"] == "fixture-request"
+        assert detail["http_version"] == "HTTP/1.1"
+        assert detail["bytes_received"] == len(first[1])
+        assert detail["terminal_received"] == (mode == "terminal")
+        assert detail["elapsed_ms"] >= 0
         assert "secret" not in caplog.text
 
 
-async def test_cancel_during_stream_retry_backoff(monkeypatch):
-    monkeypatch.setattr("ava.transport.http.STREAM_RETRY_DELAYS", (60, 60))
-    async with chunked_peer([(200, b"", False)]) as (client, request, requests):
-        token = CancelToken()
-        task = asyncio.create_task(client.post_sse(request, lambda event: None, token))
-        async with asyncio.timeout(2):
-            while not requests:
-                await asyncio.sleep(0.001)
-            await asyncio.sleep(0.05)
-            token.cancel()
-            with pytest.raises(AvaError) as caught:
-                await task
-        assert caught.value.kind == ErrorKind.cancelled
-        assert len(requests) == 1
+@pytest.mark.parametrize('mode', ['headers', 'partial', 'certificate', 'get', 'post'])
+async def test_raw_ssl_errors_are_normalized_without_retry(mode, caplog):
+    failure = (ssl.SSLCertVerificationError(ssl.SSL_ERROR_SSL, 'certificate verify failed')
+               if mode == 'certificate' else ssl.SSLError(ssl.SSL_ERROR_SSL, 'ssl/tls alert bad record mac'))
+    attempts = 0
+    closed = False
+    payload = b'data: {"type":"response.created"}\n\n'
+
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield payload
+            raise failure
+
+        async def aclose(self):
+            nonlocal closed
+            closed = True
+
+    async def peer(request):
+        nonlocal attempts
+        attempts += 1
+        if mode == 'partial':
+            return httpx.Response(200, stream=BrokenStream())
+        raise failure
+
+    client = Client()
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(peer))
+    request = Request('https://provider.invalid/?secret=query',
+                      headers=[('authorization', 'Bearer secret-token')], body='secret-body')
+    events = []
+    try:
+        with pytest.raises(AvaError) as caught:
+            if mode == 'get':
+                await client.get(request)
+            elif mode == 'post':
+                await client.post(request)
+            else:
+                await client.post_sse(request, events.append)
+        assert caught.value.kind == ErrorKind.network
+        assert caught.value.retryable == (mode != 'certificate')
+        assert caught.value.__cause__ is failure
+        assert str(failure) in caught.value.message
+        diagnostics = json.loads(caught.value.detail)
+        assert diagnostics['exception_type'] == type(failure).__name__
+        assert diagnostics['attempt'] == 1
+        assert diagnostics['elapsed_ms'] >= 0
+        assert diagnostics['bytes_received'] == (len(payload) if mode == 'partial' else 0)
+        assert diagnostics['terminal_received'] is False
+        assert len(events) == (1 if mode == 'partial' else 0)
+        assert attempts == 1, 'TLS failures must not introduce retries or replay delivered events'
+        if mode == 'partial':
+            assert closed
+            assert diagnostics['last_sse_event'] == 'response.created'
+        assert 'secret' not in caplog.text
+        assert 'secret' not in caught.value.detail
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize('header', ['3', 'date', 'invalid', 'NaN'])
+async def test_retry_after_and_status_are_propagated_to_request_owner(header):
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    value = format_datetime(datetime.now(UTC) + timedelta(seconds=3), usegmt=True) if header == 'date' else header
+    client = Client()
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(429, headers={'retry-after': value}, json={})
+    ))
+    try:
+        with pytest.raises(AvaError) as caught:
+            await client.post_sse(Request('https://fixture.invalid'), lambda event: None)
+        assert caught.value.kind == ErrorKind.rate_limited and caught.value.retryable
+        if header == '3':
+            assert caught.value.retry_after == 3
+        elif header == 'date':
+            assert 0 < caught.value.retry_after <= 3
+        else:
+            assert caught.value.retry_after is None
+    finally:
+        await client.aclose()
+
+
+def test_wrapped_certificate_errors_are_not_transient():
+    from ava.transport.http import _transport_error
+
+    error = httpx.ConnectError('TLS handshake failed')
+    error.__cause__ = ssl.SSLCertVerificationError(ssl.SSL_ERROR_SSL, 'certificate verify failed')
+    assert not _transport_error(error).retryable
+    assert not _transport_error(ssl.SSLError(ssl.SSL_ERROR_SSL, 'wrong version number')).retryable
 
 
 def _feed_in_chunks(text: str, size: int) -> list:

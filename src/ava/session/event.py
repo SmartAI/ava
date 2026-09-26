@@ -62,6 +62,37 @@ class InboxTarget(StrEnum):
 
 
 @dataclass(slots=True)
+class RequestPrepared:
+    """Normal turn request boundary, before provider adaptation or execution.
+
+    Context is reconstructed from preceding events plus any restored goal instruction.
+    This is not a provider wire capture and does not imply the request succeeded.
+    """
+
+    kind: ClassVar[str] = "request/prepared"
+    attempt_id: str
+    provider: str
+    model: str
+    effort: str | None = None
+    prefix_items: list[Item] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RequestRetry:
+    """Failed request evidence, never model-context messages or executable calls."""
+
+    kind: ClassVar[str] = "request/retry"
+    attempt_id: str
+    next_attempt_id: str
+    next_attempt: int
+    delay_ms: int
+    error_kind: ErrorKind
+    message: str
+    detail: str
+    item: Item
+
+
+@dataclass(slots=True)
 class InboxMessage:
     id: str
     item: Item
@@ -273,6 +304,8 @@ EventPayload = (
     | TurnStart
     | StepStart
     | StepClaimed
+    | RequestPrepared
+    | RequestRetry
     | InboxSpliced
     | UserMessage
     | AssistantChunk
@@ -300,6 +333,8 @@ KNOWN_PAYLOAD_TYPES: tuple[type, ...] = (
     TurnStart,
     StepStart,
     StepClaimed,
+    RequestPrepared,
+    RequestRetry,
     InboxSpliced,
     UserMessage,
     AssistantChunk,

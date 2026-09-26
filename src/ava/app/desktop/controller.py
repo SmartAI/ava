@@ -45,6 +45,7 @@ from .files import FILE_ERRORS, attachment, inspect_path, local_path
 from .git_review import GitReview
 from .mcp import MCPView
 from .pdf import PdfImages
+from .replay import SessionReplay
 from .runtime import BackendProcess
 from .skills import SkillsView
 from .terminal import TerminalSession
@@ -130,6 +131,7 @@ class Controller(QObject):
             for name, value in zip(arguments[::2], arguments[1::2], strict=True)
         }
         self._connection: Connection | None = None
+        self._replay = SessionReplay(self)
         self._transcript = Transcript(self)
         self._transcript.changed.connect(self.changed)
         self._projects: list[dict[str, Any]] = []
@@ -786,6 +788,19 @@ class Controller(QObject):
                         }
                     )
         return sorted(matches, key=lambda chat: not chat["pinned"])
+
+    @Property(QObject, constant=True)
+    def replay(self) -> SessionReplay:
+        return self._replay
+
+    @Slot(str)
+    def openReplay(self, identity: str) -> None:
+        if identity:
+            self._replay.open(identity)
+
+    @Slot()
+    def findStoppedSessions(self) -> None:
+        self._replay.findSessions(self._project_id)
 
     @Slot(str)
     def toggleChatPin(self, identity: str) -> None:
@@ -2250,6 +2265,7 @@ class Controller(QObject):
         if self._quitting:
             return
         self._quitting = True
+        self._replay.close()
         self._mcp_view.cancelAuth()
         self._heartbeat.stop()
         self.pdf_images.close()

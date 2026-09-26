@@ -196,6 +196,18 @@ export default function App() {
       }
       return false
     }
+    if (event.kind === 'request/retry') {
+      const failedId = tailRef.current
+      if (failedId !== null) {
+        setTranscript(items => items.map(item => item.id === failedId
+          ? { ...item, type: 'notice', text: `Interrupted attempt · not used\n${item.text}` } : item))
+      } else if (event.partial_text) {
+        addTranscript(transcriptRow('notice', { text: `Interrupted attempt · not used\n${event.partial_text}` }))
+      }
+      closeTail()
+      addNotice(`${event.message}\nRetrying request ${event.next_attempt}/3 in ${(event.delay_ms / 1000).toFixed(1)} s. Earlier completed tools will not be rerun. Unreported usage is unknown.`)
+      return true
+    }
     if (event.kind === 'assistant/chunk') {
       appendDelta(event.delta)
       return true

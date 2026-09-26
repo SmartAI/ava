@@ -128,7 +128,7 @@ async def evaluate(state: AgentState, goal_id: str, turn: int) -> None:
     attempt = f'goal-{goal_id}-turn-{turn}-audit'
     try:
         result = await step(state, audit, attempt, False, state.activity)
-        append_accounting(state, attempt, result.usage, result.timing, append_empty_usage=True)
+        append_accounting(state, result.attempt_id or attempt, result.usage, result.timing, append_empty_usage=True)
         state.drain()
         if active(state, goal_id) is None:
             return

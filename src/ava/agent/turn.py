@@ -33,7 +33,7 @@ from ava.session import (
     TurnEndReason,
 )
 from ava.session import compaction as strategy
-from ava.session.event import GoalStatus
+from ava.session.event import GoalStatus, RequestPrepared
 from ava.tool import Output
 from ava.tool.api import parse_arguments, resolve_path
 
@@ -404,6 +404,7 @@ class _Turn:
 
             attempt_id = f"turn-{self.turn_number}-step-{step_number}"
             context = self.state.session.model_context()
+            prefix_items: list[Item] = []
             if self.state.goal_turn_id:
                 goal = goals.active(self.state, self.state.goal_turn_id)
                 if goal is None:
@@ -417,10 +418,17 @@ class _Turn:
                            for block in item.blocks) for item in context.items):
                     # Compaction may have covered the original continuation. Restore
                     # the objective before, never after, the retained tool-result tail.
-                    context.items.insert(0, goals.context_item(goal))
+                    prefix_items.append(goals.context_item(goal))
+                    context.items.insert(0, prefix_items[0])
+            selected = self.state.provider.selection
+            self.state.acknowledge(RequestPrepared(
+                attempt_id=attempt_id, provider=selected.provider, model=selected.model,
+                effort=selected.effort, prefix_items=prefix_items,
+            ))
             result = await step(
                 self.state, context, attempt_id, True, self.cancel
             )
+            attempt_id = result.attempt_id or attempt_id
             if self.drive.abort_requested:
                 return await self.abort_provider_step(attempt_id, result)
             if result.error is not None:

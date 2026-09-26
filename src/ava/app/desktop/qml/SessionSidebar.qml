@@ -138,6 +138,16 @@ Pane {
                 onClicked: sidebar.openSearch()
             }
             NavigationItem {
+                objectName: "findStoppedSessionsButton"
+                font.pixelSize: sidebar.font.pixelSize
+                text: "Find stopped sessions"
+                icon.source: "icons/search.svg"
+                Layout.fillWidth: true
+                enabled: sidebar.backend.online
+                tip: "Find historical failures and requests to continue on the selected machine"
+                onClicked: sidebar.backend.findStoppedSessions()
+            }
+            NavigationItem {
                 objectName: "extensionsButton"
                 font.pixelSize: sidebar.font.pixelSize
                 text: "Extensions"
@@ -566,6 +576,12 @@ Pane {
                 nameField.text = sidebar.selectedChat.title || "";
                 renameDialog.open();
             }
+        }
+        NativeMenuItem {
+            objectName: "replayChatAction"
+            text: "Replay session"
+            enabled: sidebar.backend.resourceOnline(sidebar.selectedChat.id || "")
+            onTriggered: sidebar.backend.openReplay(sidebar.selectedChat.id)
         }
         MenuSeparator {}
         NativeMenuItem {

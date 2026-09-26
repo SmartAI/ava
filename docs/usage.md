@@ -18,6 +18,30 @@ uv run ava session dump review.jsonl.zst
 `-c` continues the latest session. Explicit session paths make a run easy to locate
 and inspect later.
 
+### Automatic model-request recovery
+
+Agent model requests (including compaction and goal audits) can retry transient network
+failures, selected TLS failures such as `bad record mac`, and HTTP 429/502/503/504 responses.
+Each logical request has at most **three total attempts**. Waits use 1 s / 2 s backoff
+with jitter and honor valid `Retry-After` delays. A **five-minute recovery window** starts
+at the first failure and bounds retry waits and streams; the initial healthy stream keeps
+its normal idle timeout. A server-requested wait exceeding the remaining budget stops
+recovery instead of retrying earlier than requested.
+
+Each retry recreates the provider parser and response assembly using the same model input.
+Failed output is retained in `request/retry` evidence, never fed back as a completed model
+response or executed as tool calls. Previously completed tool steps are not rerun. Desktop,
+Web and CLI show retry notices; Replay links failed attempts to subsequent requests. Missing
+provider usage remains **unknown**, not zero. Goals with a token budget stop when missing
+usage prevents enforcing that budget.
+
+Certificate validation, authentication, invalid requests, recognized quota exhaustion,
+malformed model responses and user cancellation are not automatically retried. Third-party
+providers must explicitly opt into request retries only when streaming does not execute
+external side effects. The HTTP layer performs a single attempt, avoiding nested retries.
+This is not an exactly-once billing guarantee: the provider may have processed an interrupted
+request. Ava does not invent idempotency keys for endpoints without a supported contract.
+
 ### Qt Quick desktop app
 
 The desktop app uses QML and connects to a persistent local Ava backend, starting it when needed.
@@ -174,6 +198,20 @@ Drafts and staged attachments are kept separately for each conversation while th
   by their share of the estimated total. Small nonzero shares remain visible as `<0.1%`;
   unknown model limits are labelled explicitly. The provider's last reported input count
   appears separately, since it describes the previous request. No byte counts are shown.
+- **Replay session**, in a session's right-click menu or the conversation header's `…`
+  menu, opens an independent, read-only execution inspector. Search recorded content,
+  collapse turns, filter event types, and jump between errors and other evidence worth
+  checking (truncation, repeated tool arguments and context compression). Select an event
+  to inspect its details, historical context, state changes or raw record. Related-evidence
+  links connect model requests, responses and tool results. Long histories and text are paged;
+  **Raw events** also includes individual streaming fragments.
+  A running session is frozen at an event watermark; **New records · Refresh** explicitly
+  advances it. Opening replay never calls the model, executes tools or repairs the log.
+  New normal-turn requests record a preparation boundary, including restored goal instructions.
+  Older histories only support event-position reconstruction, which is labelled accordingly.
+  Context is provider-neutral, not a provider wire capture, filesystem snapshot or access to
+  hidden reasoning. Auxiliary compaction and goal-check requests have no normal-turn boundary.
+  A completed turn is not a correctness grade; repeated calls and compression are not automatically errors.
 - The top-right inspector opens files and an embedded browser. Use its `+` menu to add
   independent file explorers or browser tabs; each has its own close button. Switching
   tabs retains the selected file or web page. All browser tabs share the same login profile.

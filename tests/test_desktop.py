@@ -52,7 +52,7 @@ from PySide6.QtGui import (  # noqa: E402
     QTextTable,
 )
 from PySide6.QtQml import QJSValue  # noqa: E402
-from PySide6.QtQuick import QQuickWindow  # noqa: E402
+from PySide6.QtQuick import QQuickItem, QQuickWindow  # noqa: E402
 from PySide6.QtQuickControls2 import QQuickStyle  # noqa: E402
 from PySide6.QtTest import QAbstractItemModelTester, QSignalSpy, QTest  # noqa: E402
 from PySide6.QtWebEngineQuick import QtWebEngineQuick  # noqa: E402
@@ -1782,6 +1782,249 @@ def test_project_switch_and_ime_preedit(desktop, model_server, project, tmp_path
     assert controller.projectId == other_id and not controller.chatId
 
 
+@pytest.mark.parametrize("missing_api", [True, False])
+def test_desktop_replay_explains_missing_api_without_remaining_in_loading(qt_app, missing_api):
+    from PySide6.QtCore import Property, Signal
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    from ava.app.desktop.connection import Connection
+    from ava.app.desktop.replay import SessionReplay
+
+    requests = []
+
+    class OldBackend(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            requests.append(self.path)
+            body = b'{"detail":"Not Found"}' if missing_api else b'{"error":"no such chat"}'
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Backend(QObject):
+        machinesChanged = Signal()
+
+        def __init__(self, port):
+            super().__init__()
+            self.connection = Connection(port, "isolated-test", self)
+            self._replay = SessionReplay(self)
+
+        @Property(QObject, constant=True)
+        def replay(self):
+            return self._replay
+
+        def _machine_for(self, identity):
+            return self
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OldBackend)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    backend = Backend(server.server_port)
+    engine = QQmlApplicationEngine()
+    engine.setInitialProperties({"backend": backend})
+    engine.loadData(b'''import QtQuick
+import QtQuick.Controls
+ApplicationWindow {
+    id: host
+    required property var backend
+    ReplayWindow {
+        backend: host.backend
+        codeFont: "monospace"
+        appPalette: host.palette
+    }
+}''', QUrl.fromLocalFile(str(Path(__file__).parents[1] / "src/ava/app/desktop/qml/ReplayErrorTest.qml")))
+    try:
+        assert engine.rootObjects()
+        host = engine.rootObjects()[0]
+        window = host.findChild(QQuickWindow, "sessionReplayWindow")
+        backend.replay.open("legacy-session")
+        until(lambda: bool(backend.replay.state["error"]) and not backend.replay.state["loading"], backend.replay.changed)
+        error = backend.replay.state["error"]
+        if missing_api:
+            assert "does not have the Session Replay API" in error, error
+            assert "after running tasks finish" in error
+        else:
+            assert error == "no such chat", "A missing session is not an unsupported backend"
+        assert "Error transferring" not in error
+        assert "Loading" not in find_item(window, "replaySessionTitle").property("text")
+        assert "Loading" not in find_item(window, "replayDetailText").property("text")
+        assert len(requests) == 1 and requests[0].startswith("/api/chats/legacy-session/replay?")
+        click(window, "replayRefresh")
+        until(lambda: len(requests) == 2 and not backend.replay.state["loading"], backend.replay.changed)
+        assert backend.replay.state["error"] == error
+        save_screenshot(window, "replay-unsupported-backend" if missing_api else "replay-missing-session")
+    finally:
+        backend.replay.close()
+        backend.connection.close()
+        for window in engine.rootObjects():
+            window.hide()
+        engine.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_desktop_replay_discards_stale_responses_and_keeps_snapshot(qt_app):
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import Signal
+
+    from ava.app.desktop.replay import SessionReplay
+
+    calls = []
+
+    class Owner(QObject):
+        machinesChanged = Signal()
+
+        def _machine_for(self, identity):
+            return SimpleNamespace(connection=connection)
+
+    connection = SimpleNamespace(call=lambda method, path, body, done: calls.append((method, path, done)))
+    owner = Owner()
+    view = SessionReplay(owner)
+    view.open("remote:first")
+    first = calls[-1][2]
+    view.open("remote:second")
+    second = calls[-1][2]
+    first({"through": 999, "title": "wrong session"}, "")
+    assert not view.state["data"]
+    second({"through": 30, "title": "second", "issue_sequences": [13, 17]}, "")
+    view.select(13)
+    old_detail = calls[-1][2]
+    view.select(17)
+    assert "through=30" in calls[-1][1]
+    old_detail({"seq": 13, "text": "old selection"}, "")
+    assert not view.state["detail"]
+    calls[-1][2]({"seq": 17, "text": "selected evidence"}, "")
+    view.filter("first search", "all")
+    old_filter = calls[-1][2]
+    view.filter("latest search", "issues")
+    old_filter({"through": 30, "title": "wrong filter"}, "")
+    assert view.state["data"]["title"] == "second"
+    calls[-1][2]({"through": 30, "title": "filtered"}, "")
+    view._check_latest()
+    calls[-1][2]({"latest_sequence": 40}, "")
+    assert view.state["has_new"] and view.state["data"]["through"] == 30
+    view.refresh()
+    pending = calls[-1][2]
+    assert "through=" not in calls[-1][1]
+    view.close()
+    pending({"through": 40}, "")
+    assert not view.state["data"]
+    assert all(method == "GET" for method, _, _ in calls)
+
+
+@pytest.fixture
+def replay_history(home, project, model_server):
+    from ava.session import Log
+    from tests.test_session_replay import replay_payloads
+
+    log = Log.create_default(project, "desktop-test", "fixture")
+    try:
+        log.append_batch(replay_payloads())
+        path = log.path
+    finally:
+        log.close()
+    return path
+
+
+def test_desktop_session_replay_inspects_evidence_without_driving_chat(replay_history, desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: controller.connected and bool(controller.transcript.rows), controller.changed)
+    identity = controller.chatId
+    before = replay_history.read_bytes()
+    row = find_item(window, "session_" + identity)
+    QTest.mouseClick(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier,
+                     visible_rect(window, row).center().toPoint())
+    click(window, "replayChatAction")
+    replay_window = window.findChild(QQuickWindow, "sessionReplayWindow")
+    view = controller.replay
+    until(lambda: replay_window.isVisible() and bool(view.state["data"]) and not view.state["loading"], view.changed)
+    assert view.state["selected"] == -1
+    assert view.state["data"]["issue_sequences"] == [13, 17, 19]
+    assert controller.chatId == identity
+    assert not model_server, "Opening replay must never invoke the model"
+    click(replay_window, "replayOverview")
+    timeline = find_item(replay_window, "replayTimeline")
+    QMetaObject.invokeMethod(timeline, "forceLayout")
+    QMetaObject.invokeMethod(timeline, "positionViewAtEnd")
+    until(lambda: (item := find_item(replay_window, "replayEvent_24")) is not None and not visible_rect(replay_window, item).isEmpty(), replay_window.frameSwapped)
+    reading_position = timeline.property("contentY")
+    assert reading_position > 0
+    click(replay_window, "replayEvent_24")
+    until(lambda: view.state["detail"].get("seq") == 24, view.changed)
+    assert abs(timeline.property("contentY") - reading_position) <= 1, "Inspecting a record must not reset the trace scroll position"
+    click(replay_window, "replayNextIssue")
+    until(lambda: view.state["detail"].get("seq") == 13, view.changed)
+    assert "File unavailable" in find_item(replay_window, "replayDetailText").property("text")
+    assert "truncated" in find_item(replay_window, "replayDetailText").property("text")
+    related = find_item(replay_window, "replayRelated")
+    related.forceActiveFocus()
+    QTest.keyClick(replay_window, Qt.Key.Key_Down)
+    until(lambda: view.state["selected"] == 10 and not view.state["detail_loading"], view.changed)
+    click(replay_window, "replayTab_context")
+    until(lambda: view.state["detail"].get("view") == "context", view.changed)
+    content = find_item(replay_window, "replayDetailText").property("text")
+    assert "Prepared request context · event #7" in content
+    assert "Investigate login failure" in content
+    assert "expired cookie" not in content
+    search = find_item(replay_window, "replaySearch")
+    search.setProperty("text", "expired cookie")
+    search.forceActiveFocus()
+    QTest.keyClick(replay_window, Qt.Key.Key_Return)
+    until(lambda: view.state["data"].get("total") == 2 and not view.state["loading"], view.changed)
+    click(replay_window, "replayEvent_16")
+    click(replay_window, "replayTab_state")
+    until(lambda: view.state["detail"].get("view") == "state" and view.state["detail"].get("seq") == 16, view.changed)
+    assert '"next_step": []' in find_item(replay_window, "replayDetailText").property("text")
+    click(replay_window, "replayIssues")
+    until(lambda: view.state["data"].get("total") == 3, view.changed)
+    click(replay_window, "replayEvent_17")
+    click(replay_window, "replayTab_state")
+    until(lambda: view.state["detail"].get("view") == "state" and view.state["detail"].get("seq") == 17, view.changed)
+    assert '"covered_end": 13' in find_item(replay_window, "replayDetailText").property("text")
+    click(replay_window, "replayTurn_1")
+    assert find_item(replay_window, "replayTimeline").property("count") == 1
+    click(replay_window, "replayTurn_1")
+    assert find_item(replay_window, "replayTimeline").property("count") == 4
+    # Render both appearances at the minimum and default inspection sizes.
+    for dark, width, height in [(False, 1120, 760), (True, 800, 600)]:
+        window.setProperty("dark", dark)
+        replay_window.resize(width, height)
+        save_screenshot(replay_window, f"replay-{'dark' if dark else 'light'}")
+        for name in ("replayRefresh", "replayIssues", "replayDetailScroll", "replayTab_state"):
+            item = find_item(replay_window, name)
+            assert item is not None and item.isVisible()
+            ancestors = []
+            parent = item
+            while parent is not None:
+                ancestors.append((parent.objectName(), parent.width(), parent.height(), parent.clip(), parent.mapToScene(QPointF())))
+                parent = parent.parentItem()
+            assert visible_rect(replay_window, item).width() >= item.width() - 1, name + "\n" + "\n".join(map(str, ancestors))
+    replay_window.close()
+    until(lambda: not replay_window.isVisible(), replay_window.visibleChanged)
+    # The second entry point reopens the independent inspector, not the chat.
+    click(window, "sessionMenuButton")
+    action = window.findChild(QQuickItem, "replayCurrentSessionAction")
+    click(action.window(), "replayCurrentSessionAction")
+    until(lambda: replay_window.isVisible() and not view.state["loading"], view.changed)
+    assert view.state["selected"] == -1
+    start_chat(window)
+    until(lambda: bool(controller.chatId) and controller.chatId != identity and controller.connected, controller.changed)
+    assert replay_window.isVisible() and view.state["identity"] == identity
+    click(replay_window, "replayOpenConversation")
+    until(lambda: controller.chatId == identity and controller.connected, controller.changed)
+    assert not model_server
+    assert replay_history.read_bytes() == before
+    replay_window.close()
+
+
 def test_desktop_context_chart_matches_report(desktop, model_server, project):
     controller, window = desktop
     controller.start()
@@ -1945,6 +2188,52 @@ def test_desktop_context_chart_matches_report(desktop, model_server, project):
         save_screenshot(window, f"context-edge-{capacity}-{total}")
     QTest.keyClick(window, Qt.Key.Key_Escape)
     assert not dialog.property("visible")
+
+
+@pytest.fixture(params=[False, True])
+def retry_history(home, project, model_server, request):
+    from ava.base import ErrorKind
+    from ava.llm import Item, Role, make_text_block
+    from ava.session import (
+        AssistantChunk,
+        AssistantMessage,
+        Log,
+        RequestRetry,
+        StepEnd,
+        StepEndReason,
+        StepStart,
+        TurnEnd,
+        TurnEndReason,
+        TurnStart,
+    )
+
+    log = Log.create_default(project, "desktop-test", "fixture")
+    try:
+        payloads = [
+            TurnStart(1), StepStart(1, 1), AssistantChunk("a1", "Incomplete answer"),
+            RequestRetry("a1", "a1-retry-2", 2, 1000, ErrorKind.network,
+                         "Connection interrupted", "", Item(Role.assistant, [make_text_block("Incomplete answer")])),
+            AssistantChunk("a1-retry-2", "Recovered answer"),
+            AssistantMessage("a1-retry-2", Item(Role.assistant, [make_text_block("Recovered answer")])),
+            StepEnd(1, 1, StepEndReason.completed), TurnEnd(1, TurnEndReason.completed),
+        ]
+        if not request.param:
+            payloads = [p for p in payloads if not isinstance(p, AssistantChunk)]
+        log.append_batch(payloads)
+    finally:
+        log.close()
+
+
+def test_desktop_retry_notice_separates_failed_output(retry_history, desktop, model_server):
+    controller, window = desktop
+    controller.start()
+    until(lambda: controller.connected and any(row["body"] == "Recovered answer" for row in controller.transcript.rows), controller.changed)
+    rows = controller.transcript.rows
+    assert any(row["kind"] == "notice" and row["heading"] == "Interrupted attempt · not used" and row["body"] == "Incomplete answer" for row in rows)
+    assert any(row["heading"] == "Retrying request 2/3" and "Unreported usage is unknown" in row["body"] for row in rows)
+    assert [row["body"] for row in rows if row["kind"] == "assistant"] == ["Recovered answer"]
+    assert not model_server, "Rendering historical retries must not rerun the model"
+    save_screenshot(window, "request-retry-notice")
 
 
 def test_transcript_golden_replay(qt_app, capfd):

@@ -34,7 +34,7 @@ from ava.session import (
     Usage,
     UserMessage,
 )
-from ava.session.event import GoalChanged
+from ava.session.event import GoalChanged, RequestRetry
 
 
 def blocks_json(item: Item) -> list[dict[str, Any]]:
@@ -178,6 +178,11 @@ def event_dict(event: Event) -> dict[str, Any]:
             out["reason"] = payload.reason.value
             if payload.elapsed_ms is not None:
                 out["elapsed_ms"] = payload.elapsed_ms
+        case RequestRetry():
+            out.update(attempt_id=payload.attempt_id, next_attempt_id=payload.next_attempt_id,
+                       next_attempt=payload.next_attempt, delay_ms=payload.delay_ms,
+                       error_kind=payload.error_kind.value, message=payload.message,
+                       partial_text="".join(b.text for b in payload.item.blocks if b.kind == ContentBlockKind.text))
         case DriveError():
             out["turn"] = payload.turn
             out["error_kind"] = payload.error_kind.value

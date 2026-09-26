@@ -9,7 +9,14 @@ from ava.agent.step import append_accounting, step
 from ava.base import AvaError, CancelToken, ErrorKind
 from ava.llm import Item, Role, StopReason, make_text_block
 from ava.llm.types import ContentBlockKind
-from ava.session import AttemptTiming, CompactionFailed, InboxSpliced, Selection, Usage
+from ava.session import (
+    AttemptTiming,
+    CompactionFailed,
+    InboxSpliced,
+    RequestRetry,
+    Selection,
+    Usage,
+)
 from ava.session import compaction as strategy
 
 TAIL_BUDGET_PERCENT = 25
@@ -45,6 +52,12 @@ def _suffix_is_compaction_local(state: AgentState, size_before: int, attempt_id:
         if isinstance(payload, Selection) and not saw_selection and not saw_usage:
             saw_selection = True
             continue
+        if isinstance(payload, RequestRetry):
+            if payload.attempt_id != attempt_id or not saw_usage or not saw_timing:
+                return False
+            attempt_id = payload.next_attempt_id
+            saw_usage = saw_timing = False
+            continue
         if isinstance(payload, Usage):
             if payload.attempt_id != attempt_id or saw_usage or saw_timing:
                 return False
@@ -78,7 +91,7 @@ async def compact(
         size_before = len(state.session)
         response = await step(state, request.context, attempt_id, False, cancel)
         append_accounting(
-            state, attempt_id, response.usage, response.timing, append_empty_usage=True
+            state, response.attempt_id or attempt_id, response.usage, response.timing, append_empty_usage=True
         )
         state.drain()
         if drive_state is not None and drive_state.abort_requested:

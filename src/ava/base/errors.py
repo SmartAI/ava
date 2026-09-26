@@ -32,12 +32,17 @@ class AvaError(Exception):
         detail: str = "",
         *,
         recoverable: bool = False,
+        retryable: bool = False,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.detail = detail
         self.recoverable = recoverable
+        # Request retry eligibility, not permission to repeat tools or whole turns.
+        self.retryable = retryable
+        self.retry_after = retry_after
 
     def __str__(self) -> str:
         if self.detail:

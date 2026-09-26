@@ -43,6 +43,8 @@ from ava.session.event import (
     InboxSpliced,
     InboxTarget,
     PromptResolved,
+    RequestPrepared,
+    RequestRetry,
     Selection,
     SessionStart,
     SkillLoaded,
@@ -416,6 +418,16 @@ def payload_to_wire(payload: EventPayload) -> dict[str, Any]:
             wire["turn"] = payload.turn
         case StepStart():
             wire.update(turn=payload.turn, step=payload.step)
+        case RequestPrepared():
+            wire.update(attempt_id=payload.attempt_id, provider=payload.provider, model=payload.model)
+            _optional(wire, "effort", payload.effort)
+            if payload.prefix_items:
+                wire["prefix_items"] = [item_to_wire(item) for item in payload.prefix_items]
+        case RequestRetry():
+            wire.update(attempt_id=payload.attempt_id, next_attempt_id=payload.next_attempt_id,
+                        next_attempt=payload.next_attempt, delay_ms=payload.delay_ms,
+                        error_kind=payload.error_kind.value, message=payload.message,
+                        detail=payload.detail, item=item_to_wire(payload.item))
         case StepClaimed():
             validate_step_claimed_payload(payload)
             wire.update(turn=payload.turn, step=payload.step)
@@ -663,6 +675,25 @@ def decode_known(kind: str, wire: dict[str, Any]) -> EventPayload | None:
             return TurnStart(turn=_int(wire, "turn", 0))
         case "step/start":
             return StepStart(turn=_int(wire, "turn", 0), step=_int(wire, "step", 0))
+        case "request/prepared":
+            items = wire.get("prefix_items", [])
+            if not isinstance(items, list):
+                raise _fail("invalid request/prepared record", "prefix_items must be an array")
+            return RequestPrepared(
+                attempt_id=_string(wire, "attempt_id"),
+                provider=_string(wire, "provider"),
+                model=_string(wire, "model"),
+                effort=_optional_string(wire, "effort"),
+                prefix_items=[item_from_wire(item) for item in items],
+            )
+        case "request/retry":
+            return RequestRetry(
+                attempt_id=_string(wire, "attempt_id"), next_attempt_id=_string(wire, "next_attempt_id"),
+                next_attempt=_int(wire, "next_attempt", 0), delay_ms=_int(wire, "delay_ms", 0),
+                error_kind=_enum(ErrorKind, wire.get("error_kind"), "error kind"),
+                message=_string(wire, "message"), detail=_string(wire, "detail"),
+                item=item_from_wire(wire.get("item", {})),
+            )
         case "step/claimed":
             target_name = wire.get("target")
             target = (

@@ -291,6 +291,16 @@ class Transcript(QAbstractListModel):
                         attachments=block.get("attachments", []),
                     )
             self._activity = self._running_tool_activity() or "Thinking"
+        elif kind == "request/retry":
+            row = self._attempts.get(event["attempt_id"])
+            if row is not None:
+                self.update(row, kind="notice", heading="Interrupted attempt · not used")
+            elif event.get("partial_text"):
+                self.append("notice", "Interrupted attempt · not used", event["partial_text"])
+            self._activity = f"Retrying request {event['next_attempt']}/3"
+            self.append("notice", self._activity,
+                        f"{event['message']}\nRetry scheduled in {event['delay_ms'] / 1000:.1f} s. "
+                        "Earlier completed tools will not be rerun. Unreported usage is unknown.")
         elif kind in ("drive/error", "compaction/failed"):
             self.append("error", "Run failed", event["message"])
         elif kind == "goal/changed":

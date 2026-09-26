@@ -63,6 +63,12 @@ ApplicationWindow {
             window.backend.shutdown();
         }
     }
+    ReplayWindow {
+        backend: window.backend
+        codeFont: window.codeFont
+        appPalette: window.palette
+        onOpenMain: { window.workspacePage = "chat"; window.show(); window.raise(); window.requestActivate(); }
+    }
     QuickChat {
         id: quickChat
         quitting: window.closing
@@ -482,6 +488,23 @@ ApplicationWindow {
                             visible: ["running", "pausing", "paused", "aborting"].indexOf(window.backend.status) >= 0
                             enabled: window.backend.connected && !window.backend.busy && window.backend.status !== "aborting"
                             onClicked: window.backend.control("abort")
+                        }
+                        NativeButton {
+                            objectName: "sessionMenuButton"
+                            icon.source: "icons/more.svg"
+                            quiet: true
+                            tip: "Session actions"
+                            enabled: !!window.backend.chatId
+                            onClicked: sessionActions.popup()
+                            NativeMenu {
+                                id: sessionActions
+                                NativeMenuItem {
+                                    objectName: "replayCurrentSessionAction"
+                                    text: "Replay session"
+                                    enabled: window.backend.online
+                                    onTriggered: window.backend.openReplay(window.backend.chatId)
+                                }
+                            }
                         }
                         NativeButton {
                             objectName: "toggleTerminalButton"

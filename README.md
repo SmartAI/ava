@@ -19,6 +19,7 @@ doesn't have to be a code repository.
 
 ## News
 
+- **2026-09-25 · Session board and session replay:** [Organize work across projects and machines](docs/features.md#session-board) in In progress, Needs review, and Reviewed columns. [Replay sessions](docs/usage.md#qt-quick-desktop-app) in a read-only inspector to explore recorded requests, responses, tool results, and historical context—without rerunning models or tools.
 - **2026-09-10 · [v0.1.0](https://github.com/SmartAI/ava/releases/tag/v0.1.0) — First alpha:** A native desktop workbench for research, writing, analysis, automation, and coding, with browser tools, file previews, SSH sessions, skills, and MCP.
 - **2026-09-09 · Benchmark:** Ava solved 11/22 tasks in a SWE-bench Pro coding pilot, compared with Pi’s 10/22—a small-sample result, not a general-purpose benchmark.
 

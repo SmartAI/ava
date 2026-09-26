@@ -100,6 +100,7 @@ async def test_one_turn_claims_input_and_closes_cleanly(home: Path, project: Pat
         "TurnStart",
         "StepStart",
         "StepClaimed",
+        "RequestPrepared",
         "Selection",
         "AssistantChunk",
         "AssistantChunk",
@@ -457,7 +458,8 @@ async def test_duplicate_driver_is_rejected(home: Path, project: Path):
     await agent.aclose()
 
 
-async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, project: Path):
+@pytest.mark.parametrize("retry_summary", [False, True])
+async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, project: Path, monkeypatch, retry_summary):
     long_text = "h" * 4000
 
     def summarize(context):
@@ -473,6 +475,10 @@ async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, projec
             text_response("after compaction"),
         ]
     )
+    if retry_summary:
+        provider.request_retries_safe = True
+        provider.scripts.insert(1, AvaError(ErrorKind.network, "summary disconnected", retryable=True))
+        monkeypatch.setattr("ava.agent.step.RETRY_DELAYS", (0, 0))
     agent = Agent.create(provider, project, CompactionOptions(enabled=True, threshold_percent=50))
     await agent.followup(message("first " + "x" * 3000))
     await agent.drive()
@@ -485,7 +491,7 @@ async def test_compaction_seed_replaces_prefix_and_keeps_tail(home: Path, projec
     assert "## Files" in seeds[0].item.blocks[0].text
     context = agent.state.session.model_context()
     assert context.items[0] is seeds[0].item
-    assert provider.contexts[2].items[0] is seeds[0].item
+    assert provider.contexts[-1].items[0] is seeds[0].item
     assert not any(
         isinstance(e.payload, AssistantMessage) and e.payload.item is context.items[0]
         for e in agent.state.session.events

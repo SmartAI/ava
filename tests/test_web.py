@@ -20,6 +20,119 @@ from tests.conftest import ScriptedProvider, text_response, tool_call_response
 PNG_2X3 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAAD")
 
 
+@pytest.mark.parametrize('failures_before_success', [1, 3])
+async def test_ssl_failure_is_reported_over_http_and_session_can_continue(client, scripted, monkeypatch, failures_before_success):
+    import ssl
+
+    from ava.session.log import OpenMode
+    from ava.transport import Client, Request
+
+    assert (await client.post('/api/chats', json={'project_id': 'workspace'})).status_code == 201
+    provider = scripted[0]
+    original_stream = provider.stream
+    provider.request_retries_safe = True
+    monkeypatch.setattr('ava.agent.step.RETRY_DELAYS', (0, 0))
+    attempts = 0
+
+    async def peer(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= failures_before_success:
+            # Reproduce the raw exception escaping httpcore/anyio during TLS reads,
+            # rather than an already-normalized httpx.ConnectError.
+            raise ssl.SSLError(ssl.SSL_ERROR_SSL, 'ssl/tls alert bad record mac')
+        return httpx.Response(200, content=b'data: recovered\n\n')
+
+    transport = Client()
+    await transport._client.aclose()
+    transport._client = httpx.AsyncClient(transport=httpx.MockTransport(peer))
+
+    async def stream(context, selected, sink, cancel):
+        await transport.post_sse(Request('https://provider.invalid/responses'), lambda event: None, cancel)
+        return await original_stream(context, selected, sink, cancel)
+
+    monkeypatch.setattr(provider, 'stream', stream)
+    try:
+        sent = await client.post('/api/chats/c1/messages', json={'text': 'Start the task'})
+        assert sent.status_code == 202, sent.text
+        chat = client.app.state.registry.find_chat('c1')[1]
+        await asyncio.wait_for(asyncio.gather(chat.task, return_exceptions=True), 3)
+        assert chat.task.exception() is None, f'Provider exception escaped the driver: {chat.task.exception()!r}'
+        events = await _events_until(client, 'c1', 'turn/end' if failures_before_success == 1 else 'drive/error')
+        retries = [e for e in events if e['kind'] == 'request/retry']
+        assert len(retries) == min(failures_before_success, 2)
+        assert all(e['error_kind'] == 'network' for e in retries)
+        if failures_before_success == 1:
+            assert events[-1]['reason'] == 'completed'
+            assert attempts == 2
+            return
+        failure = events[-1]
+        assert failure['error_kind'] == 'network'
+        assert 'bad record mac' in failure['message']
+        assert json.loads(failure['detail'])['exception_type'] == 'SSLError'
+        endings = [e for e in events if e['kind'] == 'turn/end']
+        assert len(endings) == 1 and endings[0]['reason'] == 'provider_error'
+        summary = (await client.get('/api/chats/c1')).json()
+        assert summary['status'] == 'idle'
+        summaries = (await client.get('/api/projects')).json()['projects'][0]['chats']
+        listed = next(item for item in summaries if item['id'] == 'c1')
+        assert listed['completion_reason'] == 'error'
+        assert listed['completion_seq'] == failure['seq']
+        assert attempts == 3, 'One shared request budget, not nested retries'
+        durable = Log.open(chat.agent.session_path, OpenMode.read_only)
+        try:
+            assert any(e.payload.kind == 'drive/error' and e.seq == failure['seq'] for e in durable.loaded_events)
+        finally:
+            durable.close()
+
+        assert (await client.post('/api/chats/c1/messages', json={'text': 'continue'})).status_code == 202
+        await asyncio.wait_for(asyncio.gather(chat.task, return_exceptions=True), 3)
+        assert chat.task.exception() is None
+        resumed = await _events_until(client, 'c1', 'turn/end', last=str(failure['seq']))
+        assert resumed[-1]['reason'] == 'completed'
+        assert any(e['kind'] == 'assistant/message' for e in resumed)
+        assert attempts == 4
+    finally:
+        await transport.aclose()
+
+
+async def test_session_replay_is_read_only_frozen_and_matches_prepared_request(client, scripted):
+    await client.post('/api/chats', json={'project_id': 'workspace'})
+    provider = scripted[0]
+    gate = asyncio.Event()
+    provider.gate = gate
+    await client.post('/api/chats/c1/messages', json={'text': 'Original request evidence'})
+    await asyncio.wait_for(provider.started.wait(), 2)
+    chat = client.app.state.registry.find_chat('c1')[1]
+    before = chat.agent.session_path.read_bytes()
+    response = await client.get('/api/chats/c1/replay')
+    assert response.status_code == 200, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    snapshot = response.json()
+    request = next(row for row in snapshot['rows'] if row['kind'] == 'request/prepared')
+    prepared = await client.get('/api/chats/c1/replay', params={
+        'through': snapshot['through'], 'seq': request['seq'], 'view': 'context',
+    })
+    assert prepared.status_code == 200, prepared.text
+    assert 'Original request evidence' in prepared.json()['text']
+    assert provider.contexts[0].system_prompt in prepared.json()['text']
+    assert chat.agent.session_path.read_bytes() == before
+    assert provider.calls == 1
+    await client.post('/api/chats/c1/messages', json={'text': 'Input arriving during the request'})
+    frozen = await client.get('/api/chats/c1/replay', params={'through': snapshot['through']})
+    assert frozen.json() == snapshot
+    latest = (await client.get('/api/chats/c1/replay', params={'head': 'true'})).json()
+    assert latest['latest_sequence'] > snapshot['through']
+    unchanged = await client.get('/api/chats/c1/replay', params={
+        'seq': request['seq'], 'view': 'context',
+    })
+    assert unchanged.json()['text'] == prepared.json()['text']
+    assert (await client.get('/api/chats/c1/replay', params={'seq': latest['latest_sequence'], 'through': snapshot['through']})).status_code == 404
+    assert (await client.get('/api/chats/c1/replay', params={'offset': -1})).status_code == 422
+    assert (await client.get('/api/chats/missing/replay')).status_code == 404
+    gate.set()
+
+
 @pytest.mark.parametrize("manual", [False, True])
 async def test_first_message_generates_isolated_title(client, scripted, monkeypatch, home, manual):
     await client.post('/api/chats', json={'project_id': 'workspace'})
@@ -706,25 +819,26 @@ async def test_message_runs_a_turn_and_events_replay(client: httpx.AsyncClient, 
         "turn/start",
         "step/start",
         "step/claimed",
+        "request/prepared",
         "selection",
         "assistant/message",
         "attempt/timing",
         "step/end",
         "turn/end",
-    ]  # assistant/chunk (seq 8) is write-through: durable, but never replayed to a later subscriber
+    ]  # assistant/chunk (seq 9) is write-through: durable, but never replayed to a later subscriber
     claimed = events[6]
     assert claimed["messages"][0]["blocks"] == [
         {"kind": "image", "display_path": "photo.png", "media_type": "image/png", "byte_size": 24},
         {"kind": "file_text", "display_path": "notes.txt", "byte_size": 5},
     ]
-    assert events[8]["seq"] == 9 and events[8]["blocks"] == [{"kind": "text", "text": "web answer"}]
+    assert events[9]["seq"] == 10 and events[9]["blocks"] == [{"kind": "text", "text": "web answer"}]
     assert events[-1]["reason"] == "completed" and "elapsed_ms" in events[-1]
     provider = scripted[0]
     first = provider.contexts[0].items[0]
     assert [block.kind.value for block in first.blocks] == ["image", "file_text"]
     # Last-Event-ID suppresses already received sequence numbers on reconnect.
-    replay = await _events_until(client, "c1", "turn/end", last="10")
-    assert [event["seq"] for event in replay if event["kind"] != "status"] == [11, 12]
+    replay = await _events_until(client, "c1", "turn/end", last="11")
+    assert [event["seq"] for event in replay if event["kind"] != "status"] == [12, 13]
     assert replay[0]["kind"] == "status"
     assert replay[0]["status"] == "idle" and replay[0]["turn_open"] is False
     chat = (await client.get("/api/chats/c1")).json()

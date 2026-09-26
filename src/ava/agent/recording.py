@@ -66,6 +66,7 @@ class _Header(_Record):
     capabilities: ModelCapabilities
     input: dict[str, Any]
     compaction: CompactionOptions
+    request_retries_safe: bool = False
 
     @field_validator("input")
     @classmethod
@@ -82,6 +83,8 @@ class _Failure(_Record):
     message: str
     detail: str
     recoverable: bool
+    retryable: bool = False
+    retry_after: float | None = None
 
 
 class _Exchange(_Record):
@@ -173,6 +176,8 @@ def _error(error: AvaError) -> dict[str, Any]:
         "message": error.message,
         "detail": error.detail,
         "recoverable": error.recoverable,
+        **({"retryable": True} if error.retryable else {}),
+        **({"retry_after": error.retry_after} if error.retry_after is not None else {}),
     }
 
 
@@ -182,6 +187,8 @@ def _raise_error(error: dict[str, Any]) -> None:
         error["message"],
         error["detail"],
         recoverable=error["recoverable"],
+        retryable=error.get("retryable", False),
+        retry_after=error.get("retry_after"),
     )
 
 
@@ -240,6 +247,7 @@ class Recording:
                     selection=provider.selection,
                     context_window=provider.context_window,
                     capabilities=provider.capabilities(provider.selection.model),
+                    request_retries_safe=provider.request_retries_safe,
                     input=item_to_wire(item),
                     compaction=options,
                 )
@@ -308,6 +316,7 @@ class _RecordingProvider(Provider):
         self.model_overrides = provider.model_overrides
         self.selection_model_may_be_alias = provider.selection_model_may_be_alias
         self.remembers_selection = provider.remembers_selection
+        self.request_retries_safe = provider.request_retries_safe
         self._provider = provider
         self._append = append
 
@@ -355,6 +364,7 @@ class _ReplayProvider(Provider):
         super().__init__(header.selection)
         self.id = header.selection.provider
         self.context_window = header.context_window
+        self.request_retries_safe = header.request_retries_safe
         self._capabilities = header.capabilities
         self._take = take
 

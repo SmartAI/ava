@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from ava.agent import CancelCause, CompactNowOutcome, Status
@@ -39,6 +39,9 @@ from ava.llm import (
 from ava.llm.configuration import remember_selection, save_provider_connection
 from ava.llm.credentials import delete_api_key, save_api_key
 from ava.llm.provider import Selection
+from ava.session.log import Log, OpenMode
+from ava.session.replay import replay_detail, replay_index
+from ava.session.stops import session_stops, stop_summary
 
 from . import worktrees
 from .models import (
@@ -833,6 +836,97 @@ def register_routes(app: FastAPI, state: WebState, index_html: Callable[[], str]
         except AvaError as error:
             return error_response(503, error.message)
         return JSONResponse(await reload_provider(provider, AuthRequirement.allow_missing))
+
+    @app.get("/api/replay/stops")
+    async def find_session_stops(
+        category: str = Query(default="failures", pattern="^(failures|followups|unfinished|all)$"),
+        query: str = Query(default="", max_length=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> Response:
+        # Capture identities and paths on the owner loop; only immutable metadata
+        # and read-only logs enter the worker. Hidden projects remain hidden.
+        sources = [(chat.id, chat.title or "Untitled session", project.name, chat.archived,
+                    chat.status, chat.agent.session_path)
+                   for project in registry.projects if not project.hidden for chat in project.chats
+                   if query.casefold().strip() in (chat.title + " " + project.name).casefold()]
+
+        def scan() -> dict[str, Any]:
+            rows, errors = [], []
+            for identity, title, project_name, archived, status, path in sources:
+                if path is None:
+                    errors.append({"chat_id": identity, "title": title, "error": "No durable log"})
+                    continue
+                try:
+                    log = Log.open(path, OpenMode.read_only)
+                    try:
+                        events = log.loaded_events
+                        stops = session_stops(events)
+                        matches = [s for s in stops if category == "all"
+                                   or (category == "failures" and s["failure"])
+                                   or (category == "followups" and s["followups"])
+                                   or (category == "unfinished" and s["unfinished_hint"])]
+                        if matches:
+                            last = matches[-1]
+                            rows.append({"chat_id": identity, "title": title, "project": project_name,
+                                         "archived": archived, "status": status, "through": events[-1].seq,
+                                         "match": {k: last[k] for k in ("seq", "at", "reason", "label")},
+                                         "summary": stop_summary(stops)})
+                    finally:
+                        log.close()
+                except (AvaError, ValueError) as error:
+                    errors.append({"chat_id": identity, "title": title,
+                                   "error": error.message if isinstance(error, AvaError) else str(error)})
+            rows.sort(key=lambda row: (row["match"]["at"], row["chat_id"]), reverse=True)
+            return {"rows": rows[offset:offset + 100], "offset": offset,
+                    "next_offset": offset + 100 if offset + 100 < len(rows) else None,
+                    "total": len(rows), "scanned": len(sources), "error_count": len(errors),
+                    "errors": errors[:20], "category": category,
+                    "scope": "Registered projects on this backend, including archived sessions. Historical matches do not imply the session is currently stopped."}
+
+        return JSONResponse(await asyncio.to_thread(scan), headers={"cache-control": "no-store"})
+
+    @app.get("/api/chats/{chat_id}/replay")
+    async def replay(
+        chat_id: str,
+        head: bool = False,
+        through: int | None = Query(default=None, ge=0),
+        seq: int | None = Query(default=None, ge=0),
+        offset: int = Query(default=0, ge=0),
+        query: str = Query(default="", max_length=1000),
+        category: str = Query(default="all", pattern="^(all|issues|raw|model|tool|input|state|stops|failures|followups|unfinished)$"),
+        view: str = Query(default="detail", pattern="^(detail|context|state|raw)$"),
+    ) -> Response:
+        found = registry.find_chat(chat_id)
+        if found is None:
+            return error_response(404, "no such chat")
+        chat = found[1]
+        if head:
+            return JSONResponse({"latest_sequence": chat.agent.state.session.next_sequence - 1},
+                                headers={"cache-control": "no-store"})
+        path = chat.agent.session_path
+        if path is None:
+            return error_response(409, "This session has no durable log to replay.")
+
+        def load() -> dict[str, Any]:
+            log = Log.open(path, OpenMode.read_only)
+            try:
+                events = [e for e in log.loaded_events if through is None or e.seq <= through]
+                if through is not None and (not events or events[-1].seq != through):
+                    raise ValueError("Snapshot is no longer available. Refresh the replay.")
+                if seq is not None:
+                    return replay_detail(events, seq, view=view, offset=offset)
+                return replay_index(events, offset=offset, query=query, category=category)
+            finally:
+                log.close()
+
+        try:
+            payload = await asyncio.to_thread(load)
+        except ValueError as error:
+            return error_response(404, str(error))
+        except AvaError as error:
+            return error_response(503, error.message)
+        return JSONResponse({**payload, "title": chat.title or "Untitled session"} if seq is None else payload,
+                            headers={"cache-control": "no-store"})
 
     @app.get("/api/chats/{chat_id}/context")
     async def context(chat_id: str) -> Response:
